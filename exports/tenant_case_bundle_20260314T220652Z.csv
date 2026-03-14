@@ -1,0 +1,2 @@
+incident_id,category,asset,status,start_ts,end_ts,witness_count,report_count,service_request_numbers,title,summary
+5c5f696b4f0f78a14a01bac757bb4ab3,elevator,elevator_both,open,1770000200,,0,1,311-12345678,Elevator outage,Tenant reports elevator service reduced or not working.

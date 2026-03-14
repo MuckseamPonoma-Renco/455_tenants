@@ -1,0 +1,11 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+.env
+local.db
+*.sqlite
+*.sqlite3
+/mnt/data/
+secrets/*.json

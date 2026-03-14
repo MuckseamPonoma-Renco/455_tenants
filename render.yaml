@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: tenant-issue-os-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: INGEST_TOKEN
+        generateValue: true
+      - key: PROCESS_INLINE
+        value: "1"
+      - key: DISABLE_SHEETS_SYNC
+        value: "1"
+      - key: LLM_MODE
+        value: "off"
