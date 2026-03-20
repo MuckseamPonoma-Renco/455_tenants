@@ -16,6 +16,12 @@ def _base_url() -> str:
 def _api_key() -> str | None:
     return _get_env("OPENAI_API_KEY") or _get_env("LLM_API_KEY")
 
+def llm_enabled() -> bool:
+    mode = (_get_env("LLM_MODE", "") or "").strip().lower()
+    if mode in {"0", "false", "no", "off"}:
+        return False
+    return bool((_api_key() or "").strip())
+
 def _headers() -> dict:
     key = _api_key()
     if not key:
