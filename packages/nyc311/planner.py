@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
 from packages.db import FilingJob, Incident, ServiceRequestCase
 from packages.nyc311.drafts import build_filing_draft
@@ -31,6 +31,20 @@ def incident_is_auto_eligible(inc: Incident) -> bool:
         return False
     if inc.status == "closed":
         return False
+
+    max_age_hours = _env_int("AUTO_FILE_MAX_INCIDENT_AGE_HOURS", 168)
+    if max_age_hours > 0 and inc.last_ts_epoch:
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=max_age_hours)
+        if int(inc.last_ts_epoch) < int(cutoff.timestamp()):
+            return False
+
+    min_confidence = _env_int("AUTO_FILE_MIN_CONFIDENCE", 60)
+    if int(inc.confidence or 0) < min_confidence:
+        return False
+
+    if _env_bool("AUTO_FILE_SKIP_NEEDS_REVIEW", False) and bool(inc.needs_review):
+        return False
+
     min_witnesses = _env_int("AUTO_FILE_MIN_WITNESSES", 1)
     min_reports = _env_int("AUTO_FILE_MIN_REPORTS", 1)
     return int(inc.witness_count or 0) >= min_witnesses or int(inc.report_count or 0) >= min_reports or int(inc.severity or 0) >= 5

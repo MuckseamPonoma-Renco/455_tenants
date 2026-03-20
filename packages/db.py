@@ -5,10 +5,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./local.db")
 CONNECT_ARGS = {}
-ENGINE_KWARGS = {"future": True, "pool_pre_ping": True}
+ENGINE_KWARGS = {"future": True}
 if DATABASE_URL.startswith("sqlite"):
     CONNECT_ARGS = {"check_same_thread": False}
-    ENGINE_KWARGS["pool_pre_ping"] = False
+else:
+    ENGINE_KWARGS["pool_pre_ping"] = True
 
 engine = create_engine(DATABASE_URL, connect_args=CONNECT_ARGS, **ENGINE_KWARGS)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -55,6 +56,7 @@ class Incident(Base):
     witnesses = relationship("IncidentWitness", back_populates="incident", cascade="all, delete-orphan")
     filing_jobs = relationship("FilingJob", back_populates="incident")
     service_requests = relationship("ServiceRequestCase", back_populates="incident")
+    decisions = relationship("MessageDecision", back_populates="incident")
 
 
 class IncidentWitness(Base):
@@ -110,6 +112,25 @@ class ServiceRequestCase(Base):
 
     incident = relationship("Incident", back_populates="service_requests")
     filing_job = relationship("FilingJob", back_populates="service_requests")
+
+
+class MessageDecision(Base):
+    __tablename__ = "message_decisions"
+    message_id: Mapped[str] = mapped_column(String(64), ForeignKey("raw_messages.message_id"), primary_key=True)
+    incident_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("incidents.incident_id"), nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chosen_source: Mapped[str] = mapped_column(String(32), default="none")
+    is_issue: Mapped[bool] = mapped_column(Boolean, default=False)
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    confidence: Mapped[int] = mapped_column(Integer, default=0)
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_file_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
+    rules_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    incident = relationship("Incident", back_populates="decisions")
 
 
 _initialized = False

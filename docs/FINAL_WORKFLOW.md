@@ -21,3 +21,8 @@
 ## What still requires your phone
 - the actual tap-by-tap NYC311 submission flow
 - selector maintenance if the app UI changes
+
+
+## Fast operator view
+- `GET /api/summary` for structured state / next step
+- `GET /api/briefing` for a tenant-ready update plus a management follow-up draft

@@ -62,3 +62,10 @@ def parse_ts_to_epoch(value: str | int | float | None) -> int | None:
 
     dt = datetime(yy, mm, dd, hh, mi, ss, tzinfo=NY)
     return int(dt.timestamp())
+
+
+def epoch_to_iso(value: str | int | float | None) -> str | None:
+    epoch = parse_ts_to_epoch(value)
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, tz=UTC).isoformat().replace("+00:00", "Z")

@@ -1,7 +1,6 @@
 from pathlib import Path
-from packages.db import FilingJob, Incident, ServiceRequestCase, get_session
+from packages.db import FilingJob, Incident, MessageDecision, ServiceRequestCase, get_session
 from packages.nyc311.legal_export import export_legal_bundle
-from packages.nyc311.tracker import sync_all_case_statuses
 
 
 def auth_headers():
@@ -111,3 +110,64 @@ def test_legal_export_bundle(client):
         result = export_legal_bundle(session)
     assert Path(result['csv']).exists()
     assert Path(result['markdown']).exists()
+
+
+def test_tasker_epoch_is_normalized_to_iso(client):
+    response = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out again',
+        'sender': 'Tibor Simon',
+        'ts_epoch': 1770000000,
+    })
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        assert incident.start_ts.endswith('Z')
+
+
+def test_report_form_submit_creates_incident(client):
+    response = client.post('/report/submit', data={
+        'reporter': '16F',
+        'kind': 'elevator_out',
+        'asset': 'elevator_both',
+        'note': 'still broken',
+    })
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        assert incident.category == 'elevator'
+        assert incident.report_count >= 1
+
+
+def test_llm_assist_can_promote_issue_and_logs_decision(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'assist')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_north',
+            'event_type': 'outage',
+            'severity': 4,
+            'confidence': 91,
+            'title': 'Elevator outage',
+            'summary': 'LLM recognized a fuzzy elevator outage.',
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+    response = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'The north lift keeps skipping our floor and won’t open',
+        'sender': 'Karen',
+        'ts_epoch': 1770000300,
+    })
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        decision = session.query(MessageDecision).one()
+        assert incident.category == 'elevator'
+        assert decision.chosen_source in {'llm', 'hybrid'}
+        assert decision.is_issue is True

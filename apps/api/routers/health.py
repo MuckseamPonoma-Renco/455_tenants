@@ -1,24 +1,32 @@
 import os
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import text
-from packages.db import engine, init_db
+from pathlib import Path
+from fastapi import APIRouter
+from packages.llm.openai_client import llm_enabled
 
 router = APIRouter()
 
 
+def _truthy(name: str, default: str = '0') -> bool:
+    return os.environ.get(name, default).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _sheets_creds_present() -> bool:
+    candidates = [
+        os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),
+        '/etc/secrets/gcp_sa.json',
+        'secrets/gcp_sa.json',
+    ]
+    return any(path and Path(path).exists() for path in candidates)
+
+
 @router.get('/health')
 def health():
-    try:
-        init_db()
-        with engine.connect() as conn:
-            conn.execute(text('SELECT 1'))
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f'database unavailable: {exc}') from exc
-
     return {
         'ok': True,
-        'db': 'ok',
-        'process_inline': os.environ.get('PROCESS_INLINE', '0').strip().lower() in {'1', 'true', 'yes', 'on'},
-        'sheets_sync_disabled': os.environ.get('DISABLE_SHEETS_SYNC', '0').strip().lower() in {'1', 'true', 'yes', 'on'},
-        'llm_mode': os.environ.get('LLM_MODE', 'off'),
+        'process_inline': _truthy('PROCESS_INLINE'),
+        'llm_enabled': llm_enabled(),
+        'sheets_disabled': _truthy('DISABLE_SHEETS_SYNC'),
+        'database_configured': bool((os.environ.get('DATABASE_URL') or '').strip()),
+        'redis_configured': bool((os.environ.get('REDIS_URL') or '').strip()),
+        'sheets_configured': bool((os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID') or '').strip()) and _sheets_creds_present(),
     }

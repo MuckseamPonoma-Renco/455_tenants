@@ -1,10 +1,20 @@
 import json
+import os
 from fastapi import APIRouter, Header
 from sqlalchemy import select
 from packages.auth import require_bearer_token
-from packages.db import FilingJob, Incident, ServiceRequestCase, get_session
+from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.llm.briefing import generate_briefing
+from packages.ops_summary import build_ops_summary
 
 router = APIRouter()
+
+
+def _spreadsheet_url() -> str | None:
+    sid = (os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID') or '').strip()
+    if not sid:
+        return None
+    return f'https://docs.google.com/spreadsheets/d/{sid}/edit'
 
 
 @router.get('/cases')
@@ -14,6 +24,7 @@ def list_cases(authorization: str | None = Header(default=None)):
         cases = session.scalars(select(ServiceRequestCase).order_by(ServiceRequestCase.submitted_at.desc().nullslast())).all()
         return {
             'ok': True,
+            'spreadsheet_url': _spreadsheet_url(),
             'cases': [
                 {
                     'service_request_number': case.service_request_number,
@@ -37,6 +48,7 @@ def list_queue(authorization: str | None = Header(default=None)):
         jobs = session.scalars(select(FilingJob).order_by(FilingJob.created_at.desc().nullslast())).all()
         return {
             'ok': True,
+            'spreadsheet_url': _spreadsheet_url(),
             'jobs': [
                 {
                     'job_id': job.job_id,
@@ -60,6 +72,7 @@ def list_incidents(authorization: str | None = Header(default=None)):
         rows = session.scalars(select(Incident).order_by(Incident.last_ts_epoch.desc().nullslast())).all()
         return {
             'ok': True,
+            'spreadsheet_url': _spreadsheet_url(),
             'incidents': [
                 {
                     'incident_id': row.incident_id,
@@ -77,3 +90,52 @@ def list_incidents(authorization: str | None = Header(default=None)):
                 for row in rows
             ],
         }
+
+
+@router.get('/decisions')
+def list_decisions(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    with get_session() as session:
+        rows = session.scalars(select(MessageDecision).order_by(MessageDecision.created_at.desc().nullslast()).limit(200)).all()
+        message_ids = [row.message_id for row in rows]
+        raw_map = {row.message_id: row for row in session.scalars(select(RawMessage).where(RawMessage.message_id.in_(message_ids))).all()} if message_ids else {}
+        return {
+            'ok': True,
+            'spreadsheet_url': _spreadsheet_url(),
+            'decisions': [
+                {
+                    'message_id': row.message_id,
+                    'created_at': row.created_at,
+                    'source': getattr(raw_map.get(row.message_id), 'source', None),
+                    'text': getattr(raw_map.get(row.message_id), 'text', None),
+                    'chosen_source': row.chosen_source,
+                    'is_issue': row.is_issue,
+                    'category': row.category,
+                    'event_type': row.event_type,
+                    'confidence': row.confidence,
+                    'needs_review': row.needs_review,
+                    'incident_id': row.incident_id,
+                    'auto_file_candidate': row.auto_file_candidate,
+                    'rules': json.loads(row.rules_json or '{}'),
+                    'llm': json.loads(row.llm_json or '{}'),
+                    'final': json.loads(row.final_json or '{}'),
+                }
+                for row in rows
+            ],
+        }
+
+
+@router.get('/summary')
+def get_summary(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    with get_session() as session:
+        return {'ok': True, 'spreadsheet_url': _spreadsheet_url(), **build_ops_summary(session)}
+
+
+@router.get('/briefing')
+def get_briefing(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    with get_session() as session:
+        summary = build_ops_summary(session)
+    briefing = generate_briefing(summary)
+    return {'ok': True, 'spreadsheet_url': _spreadsheet_url(), 'summary': summary, 'briefing': briefing}

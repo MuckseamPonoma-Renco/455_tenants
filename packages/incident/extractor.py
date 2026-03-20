@@ -1,12 +1,13 @@
 import datetime
+import json
 import os
 from sqlalchemy import func
 from packages.audit import compute_message_id
-from packages.db import Incident, IncidentWitness, RawMessage
+from packages.db import Incident, IncidentWitness, MessageDecision, RawMessage
 from packages.incident.rules import classify_rules
 from packages.llm.classifier import llm_classify_message
 from packages.llm.triage import should_call_llm
-from packages.nyc311.planner import ensure_filing_job_for_incident
+from packages.nyc311.planner import ensure_filing_job_for_incident, incident_is_auto_eligible
 from packages.nyc311.tracker import attach_manual_cases_from_text
 
 OTHER_WINDOW_SECONDS = int(os.environ.get("OTHER_WINDOW_SECONDS", "21600"))
@@ -120,48 +121,118 @@ def _update_incident(session, inc: Incident, rm: RawMessage, summary: str, sever
     _recompute_witness_count(session, inc.incident_id)
 
 
-def _pick_chosen(session, rm: RawMessage) -> dict | None:
-    rules = classify_rules(rm.text)
-    use_llm = False
-    if LLM_MODE == "all":
-        use_llm = True
-    elif LLM_MODE == "uncertain":
-        use_llm = should_call_llm(rm.text or "", rules.get("is_issue", False), rules.get("kind", "nonissue"))
-
-    llm = None
-    if use_llm:
-        llm = llm_classify_message(rm.text or "", open_incidents=_open_incidents_context(session), recent_related=_recent_related_context(session, rm))
-
-    needs_review = False
-    chosen = None
-    if rules.get("is_issue"):
-        chosen = {
-            "is_issue": True,
-            "signal_type": "report",
-            "category": rules.get("category"),
-            "asset": rules.get("asset"),
-            "event_type": "restore" if rules.get("kind") == "restore" else "outage" if rules.get("kind") == "outage" else "new_issue",
-            "severity": int(rules.get("severity", 2)),
-            "confidence": 85,
-            "title": rules.get("title") or "Issue",
-            "summary": rules.get("summary") or "",
-            "close_incident": rules.get("kind") == "restore",
-            "needs_review": False,
-        }
-        if llm and isinstance(llm, dict) and llm.get("is_issue") is False:
-            needs_review = True
-    elif llm and isinstance(llm, dict):
-        chosen = llm
-        needs_review = bool(chosen.get("needs_review", False))
-
-    if not chosen:
+def _rule_choice(rules: dict | None) -> dict | None:
+    rules = rules or {}
+    if not rules.get("is_issue"):
         return None
-    chosen["needs_review"] = bool(chosen.get("needs_review", False) or needs_review)
-    return chosen
+    return {
+        "is_issue": True,
+        "signal_type": "report",
+        "category": rules.get("category"),
+        "asset": rules.get("asset"),
+        "event_type": "restore" if rules.get("kind") == "restore" else "outage" if rules.get("kind") == "outage" else "new_issue",
+        "severity": int(rules.get("severity", 2)),
+        "confidence": 85 if rules.get("kind") in {"outage", "restore"} else 75,
+        "title": rules.get("title") or "Issue",
+        "summary": rules.get("summary") or "",
+        "close_incident": rules.get("kind") == "restore",
+        "needs_review": False,
+    }
+
+
+def _normalized_llm_choice(llm: dict | None) -> dict | None:
+    if not isinstance(llm, dict):
+        return None
+    out = dict(llm)
+    out.setdefault("is_issue", False)
+    out.setdefault("signal_type", "discussion")
+    out.setdefault("category", "other")
+    out.setdefault("asset", None)
+    out.setdefault("event_type", "non_issue")
+    out.setdefault("severity", 2)
+    out.setdefault("confidence", 50)
+    out.setdefault("title", "")
+    out.setdefault("summary", "")
+    out.setdefault("close_incident", False)
+    out.setdefault("needs_review", False)
+    return out
+
+
+def _should_use_llm(text: str, rules: dict) -> bool:
+    mode = (LLM_MODE or "uncertain").lower().strip()
+    if mode in {"", "off", "false", "0"}:
+        return False
+    if mode in {"all", "supervised"}:
+        return bool((text or "").strip())
+    if mode == "assist":
+        return bool(rules.get("is_issue")) or should_call_llm(text or "", rules.get("is_issue", False), rules.get("kind", "nonissue"))
+    return should_call_llm(text or "", rules.get("is_issue", False), rules.get("kind", "nonissue"))
+
+
+def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[dict | None, str]:
+    if rule_choice and llm_choice and llm_choice.get("is_issue"):
+        if rule_choice.get("category") == llm_choice.get("category"):
+            merged = dict(rule_choice)
+            merged["asset"] = llm_choice.get("asset") or rule_choice.get("asset")
+            merged["event_type"] = llm_choice.get("event_type") or rule_choice.get("event_type")
+            merged["severity"] = max(int(rule_choice.get("severity", 2)), int(llm_choice.get("severity", 2)))
+            merged["confidence"] = max(int(rule_choice.get("confidence", 0)), int(llm_choice.get("confidence", 0)))
+            merged["title"] = llm_choice.get("title") or rule_choice.get("title")
+            merged["summary"] = llm_choice.get("summary") or rule_choice.get("summary")
+            merged["close_incident"] = bool(rule_choice.get("close_incident") or llm_choice.get("close_incident"))
+            merged["needs_review"] = bool(rule_choice.get("needs_review") or llm_choice.get("needs_review"))
+            return merged, "hybrid"
+
+        preferred = llm_choice if int(llm_choice.get("confidence", 0)) >= 90 else rule_choice
+        preferred = dict(preferred)
+        preferred["needs_review"] = True
+        return preferred, "hybrid_disagreement"
+
+    if rule_choice and llm_choice and not llm_choice.get("is_issue"):
+        chosen = dict(rule_choice)
+        chosen["needs_review"] = True
+        return chosen, "rules_with_llm_disagreement"
+
+    if llm_choice and llm_choice.get("is_issue"):
+        chosen = dict(llm_choice)
+        chosen["needs_review"] = bool(chosen.get("needs_review", False) or int(chosen.get("confidence", 0)) < 80)
+        return chosen, "llm"
+
+    if rule_choice:
+        return dict(rule_choice), "rules"
+
+    return None, "none"
+
+
+def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | None, str]:
+    rules = classify_rules(rm.text)
+    llm = None
+    if _should_use_llm(rm.text or "", rules):
+        llm = llm_classify_message(rm.text or "", open_incidents=_open_incidents_context(session), recent_related=_recent_related_context(session, rm))
+    llm_choice = _normalized_llm_choice(llm)
+    chosen, chosen_source = _merge_choices(_rule_choice(rules), llm_choice)
+    return chosen, rules, llm_choice, chosen_source
+
+
+def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | None, chosen: dict | None, chosen_source: str, incident_id: str | None):
+    row = session.get(MessageDecision, rm.message_id) or MessageDecision(message_id=rm.message_id)
+    row.incident_id = incident_id
+    row.created_at = _now_iso()
+    row.chosen_source = chosen_source
+    row.is_issue = bool(chosen and chosen.get("is_issue"))
+    row.category = chosen.get("category") if chosen else None
+    row.event_type = chosen.get("event_type") if chosen else None
+    row.confidence = int((chosen or {}).get("confidence", 0) or 0)
+    row.needs_review = bool((chosen or {}).get("needs_review", False))
+    row.rules_json = json.dumps(rules or {}, ensure_ascii=False)
+    row.llm_json = json.dumps(llm_choice or {}, ensure_ascii=False)
+    row.final_json = json.dumps(chosen or {}, ensure_ascii=False)
+    row.auto_file_candidate = bool(incident_id and session.get(Incident, incident_id) and incident_is_auto_eligible(session.get(Incident, incident_id)))
+    session.merge(row)
 
 
 def classify_and_upsert_incident(session, rm: RawMessage) -> str:
-    chosen = _pick_chosen(session, rm)
+    chosen, rules, llm_choice, chosen_source = _pick_decision(session, rm)
     incident = None
 
     if chosen and chosen.get("is_issue") and chosen.get("signal_type") == "report":
@@ -218,5 +289,5 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
     attach_manual_cases_from_text(session, text=rm.text or "", incident=incident)
     if incident:
         ensure_filing_job_for_incident(session, incident)
-        return incident.incident_id
-    return ""
+    _record_decision(session, rm, rules, llm_choice, chosen, chosen_source, incident.incident_id if incident else None)
+    return incident.incident_id if incident else ""

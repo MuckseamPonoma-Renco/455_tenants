@@ -15,6 +15,7 @@ TABS = {
     "Coverage": ["day", "messages", "first_ts_epoch", "last_ts_epoch"],
     "Cases311": ["service_request_number", "incident_id", "source", "complaint_type", "status", "agency", "submitted_at", "last_checked_at", "closed_at", "resolution_description"],
     "Queue311": ["job_id", "incident_id", "state", "priority", "complaint_type", "form_target", "attempts", "created_at", "claimed_at", "completed_at", "notes"],
+    "DecisionLog": ["created_at", "message_id", "source", "text", "chosen_source", "is_issue", "category", "event_type", "confidence", "needs_review", "incident_id", "auto_file_candidate", "rules_json", "llm_json", "final_json"],
 }
 
 

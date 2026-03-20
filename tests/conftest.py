@@ -1,5 +1,4 @@
 import os
-import shutil
 import sys
 from pathlib import Path
 import pytest
@@ -8,16 +7,12 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 DB_PATH = ROOT / 'test_app.sqlite3'
-AUX_AUDIT_DIR = ROOT / '.local' / 'test_audit'
 if DB_PATH.exists():
     DB_PATH.unlink()
-if AUX_AUDIT_DIR.exists():
-    shutil.rmtree(AUX_AUDIT_DIR)
 
 os.environ['DATABASE_URL'] = f'sqlite:///{DB_PATH}'
 os.environ['PROCESS_INLINE'] = '1'
 os.environ['DISABLE_SHEETS_SYNC'] = '1'
-os.environ['AUDIT_DIR'] = str(AUX_AUDIT_DIR)
 os.environ['INGEST_TOKEN'] = 'test-token'
 os.environ['MOBILE_FILER_TOKEN'] = 'mobile-token'
 os.environ['AUTO_FILE_ENABLED'] = '1'
@@ -46,7 +41,6 @@ Base.metadata.create_all(bind=engine)
 def client():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    if AUX_AUDIT_DIR.exists():
-        shutil.rmtree(AUX_AUDIT_DIR)
     with TestClient(app) as c:
         yield c
+os.environ['AUTO_FILE_MAX_INCIDENT_AGE_HOURS'] = '0'

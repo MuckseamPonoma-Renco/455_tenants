@@ -1,14 +1,59 @@
-# Tenant Issue OS — Android capture → incident detection → automatic 311 queue → case tracking
+# Tenant Issue OS — WhatsApp capture → incident engine → Android 311 filing → Sheets control surface
 
-This repo now covers the full server-side loop for the 455 Ocean Parkway tenant project:
+This repo is the working backend for the 455 Ocean Parkway tenant project.
 
-- WhatsApp capture from an Android companion phone
-- message dedupe + incident detection
-- automatic 311 filing queue for elevator outages
+The core loop is:
+
+1. Android captures a WhatsApp notification.
+2. Backend stores the raw message.
+3. Backend decides whether it is a real building issue.
+4. Backend clusters it into an incident.
+5. Backend queues a 311 filing job when eligible.
+6. Spare Android phone claims the job and files NYC311.
+7. SR number comes back to the backend.
+8. Backend tracks the case and syncs the spreadsheet.
+
+## What is the primary face of the system
+
+The Google Sheet is the primary day-to-day control surface.
+
+It should show:
+
+- Dashboard: current building state and control links
+- Incidents: structured issue timeline
+- Queue311: what still needs filing
+- Cases311: which SRs exist and their status
+- DecisionLog: how the message engine decided what each message meant
+- Coverage: whether capture is missing days/messages
+
+The API is still useful, but the Sheet is not a side feature. It is the main operator face.
+
+## Core product functions
+
+- WhatsApp capture from Android Tasker
+- raw message dedupe
+- hybrid rules + LLM message classification
+- incident clustering
+- outage / restore handling
+- automatic 311 filing queue for eligible incidents
 - Android filing worker handshake
-- service request storage and status tracking
-- Google Sheets sync for incidents, queue, cases, and dashboard
-- legal-ready chronology export
+- SR number capture from chat or Android worker
+- 311 case status tracking
+- legal chronology export
+- spreadsheet sync for all major state
+- optional QR/link report form for tenants (`/report`)
+
+## LLM role
+
+The LLM is not required for transport or persistence.
+
+But it now has a first-class role in the decision engine when enabled:
+
+- `LLM_MODE=assist` → rules handle obvious cases, LLM helps with fuzzy/ambiguous reports
+- `LLM_MODE=supervised` → LLM reviews every message and the system logs rule vs LLM vs final choice
+- `LLM_MODE=off` → deterministic rules only
+
+The final filing queue remains deterministic and still under your control via config.
 
 ## What is finished in code
 
@@ -16,7 +61,7 @@ This repo now covers the full server-side loop for the 455 Ocean Parkway tenant 
 - Bulk WhatsApp export ingestion with automatic reprocessing
 - Elevator outage / restore clustering with witness counting
 - Auto-extraction of SR numbers from chat messages like `311-25815998`
-- Auto-queue of eligible elevator incidents into a 311 filing queue
+- Auto-queue of eligible incidents into a 311 filing queue
 - Mobile worker API:
   - `POST /mobile/filings/claim_next`
   - `POST /mobile/filings/{job_id}/submitted`
@@ -24,19 +69,9 @@ This repo now covers the full server-side loop for the 455 Ocean Parkway tenant 
   - `POST /mobile/sr_updates`
 - 311 case status sync from the public NYC Open Data endpoint
 - Legal bundle export to CSV + Markdown
-- Docker build fixed so the API and worker actually include `packages/`
+- Decision log sync so you can audit rules vs LLM vs final result in the spreadsheet
+- Simple tenant report form at `/report` for QR/link rollout
 - Inline-processing mode for local/dev so Redis is optional
-
-## Important constraint
-
-This repo does **not** implement CAPTCHA solving or CAPTCHA bypass. The intended automatic filing path is:
-
-1. Android receives filing job from the API.
-2. Android automates the NYC311 app or mobile web flow locally.
-3. Android posts the resulting SR number back to the API.
-4. The API tracks that SR number over time.
-
-That avoids building the project around any CAPTCHA-avoidance service.
 
 ## Quick start
 
@@ -52,7 +87,9 @@ Fill in:
 - `MOBILE_FILER_TOKEN` (optional; defaults to `INGEST_TOKEN`)
 - `DATABASE_URL`
 - `GOOGLE_SHEETS_SPREADSHEET_ID`
+- `GOOGLE_APPLICATION_CREDENTIALS`
 - building/contact fields used in filing drafts
+- optionally `PUBLIC_BASE_URL` so the Dashboard can expose the tenant report form link
 
 ### 2. Local dev without Redis worker
 
@@ -75,6 +112,8 @@ docker compose up --build
 - `GET /health`
 - `POST /ingest/tasker`
 - `POST /ingest/export`
+- `GET /report`
+- `POST /report/submit`
 
 ### Admin
 
@@ -89,6 +128,9 @@ docker compose up --build
 - `GET /api/incidents`
 - `GET /api/queue`
 - `GET /api/cases`
+- `GET /api/decisions`
+- `GET /api/summary`
+- `GET /api/briefing`
 
 ### Android filing worker API
 
@@ -98,19 +140,20 @@ docker compose up --build
 - `POST /mobile/sr_updates`
 - `POST /mobile/sr_updates/sync_now`
 
+## Recommended rollout
+
+1. Initialize and connect the Sheet.
+2. Import the WhatsApp export.
+3. Review `Dashboard`, `Incidents`, `Queue311`, and `DecisionLog`.
+4. Turn on Android capture for WhatsApp notifications.
+5. Turn on the spare-phone filer.
+6. Submit one real complaint.
+7. Confirm SR appears in `Cases311`.
+8. Add a QR or link to `/report` only if the first tenant tests show it is intuitive.
+
 ## Files to read next
 
 - `docs/ANDROID_CAPTURE_SETUP.md`
 - `docs/ANDROID_FILER_SETUP.md`
 - `docs/VERIFY.md`
 - `docs/API_REFERENCE.md`
-
-## Recommended initial rollout
-
-1. Run bulk import on the WhatsApp export.
-2. Review `/api/incidents` and `/api/queue`.
-3. Configure Android capture for WhatsApp notifications.
-4. Configure Android filing flow for queued elevator jobs.
-5. Submit one real test complaint.
-6. Confirm the SR number lands in `/api/cases`.
-7. Run status sync the next day.

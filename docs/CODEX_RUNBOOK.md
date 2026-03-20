@@ -19,3 +19,10 @@ The backend is finished enough to run. The main remaining work is on the Android
 
 ### SR number parsing
 > Add a robust SR-number extraction regex for Tasker that captures both `311-12345678` and bare 8-digit values shown on the success screen, then normalizes them to `311-########` before posting to `/mobile/filings/{job_id}/submitted`.
+
+
+### Build the fastest setup checklist
+> Read docs/ANDROID_CAPTURE_SETUP.md, docs/ANDROID_FILER_SETUP.md, docs/VERIFY.md, and docs/FINAL_WORKFLOW.md. Produce a minimal step-by-step checklist for my exact repo so I can finish Android capture and one real filing with the least manual effort and zero unnecessary steps.
+
+### Build the phone-side failure logger
+> Create Tasker-friendly notes for logging every Android filing attempt locally: job id, selector step, screenshot path, failure reason, and callback result to /mobile/filings/{job_id}/failed. Keep it simple and robust.

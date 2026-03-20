@@ -3,8 +3,8 @@
 ## Backend
 
 ```bash
-python3.11 -m pytest -q
-python3.11 -m py_compile $(find apps packages scripts tests -name '*.py')
+pytest -q
+python -m py_compile $(find . -name '*.py')
 ```
 
 ## Import live WhatsApp export
@@ -23,15 +23,7 @@ Then verify:
 - `/api/incidents` contains elevator incidents
 - `/api/queue` contains filing jobs
 - `/api/cases` contains any SR numbers already mentioned in chat
-
-## Deployed Render smoke test
-
-```bash
-BASE_URL=https://YOUR_ACTUAL_SERVICE_NAME.onrender.com \
-INGEST_TOKEN=your-render-token \
-MOBILE_FILER_TOKEN=your-mobile-token \
-python3.11 scripts/smoke_test.py
-```
+- `/api/summary` says the stage is `ready_for_android_filer` once queue jobs exist
 
 ## Android live test
 
@@ -41,3 +33,9 @@ python3.11 scripts/smoke_test.py
 4. Confirm `/api/cases` shows the new case.
 5. Run `/admin/sync_311_statuses` the next day.
 6. Export `/admin/export_legal_bundle`.
+
+## Fastest way to know where you are
+
+Call `GET /api/summary` after every major setup step. It will tell you the current stage and the next best action.
+
+Historical imports are intentionally prevented from auto-filing when they are older than `AUTO_FILE_MAX_INCIDENT_AGE_HOURS` (default 168). This keeps the Android phone focused on current incidents instead of months-old backlog.
