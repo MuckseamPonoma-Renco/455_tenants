@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from packages.db import FilingJob, Incident, RawMessage, ServiceRequestCase
+from packages.llm.openai_client import llm_enabled
 
 
 def _now() -> datetime:
@@ -23,7 +24,7 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _has_llm() -> bool:
-    return bool((os.environ.get('OPENAI_API_KEY') or os.environ.get('LLM_API_KEY') or '').strip())
+    return llm_enabled()
 
 
 def _humanize_timedelta(value: timedelta) -> str:

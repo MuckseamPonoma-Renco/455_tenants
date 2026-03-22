@@ -1,5 +1,5 @@
 from pathlib import Path
-from packages.db import FilingJob, Incident, MessageDecision, ServiceRequestCase, get_session
+from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, ServiceRequestCase, get_session
 from packages.nyc311.legal_export import export_legal_bundle
 
 
@@ -171,3 +171,57 @@ def test_llm_assist_can_promote_issue_and_logs_decision(client, monkeypatch):
         assert incident.category == 'elevator'
         assert decision.chosen_source in {'llm', 'hybrid'}
         assert decision.is_issue is True
+
+
+def test_reprocess_last_is_idempotent_for_existing_incidents(client):
+    response = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift dead',
+        'sender': 'Tibor Simon',
+        'ts_epoch': 1770000200,
+    })
+    assert response.status_code == 200, response.text
+
+    follow_up = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift still dead',
+        'sender': 'Tibor Simon',
+        'ts_epoch': 1770000260,
+    })
+    assert follow_up.status_code == 200, follow_up.text
+
+    replay = client.post('/admin/reprocess_last/2', headers=auth_headers())
+    assert replay.status_code == 200, replay.text
+
+    with get_session() as session:
+        incidents = session.query(Incident).all()
+        witnesses = session.query(IncidentWitness).all()
+        decisions = session.query(MessageDecision).all()
+        assert len(incidents) == 1
+        assert len(witnesses) == 1
+        assert len(decisions) == 2
+
+
+def test_older_elevator_message_does_not_merge_into_newer_incident(client):
+    newer = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are broken right now',
+        'sender': 'Molly',
+        'ts_epoch': 1773873979,
+    })
+    assert newer.status_code == 200, newer.text
+
+    older = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both lifts are out at this moment',
+        'sender': 'Harry',
+        'ts_epoch': 1759939693,
+    })
+    assert older.status_code == 200, older.text
+
+    with get_session() as session:
+        incidents = session.query(Incident).filter_by(category='elevator').all()
+        assert len(incidents) == 2
+        latest = max(incidents, key=lambda row: int(row.last_ts_epoch or 0))
+        assert latest.start_ts_epoch == 1773873979
+        assert latest.last_ts_epoch == 1773873979

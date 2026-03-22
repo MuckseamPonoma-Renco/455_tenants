@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-from packages.llm.openai_client import call_openai_json, OpenAIError
+from packages.llm.openai_client import call_openai_json, OpenAIError, llm_enabled
 
 CATEGORIES = [
     "elevator",
@@ -63,7 +63,7 @@ def llm_classify_message(message_text: str, open_incidents: list[dict] | None = 
     open_incidents = open_incidents or []
     recent_related = recent_related or []
 
-    if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")):
+    if not llm_enabled():
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind":"nonissue"}
 
     model = _env("OPENAI_MODEL", _env("LLM_MODEL", "gpt-4.1-mini"))

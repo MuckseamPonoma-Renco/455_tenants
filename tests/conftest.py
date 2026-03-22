@@ -20,6 +20,7 @@ os.environ['AUTO_FILE_ELEVATOR_ONLY'] = '1'
 os.environ['AUTO_FILE_MIN_WITNESSES'] = '1'
 os.environ['AUTO_FILE_MIN_REPORTS'] = '1'
 os.environ['LLM_MODE'] = 'off'
+os.environ['AUDIT_DIR'] = str(ROOT / '.test_audit')
 os.environ['BUILDING_NAME'] = '455 Ocean Parkway'
 os.environ['BUILDING_STREET_ADDRESS'] = '455 Ocean Pkwy'
 os.environ['BUILDING_CITY'] = 'Brooklyn'

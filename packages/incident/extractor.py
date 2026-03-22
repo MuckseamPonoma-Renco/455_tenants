@@ -59,7 +59,16 @@ def _recent_related_context(session, rm: RawMessage) -> list[dict]:
 def _upsert_witness(session, incident_id: str, sender_hash: str):
     if not sender_hash:
         return
-    exists = session.query(IncidentWitness).filter(IncidentWitness.incident_id == incident_id, IncidentWitness.sender_hash == sender_hash).first()
+    with session.no_autoflush:
+        exists = any(
+            isinstance(row, IncidentWitness) and row.incident_id == incident_id and row.sender_hash == sender_hash
+            for row in session.new
+        )
+        if not exists:
+            exists = session.query(IncidentWitness).filter(
+                IncidentWitness.incident_id == incident_id,
+                IncidentWitness.sender_hash == sender_hash,
+            ).first()
     if not exists:
         session.add(IncidentWitness(incident_id=incident_id, sender_hash=sender_hash))
 
@@ -79,8 +88,33 @@ def _attach_proof(inc: Incident, message_id: str):
     inc.proof_refs = ",".join(refs[:3])
 
 
+def _find_incident_by_id(session, incident_id: str) -> Incident | None:
+    with session.no_autoflush:
+        incident = session.get(Incident, incident_id)
+        if incident:
+            return incident
+        for row in session.new:
+            if isinstance(row, Incident) and row.incident_id == incident_id:
+                return row
+    return None
+
+
 def _create_incident(session, cat: str, asset: str | None, rm: RawMessage, title: str, summary: str, severity: int, status: str, confidence: int, needs_review: bool) -> Incident:
     incident_id = _inc_id(cat, asset, rm.ts_iso, title)
+    existing = _find_incident_by_id(session, incident_id)
+    if existing:
+        _attach_proof(existing, rm.message_id)
+        _upsert_witness(session, incident_id, rm.sender_hash)
+        _recompute_witness_count(session, incident_id)
+        existing.updated_at = _now_iso()
+        existing.confidence = max(int(existing.confidence or 0), confidence)
+        existing.needs_review = bool(existing.needs_review or needs_review)
+        if status == "closed":
+            existing.status = "closed"
+            existing.end_ts = existing.end_ts or rm.ts_iso
+            existing.end_ts_epoch = existing.end_ts_epoch or rm.ts_epoch
+        return existing
+
     inc = Incident(
         incident_id=incident_id,
         category=cat,
@@ -109,7 +143,12 @@ def _create_incident(session, cat: str, asset: str | None, rm: RawMessage, title
 
 def _update_incident(session, inc: Incident, rm: RawMessage, summary: str, severity: int, confidence: int, needs_review: bool):
     _attach_proof(inc, rm.message_id)
-    inc.last_ts_epoch = rm.ts_epoch or inc.last_ts_epoch
+    if rm.ts_epoch is not None:
+        if inc.start_ts_epoch is None or int(rm.ts_epoch) < int(inc.start_ts_epoch):
+            inc.start_ts_epoch = rm.ts_epoch
+            inc.start_ts = rm.ts_iso or inc.start_ts
+        if inc.last_ts_epoch is None or int(rm.ts_epoch) > int(inc.last_ts_epoch):
+            inc.last_ts_epoch = rm.ts_epoch
     inc.updated_at = _now_iso()
     inc.needs_review = inc.needs_review or needs_review
     inc.severity = max(int(inc.severity or 2), severity)
@@ -251,7 +290,11 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                 query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
                 if asset and asset != "elevator_both":
                     query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
-                candidate = query.order_by(Incident.last_ts_epoch.desc().nullslast()).first()
+                candidate = None
+                for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
+                    if rm.ts_epoch is None or row.last_ts_epoch is None or int(row.last_ts_epoch) <= int(rm.ts_epoch):
+                        candidate = row
+                        break
                 if not candidate:
                     incident = _create_incident(session, cat, asset, rm, title, summary, 2, "closed", max(confidence, 60), True)
                     incident.end_ts = rm.ts_iso
@@ -266,19 +309,36 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                 query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
                 if asset and asset != "elevator_both":
                     query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
-                last_open = query.order_by(Incident.last_ts_epoch.desc().nullslast()).first()
-                if last_open and rm.ts_epoch and last_open.last_ts_epoch and (rm.ts_epoch - last_open.last_ts_epoch) <= ELEVATOR_SILENCE_GAP_SECONDS:
+                last_open = None
+                for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
+                    if rm.ts_epoch is None or row.last_ts_epoch is None:
+                        last_open = row
+                        break
+                    delta = int(rm.ts_epoch) - int(row.last_ts_epoch)
+                    if 0 <= delta <= ELEVATOR_SILENCE_GAP_SECONDS:
+                        last_open = row
+                        break
+                    if delta > ELEVATOR_SILENCE_GAP_SECONDS:
+                        break
+                if last_open:
                     _update_incident(session, last_open, rm, summary, severity, confidence, needs_review)
                     incident = last_open
                 else:
                     incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", max(confidence, 80), needs_review)
         else:
             best = None
-            for candidate in session.query(Incident).filter(Incident.category == cat, Incident.status != "closed").all():
+            rows = session.query(Incident).filter(Incident.category == cat, Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast()).all()
+            for candidate in rows:
                 if asset and candidate.asset and candidate.asset != asset:
                     continue
-                if rm.ts_epoch and candidate.last_ts_epoch and abs(rm.ts_epoch - candidate.last_ts_epoch) <= OTHER_WINDOW_SECONDS:
+                if rm.ts_epoch is None or candidate.last_ts_epoch is None:
                     best = candidate
+                    break
+                delta = int(rm.ts_epoch) - int(candidate.last_ts_epoch)
+                if 0 <= delta <= OTHER_WINDOW_SECONDS:
+                    best = candidate
+                    break
+                if delta > OTHER_WINDOW_SECONDS:
                     break
             if best:
                 _update_incident(session, best, rm, summary, severity, confidence, needs_review)

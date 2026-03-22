@@ -4,14 +4,14 @@ import json
 import os
 from typing import Any
 
-from packages.llm.openai_client import OpenAIError, call_openai_json
+from packages.llm.openai_client import OpenAIError, call_openai_json, llm_enabled
 
 
 FALLBACK_HEADLINE = 'Tenant ops briefing'
 
 
 def _has_llm() -> bool:
-    return bool((os.environ.get('OPENAI_API_KEY') or os.environ.get('LLM_API_KEY') or '').strip())
+    return llm_enabled()
 
 
 def _fallback(summary: dict[str, Any]) -> dict[str, Any]:
