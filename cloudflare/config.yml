@@ -1,0 +1,6 @@
+tunnel: 273c3233-ee8a-4ffd-8f7e-d180614938c5
+
+ingress:
+  - hostname: api.455tenants.com
+    service: http://localhost:8000
+  - service: http_status:404

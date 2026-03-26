@@ -1,0 +1,18 @@
+{"ts": "2026-03-23T00:35:33.853138Z", "kind": "INGEST_RAW", "message_id": "66e9811a9fea45280c36d9f8ed80486769e2491bed44b1895a0854bd9c7ac4da", "meta": {"source": "tasker"}}
+{"ts": "2026-03-23T00:35:38.734953Z", "kind": "PROCESS_MESSAGE", "message_id": "66e9811a9fea45280c36d9f8ed80486769e2491bed44b1895a0854bd9c7ac4da", "meta": {"incident_id": "3bdb01120c4262364fd64e8179fe899c", "queued_jobs": 8}}
+{"ts": "2026-03-23T00:35:38.736017Z", "kind": "SHEETS_SYNC_SKIPPED", "message_id": null, "meta": {"error": "Sheets sync disabled"}}
+{"ts": "2026-03-23T00:47:18.823093Z", "kind": "INGEST_RAW", "message_id": "916f1b89e77f915dce7d341ad50959951e98b29570e931546e3897a84de19133", "meta": {"source": "tasker"}}
+{"ts": "2026-03-23T00:47:23.116981Z", "kind": "PROCESS_MESSAGE", "message_id": "916f1b89e77f915dce7d341ad50959951e98b29570e931546e3897a84de19133", "meta": {"incident_id": "0cff1fe279597539546ff79a866c1df7", "queued_jobs": 8}}
+{"ts": "2026-03-23T00:47:23.117702Z", "kind": "SHEETS_SYNC_SKIPPED", "message_id": null, "meta": {"error": "Sheets sync disabled"}}
+{"ts": "2026-03-23T01:30:38.728906Z", "kind": "INGEST_RAW", "message_id": "d395e09450b80a5cfba48b1acfad0902c70d536c5d9f34d9d58db530420deec0", "meta": {"source": "tasker"}}
+{"ts": "2026-03-23T01:30:42.749916Z", "kind": "PROCESS_MESSAGE", "message_id": "d395e09450b80a5cfba48b1acfad0902c70d536c5d9f34d9d58db530420deec0", "meta": {"incident_id": "", "queued_jobs": 8}}
+{"ts": "2026-03-23T01:30:42.753989Z", "kind": "SHEETS_SYNC_SKIPPED", "message_id": null, "meta": {"error": "Sheets sync disabled"}}
+{"ts": "2026-03-23T01:42:33.781048Z", "kind": "INGEST_RAW", "message_id": "41451e1802ffe7bc0ef69be4d81fcf863ba1f0019e8fbc5622b3253877b4a68a", "meta": {"source": "tasker"}}
+{"ts": "2026-03-23T01:42:36.688435Z", "kind": "PROCESS_MESSAGE", "message_id": "41451e1802ffe7bc0ef69be4d81fcf863ba1f0019e8fbc5622b3253877b4a68a", "meta": {"incident_id": "", "queued_jobs": 8}}
+{"ts": "2026-03-23T01:42:36.690071Z", "kind": "SHEETS_SYNC_SKIPPED", "message_id": null, "meta": {"error": "Sheets sync disabled"}}
+{"ts": "2026-03-23T01:42:40.668453Z", "kind": "INGEST_RAW", "message_id": "613c5b4364ffe69dfbf3496b8d34a7d485f33adddb39a7ea8322a0323a786ac0", "meta": {"source": "tasker"}}
+{"ts": "2026-03-23T01:42:44.350426Z", "kind": "PROCESS_MESSAGE", "message_id": "613c5b4364ffe69dfbf3496b8d34a7d485f33adddb39a7ea8322a0323a786ac0", "meta": {"incident_id": "", "queued_jobs": 8}}
+{"ts": "2026-03-23T01:42:44.351885Z", "kind": "SHEETS_SYNC_SKIPPED", "message_id": null, "meta": {"error": "Sheets sync disabled"}}
+{"ts": "2026-03-23T01:42:55.461879Z", "kind": "INGEST_RAW", "message_id": "20b72ba4a6b9ff9af8d5fa87463df549c298011a34a0e4ab282bb40bedf93712", "meta": {"source": "tasker"}}
+{"ts": "2026-03-23T01:42:59.345516Z", "kind": "PROCESS_MESSAGE", "message_id": "20b72ba4a6b9ff9af8d5fa87463df549c298011a34a0e4ab282bb40bedf93712", "meta": {"incident_id": "", "queued_jobs": 8}}
+{"ts": "2026-03-23T01:42:59.347162Z", "kind": "SHEETS_SYNC_SKIPPED", "message_id": null, "meta": {"error": "Sheets sync disabled"}}

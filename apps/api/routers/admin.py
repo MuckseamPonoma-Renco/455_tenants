@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Header
 from packages.auth import require_bearer_token
 from packages.queue import (

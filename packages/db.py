@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from contextlib import contextmanager
 from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine

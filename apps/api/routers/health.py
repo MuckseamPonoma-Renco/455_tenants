@@ -13,6 +13,8 @@ def _truthy(name: str, default: str = '0') -> bool:
 def _sheets_creds_present() -> bool:
     candidates = [
         os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),
+        '/run/secrets/gcp_sa.json',
+        '/run/secrets/gcp_sa_json',
         '/etc/secrets/gcp_sa.json',
         'secrets/gcp_sa.json',
     ]

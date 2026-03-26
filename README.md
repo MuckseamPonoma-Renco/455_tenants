@@ -91,6 +91,8 @@ Fill in:
 - building/contact fields used in filing drafts
 - optionally `PUBLIC_BASE_URL` so the Dashboard can expose the tenant report form link
 
+For Cloudflare Tunnel + Neon hosting, use the guide in `docs/DEPLOY_CLOUDFLARE_NEON.md`.
+
 ### 2. Local dev without Redis worker
 
 ```bash
@@ -155,5 +157,7 @@ docker compose up --build
 
 - `docs/ANDROID_CAPTURE_SETUP.md`
 - `docs/ANDROID_FILER_SETUP.md`
+- `docs/ANDROID_FINISH_CHECKLIST.md`
+- `docs/DEPLOY_CLOUDFLARE_NEON.md`
 - `docs/VERIFY.md`
 - `docs/API_REFERENCE.md`

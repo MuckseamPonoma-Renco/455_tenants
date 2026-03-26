@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 from datetime import datetime, timezone
@@ -18,6 +20,8 @@ def _disabled() -> bool:
 def _creds_path() -> str:
     candidates = [
         os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
+        "/run/secrets/gcp_sa.json",
+        "/run/secrets/gcp_sa_json",
         "/etc/secrets/gcp_sa.json",
         "secrets/gcp_sa.json",
     ]

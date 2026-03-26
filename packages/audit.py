@@ -1,8 +1,27 @@
+from __future__ import annotations
+
 import os, json, hashlib, datetime
 from pathlib import Path
 
-AUDIT_DIR = Path(os.environ.get("AUDIT_DIR", "/mnt/data/tenant_issue_os_audit"))
-AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+
+def _resolve_audit_dir() -> Path:
+    configured = (os.environ.get("AUDIT_DIR") or "").strip()
+    candidates = []
+    if configured:
+        candidates.append(Path(configured))
+    candidates.append(Path("/mnt/data/tenant_issue_os_audit"))
+    candidates.append(Path(__file__).resolve().parents[1] / ".audit")
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except OSError:
+            continue
+    raise RuntimeError("Unable to create an audit directory")
+
+
+AUDIT_DIR = _resolve_audit_dir()
 
 def _norm(s: str) -> str:
     return (s or "").replace("\u202f", " ").replace("\u200e", "").replace("\u200f", "").strip()

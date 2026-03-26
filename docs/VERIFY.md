@@ -3,8 +3,25 @@
 ## Backend
 
 ```bash
-pytest -q
-python -m py_compile $(find . -name '*.py')
+./.venv/bin/pytest -q
+./.venv/bin/python scripts/smoke_test.py
+./.venv/bin/python -m py_compile $(find . -name '*.py')
+```
+
+## Runtime status
+
+Fastest way to confirm the API + tunnel stack is up on this machine:
+
+```bash
+systemctl --user is-active tenant-issue-os-api.service tenant-issue-os-tunnel.service
+curl http://127.0.0.1:8000/health
+curl https://api.455tenants.com/health
+```
+
+If the public hostname fails on this machine because local DNS is lagging, force Cloudflare resolution during checks:
+
+```bash
+curl --resolve api.455tenants.com:443:104.21.20.97 https://api.455tenants.com/health
 ```
 
 ## Import live WhatsApp export

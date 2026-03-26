@@ -97,6 +97,42 @@ def test_mobile_claim_submit_and_status_sync(client, monkeypatch):
         assert case.agency == 'DOB'
 
 
+def test_mobile_submitted_is_idempotent_when_sr_case_already_exists(client):
+    client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out again',
+        'sender': 'Karen',
+        'ts_epoch': 1770000110,
+    })
+    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
+    assert claim.status_code == 200, claim.text
+    job_id = claim.json()['job']['job_id']
+
+    update = client.post('/mobile/sr_updates', headers=mobile_headers(), json={
+        'service_request_number': '311-88887777',
+        'status': 'verification_complete',
+        'agency': 'TEST',
+        'complaint_type': 'Elevator or Escalator Complaint',
+        'resolution_description': 'created before submitted',
+    })
+    assert update.status_code == 200, update.text
+
+    submitted = client.post(f'/mobile/filings/{job_id}/submitted', headers=mobile_headers(), json={
+        'service_request_number': '311-88887777',
+        'app_status': 'submitted',
+        'notes': 'submitted after sr update',
+    })
+    assert submitted.status_code == 200, submitted.text
+
+    with get_session() as session:
+        cases = session.query(ServiceRequestCase).filter_by(service_request_number='311-88887777').all()
+        assert len(cases) == 1
+        assert cases[0].filing_job_id == job_id
+        assert cases[0].incident_id is not None
+        job = session.get(FilingJob, job_id)
+        assert job.state == 'submitted'
+
+
 def test_legal_export_bundle(client):
     client.post('/ingest/tasker', headers=auth_headers(), json={
         'chat_name': '455 Tenants',

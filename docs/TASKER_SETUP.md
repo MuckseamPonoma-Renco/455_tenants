@@ -18,10 +18,10 @@ Tasker HTTP Request:
 Body:
 ```json
 {
-  "chat_name": "%antitle",
-  "text": "%antext",
-  "sender": "%ansubtext",
-  "ts_epoch": "%TIMES"
+  "chat_name": "%WA_CHAT",
+  "text": "%WA_TEXT",
+  "sender": "%WA_SENDER",
+  "ts_epoch": "%WA_TS"
 }
 ```
 

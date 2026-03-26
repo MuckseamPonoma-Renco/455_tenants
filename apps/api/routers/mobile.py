@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import json
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from packages.auth import require_bearer_token
 from packages.db import FilingJob, ServiceRequestCase, get_session
 from packages.nyc311.planner import claim_next_job
@@ -64,13 +67,27 @@ def mobile_mark_submitted(job_id: int, payload: FilingSubmittedPayload, authoriz
         job = session.get(FilingJob, job_id)
         if not job:
             raise HTTPException(status_code=404, detail='Unknown filing job')
-        case = create_case_from_filing_job(session, job=job, sr_number=sr_number)
-        if payload.notes:
-            job.notes = ((job.notes or '') + ' | ' + payload.notes)[:2000]
-        if payload.app_status:
-            case.status = payload.app_status
-        session.commit()
-        return {'ok': True, 'service_request_number': case.service_request_number, 'case_id': case.id}
+        try:
+            case = create_case_from_filing_job(session, job=job, sr_number=sr_number)
+            if payload.notes:
+                job.notes = ((job.notes or '') + ' | ' + payload.notes)[:2000]
+            if payload.app_status:
+                case.status = payload.app_status
+            session.commit()
+            return {'ok': True, 'service_request_number': case.service_request_number, 'case_id': case.id}
+        except IntegrityError:
+            # Another request may have inserted the SR case between our initial lookup and commit.
+            session.rollback()
+            job = session.get(FilingJob, job_id)
+            if not job:
+                raise HTTPException(status_code=404, detail='Unknown filing job')
+            case = create_case_from_filing_job(session, job=job, sr_number=sr_number)
+            if payload.notes:
+                job.notes = ((job.notes or '') + ' | ' + payload.notes)[:2000]
+            if payload.app_status:
+                case.status = payload.app_status
+            session.commit()
+            return {'ok': True, 'service_request_number': case.service_request_number, 'case_id': case.id}
 
 
 @router.post('/filings/{job_id}/failed')

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import zipfile
 from packages.whatsapp.parser import parse_export_text

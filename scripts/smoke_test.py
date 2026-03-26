@@ -1,4 +1,14 @@
+from __future__ import annotations
+
 import os
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from fastapi.testclient import TestClient
 from apps.api.main import app
 
@@ -13,6 +23,7 @@ def mobile_headers() -> dict[str, str]:
 
 
 def main() -> None:
+    ts_epoch = int(time.time())
     with TestClient(app) as client:
         health = client.get('/health')
         print('health', health.status_code, health.json())
@@ -21,7 +32,7 @@ def main() -> None:
             'chat_name': '455 Tenants',
             'text': 'Both elevators are out again',
             'sender': 'Smoke Test',
-            'ts_epoch': 1770000200,
+            'ts_epoch': ts_epoch,
         })
         print('ingest', ingest.status_code, ingest.json())
 
