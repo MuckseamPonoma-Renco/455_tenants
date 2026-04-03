@@ -1,4 +1,4 @@
-# Tenant Issue OS — WhatsApp capture → incident engine → Android 311 filing → Sheets control surface
+# Tenant Issue OS — WhatsApp capture → incident engine → browser 311 filing → Sheets control surface
 
 This repo is the working backend for the 455 Ocean Parkway tenant project.
 
@@ -9,7 +9,7 @@ The core loop is:
 3. Backend decides whether it is a real building issue.
 4. Backend clusters it into an incident.
 5. Backend queues a 311 filing job when eligible.
-6. Spare Android phone claims the job and files NYC311.
+6. A local Playwright worker claims the job and files NYC311 through the web portal.
 7. SR number comes back to the backend.
 8. Backend tracks the case and syncs the spreadsheet.
 
@@ -36,8 +36,8 @@ The API is still useful, but the Sheet is not a side feature. It is the main ope
 - incident clustering
 - outage / restore handling
 - automatic 311 filing queue for eligible incidents
-- Android filing worker handshake
-- SR number capture from chat or Android worker
+- Playwright filing worker
+- SR number capture from chat or browser worker
 - 311 case status tracking
 - legal chronology export
 - spreadsheet sync for all major state
@@ -62,7 +62,7 @@ The final filing queue remains deterministic and still under your control via co
 - Elevator outage / restore clustering with witness counting
 - Auto-extraction of SR numbers from chat messages like `311-25815998`
 - Auto-queue of eligible incidents into a 311 filing queue
-- Mobile worker API:
+- Filing worker API:
   - `POST /mobile/filings/claim_next`
   - `POST /mobile/filings/{job_id}/submitted`
   - `POST /mobile/filings/{job_id}/failed`
@@ -134,7 +134,7 @@ docker compose up --build
 - `GET /api/summary`
 - `GET /api/briefing`
 
-### Android filing worker API
+### Filing worker API
 
 - `POST /mobile/filings/claim_next`
 - `POST /mobile/filings/{job_id}/submitted`
@@ -148,7 +148,7 @@ docker compose up --build
 2. Import the WhatsApp export.
 3. Review `Dashboard`, `Incidents`, `Queue311`, and `DecisionLog`.
 4. Turn on Android capture for WhatsApp notifications.
-5. Turn on the spare-phone filer.
+5. Run the Playwright portal worker.
 6. Submit one real complaint.
 7. Confirm SR appears in `Cases311`.
 8. Add a QR or link to `/report` only if the first tenant tests show it is intuitive.
@@ -156,8 +156,7 @@ docker compose up --build
 ## Files to read next
 
 - `docs/ANDROID_CAPTURE_SETUP.md`
-- `docs/ANDROID_FILER_SETUP.md`
-- `docs/ANDROID_FINISH_CHECKLIST.md`
+- `docs/NYC311_PORTAL_AUTOMATION.md`
 - `docs/DEPLOY_CLOUDFLARE_NEON.md`
 - `docs/VERIFY.md`
 - `docs/API_REFERENCE.md`

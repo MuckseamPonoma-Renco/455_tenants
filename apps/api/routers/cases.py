@@ -8,6 +8,7 @@ from packages.auth import require_bearer_token
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.llm.briefing import generate_briefing
 from packages.ops_summary import build_ops_summary
+from packages.timeutil import normalize_timestamp, normalize_timestamp_fields
 
 router = APIRouter()
 
@@ -34,8 +35,8 @@ def list_cases(authorization: str | None = Header(default=None)):
                     'status': case.status,
                     'agency': case.agency,
                     'complaint_type': case.complaint_type,
-                    'submitted_at': case.submitted_at,
-                    'closed_at': case.closed_at,
+                    'submitted_at': normalize_timestamp(case.submitted_at),
+                    'closed_at': normalize_timestamp(case.closed_at),
                     'resolution_description': case.resolution_description,
                 }
                 for case in cases
@@ -58,7 +59,7 @@ def list_queue(authorization: str | None = Header(default=None)):
                     'state': job.state,
                     'complaint_type': job.complaint_type,
                     'form_target': job.form_target,
-                    'payload': json.loads(job.payload_json or '{}'),
+                    'payload': normalize_timestamp_fields(json.loads(job.payload_json or '{}')),
                     'attempts': job.attempts,
                     'last_error': job.last_error,
                 }
@@ -84,8 +85,8 @@ def list_incidents(authorization: str | None = Header(default=None)):
                     'severity': row.severity,
                     'witness_count': row.witness_count,
                     'report_count': row.report_count,
-                    'start_ts': row.start_ts,
-                    'end_ts': row.end_ts,
+                    'start_ts': normalize_timestamp(row.start_ts, fallback=row.start_ts_epoch),
+                    'end_ts': normalize_timestamp(row.end_ts, fallback=row.end_ts_epoch),
                     'title': row.title,
                     'summary': row.summary,
                 }
@@ -107,7 +108,7 @@ def list_decisions(authorization: str | None = Header(default=None)):
             'decisions': [
                 {
                     'message_id': row.message_id,
-                    'created_at': row.created_at,
+                    'created_at': normalize_timestamp(row.created_at),
                     'source': getattr(raw_map.get(row.message_id), 'source', None),
                     'text': getattr(raw_map.get(row.message_id), 'text', None),
                     'chosen_source': row.chosen_source,

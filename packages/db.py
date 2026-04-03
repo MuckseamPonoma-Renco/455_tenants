@@ -80,7 +80,7 @@ class FilingJob(Base):
     job_type: Mapped[str] = mapped_column(String(64), default="nyc311_file")
     state: Mapped[str] = mapped_column(String(32), default="pending")
     priority: Mapped[int] = mapped_column(Integer, default=100)
-    filing_channel: Mapped[str] = mapped_column(String(64), default="android_tasker")
+    filing_channel: Mapped[str] = mapped_column(String(64), default="portal_playwright")
     complaint_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     form_target: Mapped[str | None] = mapped_column(String(128), nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, default="{}")

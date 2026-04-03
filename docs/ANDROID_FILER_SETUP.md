@@ -1,4 +1,6 @@
-# Android filing worker setup (queue → NYC311 app → API callback)
+# Android filing worker setup (superseded)
+
+Use [docs/NYC311_PORTAL_AUTOMATION.md](/media/max/T7/scripts/455-tenants-finalized-v6/455-tenants-finalized/docs/NYC311_PORTAL_AUTOMATION.md) for the current filing path. This Android/AutoInput flow is kept only as historical reference.
 
 ## Goal
 

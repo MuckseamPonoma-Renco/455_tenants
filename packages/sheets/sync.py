@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.timeutil import normalize_timestamp
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -94,8 +95,8 @@ def sync_incidents_to_sheets():
             inc.asset or "",
             inc.severity,
             inc.status,
-            inc.start_ts or "",
-            inc.end_ts or "",
+            normalize_timestamp(inc.start_ts, fallback=inc.start_ts_epoch) or "",
+            normalize_timestamp(inc.end_ts, fallback=inc.end_ts_epoch) or "",
             _duration_minutes(inc) or "",
             inc.title,
             (inc.summary or "")[:250],
@@ -104,7 +105,7 @@ def sync_incidents_to_sheets():
             int(inc.witness_count or 0),
             int(inc.confidence or 0),
             "YES" if inc.needs_review else "",
-            inc.updated_at or "",
+            normalize_timestamp(inc.updated_at) or "",
         ])
     svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
 
@@ -222,9 +223,9 @@ def sync_311_cases_to_sheets():
             case.complaint_type or "",
             case.status,
             case.agency or "",
-            case.submitted_at or "",
-            case.last_checked_at or "",
-            case.closed_at or "",
+            normalize_timestamp(case.submitted_at) or "",
+            normalize_timestamp(case.last_checked_at) or "",
+            normalize_timestamp(case.closed_at) or "",
             (case.resolution_description or "")[:500],
         ])
     svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
@@ -246,9 +247,9 @@ def sync_311_queue_to_sheets():
             job.complaint_type or "",
             job.form_target or "",
             int(job.attempts or 0),
-            job.created_at or "",
-            job.claimed_at or "",
-            job.completed_at or "",
+            normalize_timestamp(job.created_at) or "",
+            normalize_timestamp(job.claimed_at) or "",
+            normalize_timestamp(job.completed_at) or "",
             (job.notes or "")[:500],
         ])
     svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()

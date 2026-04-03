@@ -1,4 +1,6 @@
-# Android finish checklist
+# Android finish checklist (superseded)
+
+Use [docs/NYC311_PORTAL_AUTOMATION.md](/media/max/T7/scripts/455-tenants-finalized-v6/455-tenants-finalized/docs/NYC311_PORTAL_AUTOMATION.md) for the current filing path. This checklist is kept only as historical reference.
 
 This is the remaining work only.
 

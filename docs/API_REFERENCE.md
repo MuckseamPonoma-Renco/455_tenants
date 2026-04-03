@@ -50,7 +50,7 @@ Stores the SR number and marks the job submitted.
 Marks a filing job failed and stores the failure reason.
 
 ## POST /mobile/sr_updates
-Stores a status update from Android or another trusted source.
+Stores a status update from the portal worker or another trusted source.
 
 ## POST /mobile/sr_updates/sync_now
 Runs the 311 case tracker sync immediately.

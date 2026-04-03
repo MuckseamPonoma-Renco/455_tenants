@@ -12,3 +12,4 @@ google-auth-httplib2>=0.2,<1
 httpx>=0.28,<1
 tenacity>=9,<10
 pytest>=8.4,<9
+playwright>=1.58,<2

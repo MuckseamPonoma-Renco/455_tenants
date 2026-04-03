@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from packages.db import FilingJob, Incident, RawMessage, ServiceRequestCase
 from packages.llm.openai_client import llm_enabled
+from packages.timeutil import normalize_timestamp
 
 
 def _now() -> datetime:
@@ -52,9 +53,9 @@ def _incident_to_dict(row: Incident) -> dict[str, Any]:
         'report_count': int(row.report_count or 0),
         'title': row.title,
         'summary': row.summary,
-        'start_ts': row.start_ts,
-        'end_ts': row.end_ts,
-        'updated_at': row.updated_at,
+        'start_ts': normalize_timestamp(row.start_ts, fallback=row.start_ts_epoch),
+        'end_ts': normalize_timestamp(row.end_ts, fallback=row.end_ts_epoch),
+        'updated_at': normalize_timestamp(row.updated_at),
     }
 
 
@@ -65,8 +66,8 @@ def _job_to_dict(row: FilingJob) -> dict[str, Any]:
         'state': row.state,
         'complaint_type': row.complaint_type,
         'attempts': int(row.attempts or 0),
-        'created_at': row.created_at,
-        'updated_at': row.updated_at,
+        'created_at': normalize_timestamp(row.created_at),
+        'updated_at': normalize_timestamp(row.updated_at),
         'last_error': row.last_error,
     }
 
@@ -78,8 +79,8 @@ def _case_to_dict(row: ServiceRequestCase) -> dict[str, Any]:
         'status': row.status,
         'agency': row.agency,
         'complaint_type': row.complaint_type,
-        'submitted_at': row.submitted_at,
-        'closed_at': row.closed_at,
+        'submitted_at': normalize_timestamp(row.submitted_at),
+        'closed_at': normalize_timestamp(row.closed_at),
     }
 
 
@@ -119,10 +120,10 @@ def build_ops_summary(session) -> dict[str, Any]:
         next_step = 'Keep live WhatsApp capture running so new reports keep entering the system.'
     if case_count > 0:
         stage = 'tracking_live'
-        next_step = 'Keep the Android filer available for new incidents and run case-status sync daily.'
+        next_step = 'Keep the NYC311 portal worker available for new incidents and run case-status sync daily.'
     if open_incidents and (job_counts.get('pending', 0) or job_counts.get('failed', 0)):
         stage = 'ready_for_android_filer'
-        next_step = 'Use the spare Android phone to claim the next filing job and submit one real NYC311 complaint.'
+        next_step = 'Run the Playwright NYC311 portal worker and submit one real complaint.'
 
     alerts: list[dict[str, Any]] = []
     actions: list[dict[str, str]] = []
@@ -146,8 +147,8 @@ def build_ops_summary(session) -> dict[str, Any]:
         alerts.append({
             'level': 'warning',
             'code': 'failed_jobs',
-            'title': 'Android filing retries needed',
-            'detail': f"{job_counts['failed']} filing job(s) failed and need selector fixes or a rerun.",
+            'title': '311 filing retries needed',
+            'detail': f"{job_counts['failed']} filing job(s) failed and need a portal rerun or selector refresh.",
         })
 
     if recent_elevator_count >= 3:
@@ -162,7 +163,7 @@ def build_ops_summary(session) -> dict[str, Any]:
         actions.append({
             'kind': 'do_now',
             'title': 'Submit the first real complaint',
-            'detail': 'Claim the next filing job on the spare Android phone and complete one end-to-end NYC311 submission.',
+            'detail': 'Run the Playwright portal worker once and complete one end-to-end NYC311 submission.',
         })
 
     if case_count:
@@ -206,7 +207,7 @@ def build_ops_summary(session) -> dict[str, Any]:
         'actions': actions,
         'latest_message': {
             'message_id': getattr(latest_message, 'message_id', None),
-            'ts_iso': getattr(latest_message, 'ts_iso', None),
+            'ts_iso': normalize_timestamp(getattr(latest_message, 'ts_iso', None), fallback=getattr(latest_message, 'ts_epoch', None)),
             'text': (getattr(latest_message, 'text', '') or '')[:200] or None,
         },
         'open_incidents': [_incident_to_dict(row) for row in open_incidents[:6]],

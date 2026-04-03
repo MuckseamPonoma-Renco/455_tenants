@@ -1,9 +1,12 @@
 from __future__ import annotations
 import os
-from datetime import datetime
 from zoneinfo import ZoneInfo
-from packages.db import Incident
+from sqlalchemy import select
+from packages.db import Incident, RawMessage, get_session
+from packages.local_env import load_local_env_file
+from packages.nyc311.address import canonicalize_building_address
 from packages.nyc311.models import FilingDraft
+from packages.timeutil import normalize_timestamp
 
 NY = ZoneInfo("America/New_York")
 
@@ -11,12 +14,6 @@ NY = ZoneInfo("America/New_York")
 def _env(name: str, default: str = "") -> str:
     value = os.environ.get(name)
     return value if value is not None and value != "" else default
-
-
-def _fmt_epoch(epoch: int | None) -> str:
-    if not epoch:
-        return "unknown time"
-    return datetime.fromtimestamp(epoch, tz=NY).strftime("%Y-%m-%d %I:%M %p %Z")
 
 
 def _asset_label(asset: str | None) -> str:
@@ -29,29 +26,62 @@ def _asset_label(asset: str | None) -> str:
     }.get(asset, asset or "building condition")
 
 
+def _public_subject(asset: str | None) -> str:
+    return {
+        "elevator_north": "North elevator",
+        "elevator_south": "South elevator",
+        "elevator_both": "Both elevators",
+        None: "Elevator",
+        "": "Elevator",
+    }.get(asset, "Elevator")
+
+
+def _short_description(inc: Incident) -> str:
+    subject = _public_subject(inc.asset)
+    summary = " ".join((inc.summary or "").split()).lower()
+    raw_text = ""
+    refs = [ref.strip() for ref in (inc.proof_refs or "").split(",") if ref.strip()]
+    if refs:
+        with get_session() as session:
+            rows = session.scalars(select(RawMessage).where(RawMessage.message_id.in_(refs))).all()
+        rows = sorted(rows, key=lambda row: int(row.ts_epoch or 0), reverse=True)
+        if rows:
+            raw_text = " ".join((rows[0].text or "").split()).lower()
+
+    text = raw_text or summary
+
+    if "stopping on each floor" in text or "stopping on every floor" in text:
+        return f"{subject} stopping on every floor."
+    if "trapped a passenger" in text and "stuck" in text:
+        return f"{subject} stuck and trapped a passenger."
+    if "trapped a passenger" in text:
+        return f"{subject} trapped a passenger."
+    if "problematic ride" in text or "rough ride" in text or "behaving badly" in text:
+        return f"{subject} acting up and stopping on random floors."
+    if "stop" in text and "each floor" in text:
+        return f"{subject} stopping on each floor."
+    if "one working elevator" in text or "down to one working elevator" in text:
+        return "Only one elevator working."
+    if "stuck" in text:
+        return f"{subject} stuck."
+    if "reduced or not working" in text or "not working" in text or "down" in text or "dead" in text:
+        if inc.asset == "elevator_both":
+            return "Both elevators down."
+        return f"{subject} dead."
+    return f"{subject} not working."
+
+
 def build_filing_draft(inc: Incident) -> FilingDraft | None:
+    load_local_env_file()
     building_name = _env("BUILDING_NAME", "Building")
-    address = _env("BUILDING_STREET_ADDRESS", "")
-    city = _env("BUILDING_CITY", "Brooklyn")
-    state = _env("BUILDING_STATE", "NY")
-    zip_code = _env("BUILDING_ZIP", "")
-    borough = _env("BUILDING_BOROUGH", "Brooklyn")
+    address = canonicalize_building_address()
     notes = _env("BUILDING_NOTES", "")
 
     if inc.category != "elevator":
         return None
 
     subject = _asset_label(inc.asset)
-    description = (
-        f"{building_name} at {address}, {city}, {state} {zip_code}: tenants report {subject} is not working. "
-        f"Incident started around {_fmt_epoch(inc.start_ts_epoch)} and latest evidence is {_fmt_epoch(inc.last_ts_epoch)}. "
-        f"Witnesses: {int(inc.witness_count or 0)}. Reports: {int(inc.report_count or 0)}. "
-        f"Internal incident id: {inc.incident_id}. "
-    )
-    if notes:
-        description += f"Building notes: {notes}. "
-    if inc.summary:
-        description += f"Summary: {inc.summary[:400]}"
+    description = _short_description(inc)
 
     payload = {
         "incident_id": inc.incident_id,
@@ -61,11 +91,7 @@ def build_filing_draft(inc: Incident) -> FilingDraft | None:
         "description": description.strip(),
         "building": {
             "name": building_name,
-            "street_address": address,
-            "city": city,
-            "state": state,
-            "zip": zip_code,
-            "borough": borough,
+            **address,
         },
         "contact": {
             "name": _env("NYC311_CONTACT_NAME"),
@@ -76,16 +102,17 @@ def build_filing_draft(inc: Incident) -> FilingDraft | None:
             "category": inc.category,
             "asset": inc.asset,
             "severity": int(inc.severity or 0),
-            "start_ts": inc.start_ts,
-            "end_ts": inc.end_ts,
+            "start_ts": normalize_timestamp(inc.start_ts, fallback=inc.start_ts_epoch),
+            "end_ts": normalize_timestamp(inc.end_ts, fallback=inc.end_ts_epoch),
             "proof_refs": inc.proof_refs,
             "witness_count": int(inc.witness_count or 0),
             "report_count": int(inc.report_count or 0),
         },
-        "android_filing_notes": [
-            "Open NYC311 app or mobile site.",
-            "Use the elevator complaint path.",
+        "portal_filing_notes": [
+            "Open the NYC311 portal elevator complaint flow.",
+            "Use Additional Details = Bldg w/ Multiple Devices.",
             "Paste the generated description exactly.",
+            "Resolve the building address and submit anonymously.",
             "Capture the service request number and post it back to /mobile/filings/{job_id}/submitted.",
         ],
     }

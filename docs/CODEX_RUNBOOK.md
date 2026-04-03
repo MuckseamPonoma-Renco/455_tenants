@@ -1,28 +1,21 @@
-# Codex runbook: finish the on-device layer fast
+# Codex runbook: finish the browser filing layer fast
 
-The backend is finished enough to run. The main remaining work is on the Android phone itself.
+The backend is finished enough to run. The main remaining work is on the browser filing worker.
 
 ## Highest-value remaining tasks
-1. Lock the exact AutoInput selectors for the NYC311 app filing flow.
-2. Add Tasker retries and screenshot-on-failure for every critical filing step.
+1. Verify the Playwright filing flow still reaches the final confirmation screen.
+2. Keep the address lookup selection stable for `455 OCEAN PARKWAY`.
 3. Verify the Service Request Number extraction pattern from the final confirmation screen.
 4. Run one real elevator complaint end to end and confirm it lands in `/api/cases`.
 5. Schedule a daily `/admin/sync_311_statuses` call.
 6. Share the Google Sheet with tenants as read-only.
 
 ## Best prompts to give Codex
-### Selector hardening
-> Create a Tasker/AutoInput selector map for the NYC311 Android app filing flow using visible text first, content description second, and coordinate fallback last. Include screenshot checkpoints and a failure branch that posts `/mobile/filings/{job_id}/failed`.
+### Portal filing flow
+> Build or update the Playwright NYC311 portal worker so it claims the next filing job, reaches the elevator complaint review screen, submits the complaint, extracts the SR number, and stores screenshots for the review and confirmation pages.
 
-### Health watchdog
-> Add a Tasker watchdog that checks `/health` every 15 minutes, reopens WhatsApp if notification access dies, and writes local logs for the last 100 runs.
+### Portal lookup
+> Add or update the portal lookup helper so `scripts/run_311_portal_worker.py --lookup 311-########` returns the latest page text and parsed status from https://portal.311.nyc.gov/check-status/.
 
-### SR number parsing
-> Add a robust SR-number extraction regex for Tasker that captures both `311-12345678` and bare 8-digit values shown on the success screen, then normalizes them to `311-########` before posting to `/mobile/filings/{job_id}/submitted`.
-
-
-### Build the fastest setup checklist
-> Read docs/ANDROID_CAPTURE_SETUP.md, docs/ANDROID_FILER_SETUP.md, docs/VERIFY.md, and docs/FINAL_WORKFLOW.md. Produce a minimal step-by-step checklist for my exact repo so I can finish Android capture and one real filing with the least manual effort and zero unnecessary steps.
-
-### Build the phone-side failure logger
-> Create Tasker-friendly notes for logging every Android filing attempt locally: job id, selector step, screenshot path, failure reason, and callback result to /mobile/filings/{job_id}/failed. Keep it simple and robust.
+### Worker verification
+> Read docs/NYC311_PORTAL_AUTOMATION.md, docs/VERIFY.md, and docs/FINAL_WORKFLOW.md. Produce the shortest exact checklist to run one live capture and one real portal submission end to end.

@@ -9,6 +9,7 @@ from packages.auth import require_bearer_token
 from packages.db import FilingJob, ServiceRequestCase, get_session
 from packages.nyc311.planner import claim_next_job
 from packages.nyc311.tracker import create_case_from_filing_job, normalize_sr_number, upsert_service_request_case
+from packages.queue import enqueue_full_resync
 from packages.worker_jobs import sync_311_statuses as sync_311_statuses_now
 
 router = APIRouter()
@@ -34,18 +35,28 @@ class ServiceRequestUpdatePayload(BaseModel):
     raw_status: dict | None = None
 
 
+def _schedule_sheet_refresh() -> None:
+    try:
+        enqueue_full_resync()
+    except Exception:
+        return
+
+
 @router.post('/filings/claim_next')
 def mobile_claim_next(authorization: str | None = Header(default=None)):
     require_bearer_token(authorization, kind='mobile')
     with get_session() as session:
-        job = claim_next_job(session)
+        job, skipped = claim_next_job(session)
         session.commit()
+        if skipped:
+            _schedule_sheet_refresh()
         if not job:
             return {'ok': True, 'job': None}
         payload = json.loads(job.payload_json or '{}')
-        return {
-            'ok': True,
-            'job': {
+    _schedule_sheet_refresh()
+    return {
+        'ok': True,
+        'job': {
                 'job_id': job.job_id,
                 'incident_id': job.incident_id,
                 'state': job.state,
@@ -74,6 +85,7 @@ def mobile_mark_submitted(job_id: int, payload: FilingSubmittedPayload, authoriz
             if payload.app_status:
                 case.status = payload.app_status
             session.commit()
+            _schedule_sheet_refresh()
             return {'ok': True, 'service_request_number': case.service_request_number, 'case_id': case.id}
         except IntegrityError:
             # Another request may have inserted the SR case between our initial lookup and commit.
@@ -87,6 +99,7 @@ def mobile_mark_submitted(job_id: int, payload: FilingSubmittedPayload, authoriz
             if payload.app_status:
                 case.status = payload.app_status
             session.commit()
+            _schedule_sheet_refresh()
             return {'ok': True, 'service_request_number': case.service_request_number, 'case_id': case.id}
 
 
@@ -102,7 +115,9 @@ def mobile_mark_failed(job_id: int, payload: FilingFailedPayload, authorization:
         if payload.notes:
             job.notes = ((job.notes or '') + ' | ' + payload.notes)[:2000]
         session.commit()
-        return {'ok': True, 'job_id': job.job_id, 'state': job.state}
+        result = {'ok': True, 'job_id': job.job_id, 'state': job.state}
+    _schedule_sheet_refresh()
+    return result
 
 
 @router.post('/sr_updates')
@@ -123,7 +138,9 @@ def mobile_sr_update(payload: ServiceRequestUpdatePayload, authorization: str | 
             raw_status=payload.raw_status,
         )
         session.commit()
-        return {'ok': True, 'case_id': case.id, 'service_request_number': case.service_request_number}
+        result = {'ok': True, 'case_id': case.id, 'service_request_number': case.service_request_number}
+    _schedule_sheet_refresh()
+    return result
 
 
 @router.post('/sr_updates/sync_now')

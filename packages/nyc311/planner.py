@@ -24,6 +24,15 @@ def now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def incident_is_auto_eligible(inc: Incident) -> bool:
     if not _env_bool("AUTO_FILE_ENABLED", True):
         return False
@@ -76,7 +85,7 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         job_type="nyc311_file",
         state="pending",
         priority=max(1, 100 - int(inc.severity or 0) * 10),
-        filing_channel="android_tasker",
+        filing_channel="portal_playwright",
         complaint_type=draft.complaint_type,
         form_target=draft.form_target,
         payload_json=draft.payload_json(),
@@ -99,16 +108,42 @@ def ensure_filing_jobs(session) -> list[FilingJob]:
     return jobs
 
 
-def claim_next_job(session) -> FilingJob | None:
-    row = session.scalar(
+def claim_next_job(session) -> tuple[FilingJob | None, int]:
+    stale_after_min = _env_int("CLAIM_STALE_MINUTES", 30)
+    requeued = False
+    if stale_after_min > 0:
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=stale_after_min)
+        claimed_rows = session.scalars(select(FilingJob).where(FilingJob.state == "claimed")).all()
+        for row in claimed_rows:
+            claimed_at = _parse_iso(row.claimed_at) or _parse_iso(row.updated_at) or _parse_iso(row.created_at)
+            if claimed_at and claimed_at <= cutoff:
+                row.state = "pending"
+                row.claimed_at = None
+                row.updated_at = now_iso()
+                note = "auto-requeued because a claimed job went stale"
+                row.notes = f"{row.notes} | {note}"[:2000] if row.notes else note
+                requeued = True
+    if requeued:
+        session.flush()
+
+    rows = session.scalars(
         select(FilingJob)
         .where(FilingJob.state.in_(["pending", "failed"]))
         .order_by(FilingJob.priority.asc(), FilingJob.created_at.asc())
-    )
-    if not row:
-        return None
-    row.state = "claimed"
-    row.claimed_at = now_iso()
-    row.updated_at = now_iso()
-    row.attempts = int(row.attempts or 0) + 1
-    return row
+    ).all()
+    skipped = 0
+    for row in rows:
+        incident = session.get(Incident, row.incident_id) if row.incident_id else None
+        if incident is None or not incident_is_auto_eligible(incident):
+            row.state = "skipped"
+            row.updated_at = now_iso()
+            note = "auto-skipped because incident is no longer auto-eligible"
+            row.notes = f"{row.notes} | {note}"[:2000] if row.notes else note
+            skipped += 1
+            continue
+        row.state = "claimed"
+        row.claimed_at = now_iso()
+        row.updated_at = now_iso()
+        row.attempts = int(row.attempts or 0) + 1
+        return row, skipped
+    return None, skipped

@@ -8,6 +8,10 @@ __pycache__/
 .venv.badmove/
 .vscode/
 .test_audit/
+.test_audit_debug/
+.audit/
+.local/
+tmp_debug_chat.txt
 local.db
 *.sqlite
 *.sqlite3

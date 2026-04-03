@@ -3,7 +3,7 @@
 1. Bulk import the WhatsApp export through `/ingest/export`.
 2. Turn on live Android capture to `/ingest/tasker`.
 3. Review `/api/incidents` and `/api/queue`.
-4. Let the Android filing worker claim pending elevator jobs.
+4. Let the Playwright filing worker claim pending elevator jobs.
 5. After submission, store SR numbers in `/api/cases`.
 6. Run status sync daily.
 7. Export the legal chronology bundle whenever you need a pressure / attorney / tenant-association packet.
@@ -19,8 +19,7 @@
 - legal bundle export
 
 ## What still requires your phone
-- the actual tap-by-tap NYC311 submission flow
-- selector maintenance if the app UI changes
+- only WhatsApp notification capture if you keep using `/ingest/tasker`
 
 
 ## Fast operator view

@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from sqlalchemy import select
 from packages.db import Incident, ServiceRequestCase
+from packages.timeutil import normalize_timestamp
 
 
 EXPORT_DIR = Path(os.environ.get("EXPORT_DIR", "exports"))
@@ -34,20 +35,24 @@ def export_legal_bundle(session) -> dict:
         ])
         for inc in incidents:
             sr_numbers = ", ".join(case.service_request_number for case in cases_by_incident.get(inc.incident_id, []))
+            start_ts = normalize_timestamp(inc.start_ts, fallback=inc.start_ts_epoch) or ""
+            end_ts = normalize_timestamp(inc.end_ts, fallback=inc.end_ts_epoch) or ""
             writer.writerow([
-                inc.incident_id, inc.category, inc.asset or "", inc.status, inc.start_ts or "", inc.end_ts or "",
+                inc.incident_id, inc.category, inc.asset or "", inc.status, start_ts, end_ts,
                 int(inc.witness_count or 0), int(inc.report_count or 0), sr_numbers, inc.title, inc.summary,
             ])
 
     with md_path.open("w", encoding="utf-8") as f:
         f.write("# Tenant issue chronology\n\n")
         for inc in incidents:
+            start_ts = normalize_timestamp(inc.start_ts, fallback=inc.start_ts_epoch) or "unknown"
+            end_ts = normalize_timestamp(inc.end_ts, fallback=inc.end_ts_epoch) or "open"
             f.write(f"## {inc.title} ({inc.incident_id})\n")
             f.write(f"- Category: {inc.category}\n")
             f.write(f"- Asset: {inc.asset or 'n/a'}\n")
             f.write(f"- Status: {inc.status}\n")
-            f.write(f"- Start: {inc.start_ts or 'unknown'}\n")
-            f.write(f"- End: {inc.end_ts or 'open'}\n")
+            f.write(f"- Start: {start_ts}\n")
+            f.write(f"- End: {end_ts}\n")
             f.write(f"- Witnesses: {int(inc.witness_count or 0)}\n")
             f.write(f"- Reports: {int(inc.report_count or 0)}\n")
             sr_numbers = [case.service_request_number for case in cases_by_incident.get(inc.incident_id, [])]

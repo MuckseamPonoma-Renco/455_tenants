@@ -348,7 +348,7 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
             else:
                 incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", confidence, needs_review)
 
-    attach_manual_cases_from_text(session, text=rm.text or "", incident=incident)
+    attach_manual_cases_from_text(session, text=rm.text or "", incident=incident, raw_message=rm)
     if incident:
         ensure_filing_job_for_incident(session, incident)
     _record_decision(session, rm, rules, llm_choice, chosen, chosen_source, incident.incident_id if incident else None)

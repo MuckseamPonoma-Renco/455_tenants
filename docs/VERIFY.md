@@ -42,11 +42,11 @@ Then verify:
 - `/api/cases` contains any SR numbers already mentioned in chat
 - `/api/summary` says the stage is `ready_for_android_filer` once queue jobs exist
 
-## Android live test
+## NYC311 portal live test
 
-1. Claim a queue job through Tasker.
-2. Submit one real complaint in the NYC311 app.
-3. Post the SR number back.
+1. Install Chromium for Playwright: `./.venv/bin/python -m playwright install chromium`
+2. Run `./.venv/bin/python scripts/run_311_portal_worker.py`
+3. Let the worker claim the next filing job and submit one real complaint.
 4. Confirm `/api/cases` shows the new case.
 5. Run `/admin/sync_311_statuses` the next day.
 6. Export `/admin/export_legal_bundle`.
@@ -55,4 +55,4 @@ Then verify:
 
 Call `GET /api/summary` after every major setup step. It will tell you the current stage and the next best action.
 
-Historical imports are intentionally prevented from auto-filing when they are older than `AUTO_FILE_MAX_INCIDENT_AGE_HOURS` (default 168). This keeps the Android phone focused on current incidents instead of months-old backlog.
+Historical imports are intentionally prevented from auto-filing when they are older than `AUTO_FILE_MAX_INCIDENT_AGE_HOURS` (default 168). This keeps the portal worker focused on current incidents instead of months-old backlog.

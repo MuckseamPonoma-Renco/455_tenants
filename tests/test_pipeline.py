@@ -1,6 +1,9 @@
+import json
+
 from pathlib import Path
 from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, ServiceRequestCase, get_session
 from packages.nyc311.legal_export import export_legal_bundle
+from packages.nyc311.tracker import find_sr_numbers, normalize_sr_number
 
 
 def auth_headers():
@@ -28,6 +31,35 @@ def test_tasker_ingest_creates_incident_and_queue(client):
         assert jobs[0].state in {'pending', 'claimed', 'submitted', 'failed'}
 
 
+def test_filing_draft_description_is_short_and_casual(client):
+    response = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North elevator trapped a passenger and is stuck again.',
+        'sender': 'Tibor Simon',
+        'ts_epoch': 1775064958,
+    })
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        job = session.query(FilingJob).one()
+        payload = json.loads(job.payload_json)
+        assert payload['description'] == 'North elevator stuck and trapped a passenger.'
+
+
+def test_filing_draft_uses_canonical_full_building_address(client):
+    response = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out again and people are stuck walking home.',
+        'sender': 'Karen',
+        'ts_epoch': 1770000500,
+    })
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        job = session.query(FilingJob).one()
+        payload = json.loads(job.payload_json)
+        assert payload['building']['full_address'] == '455 OCEAN PARKWAY, BROOKLYN, NY, 11218'
+        assert payload['building']['street_address'] == '455 OCEAN PARKWAY'
+
+
 def test_export_ingest_extracts_manual_sr_number(client, tmp_path):
     chat_text = '''[2/15/26, 8:56:59 AM] Karen KWA: North lift dead
 [2/15/26, 4:15:18 PM] Karen KWA: Dead again.
@@ -44,6 +76,23 @@ def test_export_ingest_extracts_manual_sr_number(client, tmp_path):
         incidents = session.query(Incident).all()
         assert any(case.service_request_number == '311-25842195' for case in cases)
         assert len(incidents) >= 1
+
+
+def test_export_ingest_links_manual_sr_number_to_recent_incident(client, tmp_path):
+    chat_text = '''[1/4/26, 4:45:25 PM] Diana: just spoke with the doorman. heat is not working.
+[1/4/26, 5:09:40 PM] Diana: report number 311-25815998
+'''
+    export_path = tmp_path / 'manual_sr_link.txt'
+    export_path.write_text(chat_text, encoding='utf-8')
+    with export_path.open('rb') as f:
+        response = client.post('/ingest/export', headers=auth_headers(), files={'file': ('manual_sr_link.txt', f, 'text/plain')})
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        case = session.query(ServiceRequestCase).filter_by(service_request_number='311-25815998').one()
+        assert case.incident_id is not None
+        incident = session.get(Incident, case.incident_id)
+        assert incident is not None
+        assert incident.category == 'heat_hot_water'
 
 
 def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path):
@@ -95,6 +144,37 @@ def test_mobile_claim_submit_and_status_sync(client, monkeypatch):
         case = session.query(ServiceRequestCase).filter_by(service_request_number='311-99999999').one()
         assert case.status == 'Closed'
         assert case.agency == 'DOB'
+
+
+def test_sr_normalization_accepts_bare_eight_digit_value():
+    assert normalize_sr_number('25815998') == '311-25815998'
+    assert normalize_sr_number('311-25815998') == '311-25815998'
+    assert find_sr_numbers('Chat shows 311-25815998 and 311 25815998 again') == ['311-25815998']
+
+
+def test_mobile_submitted_accepts_bare_eight_digit_sr_number(client):
+    client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out again',
+        'sender': 'Karen',
+        'ts_epoch': 1770000105,
+    })
+    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
+    assert claim.status_code == 200, claim.text
+    job_id = claim.json()['job']['job_id']
+
+    submitted = client.post(f'/mobile/filings/{job_id}/submitted', headers=mobile_headers(), json={
+        'service_request_number': '25815998',
+        'app_status': 'submitted',
+    })
+    assert submitted.status_code == 200, submitted.text
+    payload = submitted.json()
+    assert payload['service_request_number'] == '311-25815998'
+
+    with get_session() as session:
+        case = session.query(ServiceRequestCase).filter_by(service_request_number='311-25815998').one()
+        assert case.filing_job_id == job_id
+        assert case.status == 'submitted'
 
 
 def test_mobile_submitted_is_idempotent_when_sr_case_already_exists(client):

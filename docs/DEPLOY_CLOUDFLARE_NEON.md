@@ -97,26 +97,28 @@ This repo now includes a no-sudo runtime path for the current host:
 
 - API launch script: `scripts/run_api.sh`
 - tunnel launch script: `scripts/run_cloudflared.sh`
+- automation launch script: `scripts/run_automation.sh`
 - user service: `tenant-issue-os-api.service`
 - user service: `tenant-issue-os-tunnel.service`
+- user service: `tenant-issue-os-automation.service`
 
-Enable and start both:
+Enable and start all three:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now tenant-issue-os-api.service tenant-issue-os-tunnel.service
+systemctl --user enable --now tenant-issue-os-api.service tenant-issue-os-tunnel.service tenant-issue-os-automation.service
 ```
 
 Check status:
 
 ```bash
-systemctl --user --no-pager --full status tenant-issue-os-api.service tenant-issue-os-tunnel.service
+systemctl --user --no-pager --full status tenant-issue-os-api.service tenant-issue-os-tunnel.service tenant-issue-os-automation.service
 ```
 
-Restart both:
+Restart all three:
 
 ```bash
-systemctl --user restart tenant-issue-os-api.service tenant-issue-os-tunnel.service
+systemctl --user restart tenant-issue-os-api.service tenant-issue-os-tunnel.service tenant-issue-os-automation.service
 ```
 
 Tail logs:
@@ -124,6 +126,7 @@ Tail logs:
 ```bash
 journalctl --user -u tenant-issue-os-api.service -f
 journalctl --user -u tenant-issue-os-tunnel.service -f
+journalctl --user -u tenant-issue-os-automation.service -f
 ```
 
 Important:
@@ -138,7 +141,7 @@ sudo loginctl enable-linger "$USER"
 - Without linger, log in first and then start them manually:
 
 ```bash
-systemctl --user start tenant-issue-os-api.service tenant-issue-os-tunnel.service
+systemctl --user start tenant-issue-os-api.service tenant-issue-os-tunnel.service tenant-issue-os-automation.service
 ```
 
 ## 5. Final production checks
