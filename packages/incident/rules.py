@@ -9,6 +9,7 @@ OUT = re.compile(
     r"(out\s+of\s+service|not\s+working|broken|stuck|down|shutdown|shut\s*off|still\s+down|still\s+not\s+working|again\s+down|out\s+again|again\s+out|dead|down\s+to\s+1\s+elevator|one\s+elevator\s+again|only\s+1\s+elevator|misbehaving|not\s+arrived|not\s+to\s+cool overnight|both\s+elevators\s+are\s+out|both\s+lifts\s+are\s+out)",
     re.I,
 )
+CONTINUING = re.compile(r"\b(still|again)\b", re.I)
 BACK = re.compile(
     r"(back\s+(up|on|in\s+service)|working\s+now|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|2\s+lifts\s+working|both\s+elevators\s+currently\s+functioning|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
     re.I,
@@ -29,6 +30,10 @@ def _asset(text: str):
     if ELEVATOR_ASSET_SOUTH.search(text):
         return "elevator_south"
     return None
+
+
+def explicit_elevator_asset(text: str):
+    return _asset(text or "")
 
 
 def classify_rules(text: str) -> dict:
@@ -59,6 +64,7 @@ def classify_rules(text: str) -> dict:
             "is_issue": True,
             "category": "elevator",
             "asset": asset,
+            "event_type": "still_out" if CONTINUING.search(t) else "outage",
             "severity": sev,
             "title": "Elevator outage",
             "summary": "Tenant reports elevator service reduced or not working.",
@@ -70,6 +76,7 @@ def classify_rules(text: str) -> dict:
             "is_issue": True,
             "category": "elevator",
             "asset": None,
+            "event_type": "still_out" if CONTINUING.search(t) else "outage",
             "severity": 4,
             "title": "Elevator service reduced",
             "summary": "Tenant reports building is down to one working elevator.",

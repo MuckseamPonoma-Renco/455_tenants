@@ -289,6 +289,250 @@ def test_llm_assist_can_promote_issue_and_logs_decision(client, monkeypatch):
         assert decision.is_issue is True
 
 
+def test_review_model_resolves_ambiguous_elevator_follow_up(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'assist')
+
+    first = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North elevator is stuck again',
+        'sender': 'Karen',
+        'ts_epoch': 1770000400,
+    })
+    assert first.status_code == 200, first.text
+
+    captured = {}
+
+    def fake_llm(message_text, open_incidents=None, recent_related=None, recent_chat=None):
+        captured['recent_chat'] = recent_chat or []
+        captured['open_incidents'] = open_incidents or []
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_north',
+            'event_type': 'still_out',
+            'severity': 3,
+            'confidence': 75,
+            'title': 'Elevator briefly resumed',
+            'summary': 'Tenant reports the elevator got stuck and only resumed after forcing the door.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': True,
+        }
+
+    def fake_review(message_text, rules_choice, llm_choice, open_incidents=None, recent_related=None, recent_chat=None):
+        assert rules_choice['category'] == 'security_access'
+        assert llm_choice['category'] == 'elevator'
+        assert any('North elevator is stuck again' in row['text'] for row in (recent_chat or []))
+        assert any(row['category'] == 'elevator' for row in (open_incidents or []))
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_north',
+            'event_type': 'still_out',
+            'severity': 4,
+            'confidence': 92,
+            'title': 'Elevator still malfunctioning',
+            'summary': 'Follow-up confirms the north elevator remains unreliable after getting stuck.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+    monkeypatch.setattr('packages.incident.extractor.llm_review_decision', fake_review)
+
+    follow_up = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'I think stuck. I shoved the door several times at it resumed its journey. But, meh.',
+        'sender': 'Karen',
+        'ts_epoch': 1770000460,
+    })
+    assert follow_up.status_code == 200, follow_up.text
+
+    assert any('North elevator is stuck again' in row['text'] for row in captured['recent_chat'])
+
+    with get_session() as session:
+        incidents = session.query(Incident).all()
+        assert len(incidents) == 1
+        incident = incidents[0]
+        assert incident.category == 'elevator'
+        assert incident.asset == 'elevator_north'
+        assert incident.report_count == 2
+        assert session.query(Incident).filter_by(category='security_access').count() == 0
+
+        decision = session.get(MessageDecision, follow_up.json()['message_id'])
+        assert decision is not None
+        assert decision.chosen_source == 'review'
+        assert decision.category == 'elevator'
+        assert decision.event_type == 'still_out'
+        assert decision.needs_review is False
+
+
+def test_still_out_follow_up_merges_into_existing_elevator_incident_after_silence_gap(client):
+    first = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out right now',
+        'sender': 'Karen',
+        'ts_epoch': 1770040000,
+    })
+    assert first.status_code == 200, first.text
+
+    follow_up = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are still down',
+        'sender': 'Molly',
+        'ts_epoch': 1770050800,
+    })
+    assert follow_up.status_code == 200, follow_up.text
+
+    with get_session() as session:
+        incidents = session.query(Incident).filter_by(category='elevator').all()
+        assert len(incidents) == 1
+        incident = incidents[0]
+        assert incident.report_count == 2
+        assert incident.status == 'open'
+
+        decision = session.get(MessageDecision, follow_up.json()['message_id'])
+        assert decision is not None
+        assert decision.event_type == 'still_out'
+        assert decision.incident_id == incident.incident_id
+
+
+def test_context_can_promote_elevator_category_without_inflating_asset(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'assist')
+
+    first = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North elevator is out again',
+        'sender': 'Karen',
+        'ts_epoch': 1770002000,
+    })
+    assert first.status_code == 200, first.text
+
+    def fake_llm(message_text, open_incidents=None, recent_related=None, recent_chat=None):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_both',
+            'event_type': 'status_update',
+            'severity': 3,
+            'confidence': 85,
+            'title': 'Elevator got stuck but moved again',
+            'summary': 'Context suggests this is still the elevator issue.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    def fake_review(message_text, rules_choice, llm_choice, open_incidents=None, recent_related=None, recent_chat=None):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_both',
+            'event_type': 'status_update',
+            'severity': 3,
+            'confidence': 92,
+            'title': 'Elevator still acting up',
+            'summary': 'Follow-up still refers to the elevator problem.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+    monkeypatch.setattr('packages.incident.extractor.llm_review_decision', fake_review)
+
+    follow_up = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'I think stuck. I shoved the door several times and it resumed.',
+        'sender': 'Karen',
+        'ts_epoch': 1770002060,
+    })
+    assert follow_up.status_code == 200, follow_up.text
+
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        assert incident.asset == 'elevator_north'
+        assert incident.report_count == 2
+
+        decision = session.get(MessageDecision, follow_up.json()['message_id'])
+        assert decision is not None
+        final = json.loads(decision.final_json or '{}')
+        assert final.get('category') == 'elevator'
+        assert final.get('asset') is None
+
+
+def test_cross_day_ambiguous_elevator_follow_up_becomes_new_unknown_asset_incident(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'assist')
+
+    first = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North elevator is out again',
+        'sender': 'Karen',
+        'ts_epoch': 1775347200,
+    })
+    assert first.status_code == 200, first.text
+
+    def fake_llm(message_text, open_incidents=None, recent_related=None, recent_chat=None):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': None,
+            'event_type': 'status_update',
+            'severity': 3,
+            'confidence': 84,
+            'title': 'Elevator stuck again',
+            'summary': 'This sounds like the elevator is acting up again today.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    def fake_review(message_text, rules_choice, llm_choice, open_incidents=None, recent_related=None, recent_chat=None):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': None,
+            'event_type': 'status_update',
+            'severity': 3,
+            'confidence': 92,
+            'title': 'Elevator briefly stuck',
+            'summary': 'A new elevator issue happened today, but the specific elevator is unclear.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+    monkeypatch.setattr('packages.incident.extractor.llm_review_decision', fake_review)
+
+    follow_up = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'I think stuck. I shoved the door several times at it resumed its journey. But, meh.',
+        'sender': 'Karen',
+        'ts_epoch': 1775519401,
+    })
+    assert follow_up.status_code == 200, follow_up.text
+
+    with get_session() as session:
+        incidents = session.query(Incident).filter_by(category='elevator').order_by(Incident.start_ts_epoch.asc()).all()
+        assert len(incidents) == 2
+        assert incidents[0].asset == 'elevator_north'
+        assert incidents[1].asset is None
+        assert incidents[1].start_ts_epoch == 1775519401
+
+        decision = session.get(MessageDecision, follow_up.json()['message_id'])
+        assert decision is not None
+        assert decision.incident_id == incidents[1].incident_id
+        assert decision.event_type == 'new_issue'
+
+
 def test_reprocess_last_is_idempotent_for_existing_incidents(client):
     response = client.post('/ingest/tasker', headers=auth_headers(), json={
         'chat_name': '455 Tenants',

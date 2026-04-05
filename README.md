@@ -52,6 +52,7 @@ But it now has a first-class role in the decision engine when enabled:
 - `LLM_MODE=assist` → rules handle obvious cases, LLM helps with fuzzy/ambiguous reports
 - `LLM_MODE=supervised` → LLM reviews every message and the system logs rule vs LLM vs final choice
 - `LLM_MODE=off` → deterministic rules only
+- ambiguous or disagreeing rule/LLM outcomes can trigger a stronger review model before the final decision is stored
 
 The final filing queue remains deterministic and still under your control via config.
 

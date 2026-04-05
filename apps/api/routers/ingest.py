@@ -8,6 +8,7 @@ from packages.audit import append_audit_event, compute_message_id, sender_hash
 from packages.auth import require_bearer_token
 from packages.db import RawMessage, get_session
 from packages.queue import enqueue_process_message
+from packages.tasker_capture import find_recent_tasker_duplicate, normalize_tasker_capture
 from packages.timeutil import epoch_to_iso, parse_ts_to_epoch
 from packages.whatsapp.parser import parse_export_text
 
@@ -28,19 +29,32 @@ def ingest_tasker(payload: TaskerPayload, authorization: str | None = Header(def
     source_ts = payload.ts_epoch if payload.ts_epoch is not None else payload.ts_iso
     resolved_epoch = parse_ts_to_epoch(source_ts)
     resolved_ts = payload.ts_iso or epoch_to_iso(source_ts)
-    mid = compute_message_id(payload.chat_name or '', payload.sender or '', resolved_ts or '', payload.text)
+    normalized = normalize_tasker_capture(payload.chat_name, payload.sender, payload.text)
+    stored_chat_name = normalized.chat_name or payload.chat_name
+    stored_sender = normalized.sender or payload.sender
+    stored_text = normalized.text or payload.text
+    mid = compute_message_id(stored_chat_name or '', stored_sender or '', resolved_ts or '', stored_text)
 
     with get_session() as session:
         if session.get(RawMessage, mid):
             return {'ok': True, 'deduped': True, 'message_id': mid}
+        recent_duplicate = find_recent_tasker_duplicate(
+            session,
+            chat_name=stored_chat_name,
+            sender=stored_sender,
+            text=stored_text,
+            ts_epoch=resolved_epoch,
+        )
+        if recent_duplicate:
+            return {'ok': True, 'deduped': True, 'message_id': recent_duplicate.message_id}
         session.add(RawMessage(
             message_id=mid,
-            chat_name=payload.chat_name,
-            sender=payload.sender,
-            sender_hash=sender_hash(payload.sender or ''),
+            chat_name=stored_chat_name,
+            sender=stored_sender,
+            sender_hash=sender_hash(stored_sender or ''),
             ts_iso=resolved_ts,
             ts_epoch=resolved_epoch,
-            text=payload.text,
+            text=stored_text,
             attachments=None,
             source='tasker',
         ))

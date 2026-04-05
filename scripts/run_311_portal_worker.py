@@ -9,7 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from packages.nyc311.portal import load_local_env_file, lookup_service_request_status
+from packages.local_env import load_local_env_file
+
+load_local_env_file()
+
+from packages.nyc311.portal import lookup_service_request_status
 from packages.nyc311.portal_worker import run_portal_filing_once
 
 

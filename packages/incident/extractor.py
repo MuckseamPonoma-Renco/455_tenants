@@ -4,17 +4,22 @@ import datetime
 import json
 import os
 from sqlalchemy import func
+from zoneinfo import ZoneInfo
 from packages.audit import compute_message_id
 from packages.db import Incident, IncidentWitness, MessageDecision, RawMessage
-from packages.incident.rules import classify_rules
-from packages.llm.classifier import llm_classify_message
+from packages.incident.rules import classify_rules, explicit_elevator_asset
+from packages.llm.classifier import llm_classify_message, llm_review_decision
 from packages.llm.triage import should_call_llm
 from packages.nyc311.planner import ensure_filing_job_for_incident, incident_is_auto_eligible
 from packages.nyc311.tracker import attach_manual_cases_from_text
 
 OTHER_WINDOW_SECONDS = int(os.environ.get("OTHER_WINDOW_SECONDS", "21600"))
 ELEVATOR_SILENCE_GAP_SECONDS = int(os.environ.get("ELEVATOR_SILENCE_GAP_SECONDS", "7200"))
+ELEVATOR_CONTINUATION_MAX_SECONDS = int(os.environ.get("ELEVATOR_CONTINUATION_MAX_SECONDS", "604800"))
+RECENT_CHAT_CONTEXT_WINDOW_SECONDS = int(os.environ.get("RECENT_CHAT_CONTEXT_WINDOW_SECONDS", "1800"))
+RECENT_CHAT_CONTEXT_LIMIT = int(os.environ.get("RECENT_CHAT_CONTEXT_LIMIT", "8"))
 LLM_MODE = os.environ.get("LLM_MODE", "uncertain").lower().strip()
+BUILDING_TZ = ZoneInfo(os.environ.get("BUILDING_TIMEZONE", "America/New_York"))
 
 
 def _now_iso():
@@ -47,7 +52,14 @@ def _recent_related_context(session, rm: RawMessage) -> list[dict]:
     hits = [token for token in key_tokens if token in txt]
     if not hits:
         return []
-    query = session.query(RawMessage).filter(RawMessage.ts_epoch.isnot(None)).order_by(RawMessage.ts_epoch.desc()).limit(40).all()
+
+    query = session.query(RawMessage).filter(RawMessage.message_id != rm.message_id)
+    if rm.chat_name:
+        query = query.filter(RawMessage.chat_name == rm.chat_name)
+    if rm.ts_epoch is not None:
+        query = query.filter(RawMessage.ts_epoch.isnot(None), RawMessage.ts_epoch <= rm.ts_epoch)
+    query = query.order_by(RawMessage.ts_epoch.desc().nullslast()).limit(60).all()
+
     out = []
     for msg in query:
         lower = (msg.text or "").lower()
@@ -56,6 +68,91 @@ def _recent_related_context(session, rm: RawMessage) -> list[dict]:
         if len(out) >= 6:
             break
     return out
+
+
+def _recent_chat_context(session, rm: RawMessage) -> list[dict]:
+    query = session.query(RawMessage).filter(RawMessage.message_id != rm.message_id)
+    if rm.chat_name:
+        query = query.filter(RawMessage.chat_name == rm.chat_name)
+    if rm.ts_epoch is not None:
+        query = query.filter(RawMessage.ts_epoch.isnot(None))
+        query = query.filter(RawMessage.ts_epoch <= rm.ts_epoch)
+        query = query.filter(RawMessage.ts_epoch >= int(rm.ts_epoch) - RECENT_CHAT_CONTEXT_WINDOW_SECONDS)
+    rows = query.order_by(RawMessage.ts_epoch.desc().nullslast()).limit(RECENT_CHAT_CONTEXT_LIMIT).all()
+    rows.reverse()
+    return [
+        {
+            "ts": row.ts_iso,
+            "sender": row.sender,
+            "text": (row.text or "")[:180],
+        }
+        for row in rows
+    ]
+
+
+def _same_local_day(epoch_a: int | None, epoch_b: int | None) -> bool:
+    if epoch_a is None or epoch_b is None:
+        return False
+    return (
+        datetime.datetime.fromtimestamp(int(epoch_a), tz=BUILDING_TZ).date()
+        == datetime.datetime.fromtimestamp(int(epoch_b), tz=BUILDING_TZ).date()
+    )
+
+
+def _has_recent_same_chat_elevator_context(session, rm: RawMessage) -> bool:
+    if rm.ts_epoch is None or not rm.chat_name:
+        return False
+    count = (
+        session.query(func.count(MessageDecision.message_id))
+        .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
+        .filter(
+            RawMessage.message_id != rm.message_id,
+            RawMessage.chat_name == rm.chat_name,
+            RawMessage.ts_epoch.isnot(None),
+            RawMessage.ts_epoch <= int(rm.ts_epoch),
+            RawMessage.ts_epoch >= int(rm.ts_epoch) - RECENT_CHAT_CONTEXT_WINDOW_SECONDS,
+            MessageDecision.is_issue.is_(True),
+            MessageDecision.category == "elevator",
+        )
+        .scalar()
+        or 0
+    )
+    return bool(count)
+
+
+def _elevator_merge_window_seconds(asset: str | None, continuation_event: bool) -> int:
+    if not continuation_event:
+        return ELEVATOR_SILENCE_GAP_SECONDS
+    if asset:
+        return ELEVATOR_CONTINUATION_MAX_SECONDS
+    return ELEVATOR_SILENCE_GAP_SECONDS
+
+
+def _can_merge_elevator_follow_up(
+    *,
+    rm: RawMessage,
+    candidate: Incident,
+    asset: str | None,
+    continuation_event: bool,
+    recent_same_chat_elevator: bool,
+) -> bool:
+    if rm.ts_epoch is None or candidate.last_ts_epoch is None:
+        return True
+    delta = int(rm.ts_epoch) - int(candidate.last_ts_epoch)
+    if delta < 0:
+        return False
+    merge_window_seconds = _elevator_merge_window_seconds(asset, continuation_event)
+    if delta > merge_window_seconds:
+        return False
+    if not continuation_event:
+        return True
+    if delta <= ELEVATOR_SILENCE_GAP_SECONDS:
+        return True
+    if asset is None:
+        return False
+    if _same_local_day(rm.ts_epoch, candidate.last_ts_epoch):
+        return True
+    return recent_same_chat_elevator
 
 
 def _upsert_witness(session, incident_id: str, sender_hash: str):
@@ -171,7 +268,9 @@ def _rule_choice(rules: dict | None) -> dict | None:
         "signal_type": "report",
         "category": rules.get("category"),
         "asset": rules.get("asset"),
-        "event_type": "restore" if rules.get("kind") == "restore" else "outage" if rules.get("kind") == "outage" else "new_issue",
+        "event_type": rules.get("event_type") or (
+            "restore" if rules.get("kind") == "restore" else "outage" if rules.get("kind") == "outage" else "new_issue"
+        ),
         "severity": int(rules.get("severity", 2)),
         "confidence": 85 if rules.get("kind") in {"outage", "restore"} else 75,
         "title": rules.get("title") or "Issue",
@@ -194,9 +293,26 @@ def _normalized_llm_choice(llm: dict | None) -> dict | None:
     out.setdefault("confidence", 50)
     out.setdefault("title", "")
     out.setdefault("summary", "")
+    out.setdefault("refers_to_open_incident", False)
     out.setdefault("close_incident", False)
     out.setdefault("needs_review", False)
     return out
+
+
+def _normalize_elevator_asset_from_text(text: str, choice: dict | None) -> dict | None:
+    if not isinstance(choice, dict):
+        return choice
+    if choice.get("category") != "elevator":
+        return choice
+    explicit_asset = explicit_elevator_asset(text or "")
+    normalized = dict(choice)
+    if explicit_asset:
+        normalized["asset"] = explicit_asset
+    elif normalized.get("asset"):
+        # Keep the category from context, but avoid overstating which elevator
+        # failed unless the message itself makes that explicit.
+        normalized["asset"] = None
+    return normalized
 
 
 def _should_use_llm(text: str, rules: dict) -> bool:
@@ -224,6 +340,11 @@ def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[d
             merged["needs_review"] = bool(rule_choice.get("needs_review") or llm_choice.get("needs_review"))
             return merged, "hybrid"
 
+        if llm_choice.get("refers_to_open_incident") and int(llm_choice.get("confidence", 0)) >= 70:
+            preferred = dict(llm_choice)
+            preferred["needs_review"] = bool(preferred.get("needs_review", False))
+            return preferred, "hybrid_open_incident_context"
+
         preferred = llm_choice if int(llm_choice.get("confidence", 0)) >= 90 else rule_choice
         preferred = dict(preferred)
         preferred["needs_review"] = True
@@ -245,13 +366,56 @@ def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[d
     return None, "none"
 
 
+def _should_request_review(rule_choice: dict | None, llm_choice: dict | None, llm_called: bool) -> bool:
+    if not llm_called or not llm_choice:
+        return False
+    if llm_choice.get("needs_review"):
+        return True
+    if rule_choice and llm_choice and llm_choice.get("is_issue") and rule_choice.get("category") != llm_choice.get("category"):
+        return True
+    if rule_choice and llm_choice and not llm_choice.get("is_issue"):
+        return True
+    if llm_choice.get("is_issue") and int(llm_choice.get("confidence", 0)) < 80:
+        return True
+    return False
+
+
 def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | None, str]:
     rules = classify_rules(rm.text)
+    rule_choice = _rule_choice(rules)
     llm = None
+    open_incidents = _open_incidents_context(session)
+    recent_related = _recent_related_context(session, rm)
+    recent_chat = _recent_chat_context(session, rm)
     if _should_use_llm(rm.text or "", rules):
-        llm = llm_classify_message(rm.text or "", open_incidents=_open_incidents_context(session), recent_related=_recent_related_context(session, rm))
-    llm_choice = _normalized_llm_choice(llm)
-    chosen, chosen_source = _merge_choices(_rule_choice(rules), llm_choice)
+        llm = llm_classify_message(
+            rm.text or "",
+            open_incidents=open_incidents,
+            recent_related=recent_related,
+            recent_chat=recent_chat,
+        )
+    llm_choice = _normalize_elevator_asset_from_text(rm.text or "", _normalized_llm_choice(llm))
+    if _should_request_review(rule_choice, llm_choice, llm is not None):
+        review_choice = _normalize_elevator_asset_from_text(
+            rm.text or "",
+            _normalized_llm_choice(
+            llm_review_decision(
+                rm.text or "",
+                rule_choice,
+                llm_choice,
+                open_incidents=open_incidents,
+                recent_related=recent_related,
+                recent_chat=recent_chat,
+            )
+            ),
+        )
+        if review_choice is not None:
+            review_choice["needs_review"] = bool(
+                review_choice.get("needs_review", False) or int(review_choice.get("confidence", 0)) < 80
+            )
+            return review_choice, rules, llm_choice, "review"
+
+    chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
     return chosen, rules, llm_choice, chosen_source
 
 
@@ -312,20 +476,31 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                 if asset and asset != "elevator_both":
                     query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
                 last_open = None
+                continuation_event = event_type in {"still_out", "status_update"}
+                recent_same_chat_elevator = _has_recent_same_chat_elevator_context(session, rm)
                 for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
                     if rm.ts_epoch is None or row.last_ts_epoch is None:
                         last_open = row
                         break
-                    delta = int(rm.ts_epoch) - int(row.last_ts_epoch)
-                    if 0 <= delta <= ELEVATOR_SILENCE_GAP_SECONDS:
+                    if _can_merge_elevator_follow_up(
+                        rm=rm,
+                        candidate=row,
+                        asset=asset,
+                        continuation_event=continuation_event,
+                        recent_same_chat_elevator=recent_same_chat_elevator,
+                    ):
                         last_open = row
                         break
-                    if delta > ELEVATOR_SILENCE_GAP_SECONDS:
+                    delta = int(rm.ts_epoch) - int(row.last_ts_epoch)
+                    if delta > _elevator_merge_window_seconds(asset, continuation_event):
                         break
                 if last_open:
                     _update_incident(session, last_open, rm, summary, severity, confidence, needs_review)
                     incident = last_open
                 else:
+                    if continuation_event:
+                        event_type = "new_issue"
+                        chosen["event_type"] = "new_issue"
                     incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", max(confidence, 80), needs_review)
         else:
             best = None

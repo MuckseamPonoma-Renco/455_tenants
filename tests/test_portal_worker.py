@@ -97,6 +97,7 @@ def test_run_portal_filing_once_marks_job_submitted(client, monkeypatch):
     result = run_portal_filing_once(headless=True, verify_lookup=True)
 
     assert result['ok'] is True
+    assert result['job']['job_id'] == result['job_id']
     assert result['service_request_number'] == '311-77778888'
     with get_session() as session:
         job = session.query(FilingJob).filter_by(job_id=result['job_id']).one()

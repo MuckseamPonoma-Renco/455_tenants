@@ -29,6 +29,7 @@ def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True)
         if not job:
             return {"ok": True, "job": None}
         job_id = int(job.job_id)
+        job_meta = {"job_id": job_id, "incident_id": job.incident_id}
         payload = json.loads(job.payload_json or "{}")
 
     try:
@@ -45,7 +46,7 @@ def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True)
                 session.commit()
         _safe_sync_sheets()
         append_audit_event("PORTAL_FILING_FAILED", str(job_id), {"error": str(exc)[:500]})
-        return {"ok": False, "job_id": job_id, "error": str(exc)}
+        return {"ok": False, "job": job_meta, "job_id": job_id, "error": str(exc)}
 
     lookup = None
     if verify_lookup:
@@ -80,6 +81,7 @@ def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True)
     )
     return {
         "ok": True,
+        "job": job_meta,
         "job_id": job_id,
         "service_request_number": submission.service_request_number,
         "address_text": submission.address_text,

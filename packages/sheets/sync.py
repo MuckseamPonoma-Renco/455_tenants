@@ -7,11 +7,14 @@ from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.tasker_capture import normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 NY = ZoneInfo("America/New_York")
+DECISION_LOG_LIMIT = 500
+DECISION_LOG_FETCH_LIMIT = 1500
 
 
 def _disabled() -> bool:
@@ -57,6 +60,34 @@ def _sheet_id():
 
 def _tab(*names: str, default: str) -> str:
     return _env_first(*names, default=default) or default
+
+
+def _replace_tab_values(svc, sheet_id: str, tab: str, values: list[list[object]]) -> None:
+    # Clear old cell contents first so stale rows do not linger after counts shrink.
+    svc.spreadsheets().values().clear(
+        spreadsheetId=sheet_id,
+        range=f"{tab}!A:ZZ",
+        body={},
+    ).execute()
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"{tab}!A1",
+        valueInputOption="RAW",
+        body={"values": values},
+    ).execute()
+
+
+def _should_skip_duplicate_tasker_decision(
+    raw: RawMessage | None,
+    kept_tasker_signatures: dict[tuple[str, str, str], int],
+) -> bool:
+    if raw is None or raw.source != "tasker" or raw.ts_epoch is None:
+        return False
+    signature = normalize_tasker_capture(raw.chat_name, raw.sender, raw.text).signature
+    kept_ts_epoch = kept_tasker_signatures.get(signature)
+    if kept_ts_epoch is None:
+        return False
+    return abs(int(kept_ts_epoch) - int(raw.ts_epoch)) <= tasker_duplicate_window_seconds()
 
 
 def _duration_minutes(inc: Incident) -> int | None:
@@ -107,7 +138,7 @@ def sync_incidents_to_sheets():
             "YES" if inc.needs_review else "",
             normalize_timestamp(inc.updated_at) or "",
         ])
-    svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
+    _replace_tab_values(svc, sheet_id, tab, values)
 
 
 def _elevator_status_from_incidents(incidents: list[Incident], asset: str) -> dict:
@@ -192,7 +223,7 @@ def sync_dashboard_to_sheets():
     for key, value in sorted(by_cat.items(), key=lambda item: item[1], reverse=True):
         values.append([key, value])
 
-    svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
+    _replace_tab_values(svc, sheet_id, tab, values)
 
 
 def sync_coverage_to_sheets():
@@ -205,7 +236,7 @@ def sync_coverage_to_sheets():
     for row in coverage:
         values.append([row.day, row.messages, row.first_ts_epoch or "", row.last_ts_epoch or ""])
     values += [[""], ["gap_days (messages<1)", ", ".join(gaps)]]
-    svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
+    _replace_tab_values(svc, sheet_id, tab, values)
 
 
 def sync_311_cases_to_sheets():
@@ -228,7 +259,7 @@ def sync_311_cases_to_sheets():
             normalize_timestamp(case.closed_at) or "",
             (case.resolution_description or "")[:500],
         ])
-    svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
+    _replace_tab_values(svc, sheet_id, tab, values)
 
 
 def sync_311_queue_to_sheets():
@@ -252,7 +283,7 @@ def sync_311_queue_to_sheets():
             normalize_timestamp(job.completed_at) or "",
             (job.notes or "")[:500],
         ])
-    svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
+    _replace_tab_values(svc, sheet_id, tab, values)
 
 
 def sync_decisions_to_sheets():
@@ -260,14 +291,25 @@ def sync_decisions_to_sheets():
     sheet_id = _sheet_id()
     tab = _tab("SHEETS_DECISIONS_TAB", default="DecisionLog")
     with get_session() as session:
-        decisions = session.query(MessageDecision).order_by(MessageDecision.created_at.desc().nullslast()).limit(500).all()
+        decisions = (
+            session.query(MessageDecision)
+            .order_by(MessageDecision.created_at.desc().nullslast())
+            .limit(DECISION_LOG_FETCH_LIMIT)
+            .all()
+        )
         raw_map = {row.message_id: row for row in session.query(RawMessage).filter(RawMessage.message_id.in_([d.message_id for d in decisions])).all()} if decisions else {}
     values = [[
         "created_at", "message_id", "source", "text", "chosen_source", "is_issue", "category", "event_type",
         "confidence", "needs_review", "incident_id", "auto_file_candidate", "rules_json", "llm_json", "final_json",
     ]]
+    kept_tasker_signatures: dict[tuple[str, str, str], int] = {}
     for row in decisions:
         raw = raw_map.get(row.message_id)
+        if _should_skip_duplicate_tasker_decision(raw, kept_tasker_signatures):
+            continue
+        if raw is not None and raw.source == "tasker" and raw.ts_epoch is not None:
+            signature = normalize_tasker_capture(raw.chat_name, raw.sender, raw.text).signature
+            kept_tasker_signatures[signature] = int(raw.ts_epoch)
         values.append([
             row.created_at or "",
             row.message_id,
@@ -285,4 +327,6 @@ def sync_decisions_to_sheets():
             row.llm_json or "",
             row.final_json or "",
         ])
-    svc.spreadsheets().values().update(spreadsheetId=sheet_id, range=f"{tab}!A1", valueInputOption="RAW", body={"values": values}).execute()
+        if len(values) - 1 >= DECISION_LOG_LIMIT:
+            break
+    _replace_tab_values(svc, sheet_id, tab, values)

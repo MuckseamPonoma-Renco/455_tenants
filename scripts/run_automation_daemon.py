@@ -10,8 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from packages.local_env import load_local_env_file
+
+load_local_env_file()
+
 from packages.audit import append_audit_event, daily_hash_chain
-from packages.nyc311.portal import load_local_env_file
 from packages.nyc311.portal_worker import run_portal_filing_once
 from packages.worker_jobs import sync_311_statuses
 
@@ -91,7 +94,8 @@ def main() -> None:
             processed = 0
             while processed < burst_size:
                 result = run_portal_filing_once(headless=headless, verify_lookup=verify_lookup)
-                if result.get("job") is None:
+                job_meta = result.get("job")
+                if job_meta is None and result.get("job_id") is None:
                     break
                 processed += 1
                 did_work = True

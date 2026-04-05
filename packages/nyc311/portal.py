@@ -108,6 +108,20 @@ def _trim_description(value: str) -> str:
     return clean[:1900]
 
 
+def _wait_for_submit_confirmation(page: Page, previous_url: str, timeout_ms: int = 30_000) -> None:
+    page.wait_for_function(
+        """
+        prevUrl => {
+          const text = (document.body && document.body.innerText) || "";
+          return window.location.href !== prevUrl
+            || /service request|311[-\\s]?\\d{8,}|thank you/i.test(text);
+        }
+        """,
+        arg=previous_url,
+        timeout=timeout_ms,
+    )
+
+
 def _observed_at_text(payload: dict[str, Any]) -> str:
     latest_allowed = datetime.now(NY) - timedelta(minutes=5)
     max_age_hours = _env_int("PORTAL_OBSERVED_MAX_AGE_HOURS", 24)
@@ -419,7 +433,7 @@ def submit_elevator_complaint(
         previous_url = page.url
         page.locator("#NextButton").click(force=True, no_wait_after=True)
         try:
-            _wait_for_url_change(page, previous_url)
+            _wait_for_submit_confirmation(page, previous_url)
         except PlaywrightError:
             page.wait_for_timeout(6000)
         page.wait_for_timeout(2500)
