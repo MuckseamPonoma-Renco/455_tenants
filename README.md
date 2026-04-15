@@ -59,6 +59,7 @@ The final filing queue remains deterministic and still under your control via co
 ## What is finished in code
 
 - Real-time `/ingest/tasker` ingestion with Tasker-friendly timestamps
+- Real-time `/ingest/tasker_batch` backlog replay for phone-side retry after downtime
 - Bulk WhatsApp export ingestion with automatic reprocessing
 - Elevator outage / restore clustering with witness counting
 - Auto-extraction of SR numbers from chat messages like `311-25815998`
@@ -114,6 +115,7 @@ docker compose up --build
 
 - `GET /health`
 - `POST /ingest/tasker`
+- `POST /ingest/tasker_batch`
 - `POST /ingest/export`
 - `GET /report`
 - `POST /report/submit`

@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
 from packages.db import FilingJob, Incident, ServiceRequestCase
+from packages.incident.reconcile import close_superseded_open_elevator_incidents
 from packages.nyc311.drafts import build_filing_draft
 
 
@@ -99,6 +100,7 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
 
 
 def ensure_filing_jobs(session) -> list[FilingJob]:
+    close_superseded_open_elevator_incidents(session)
     incidents = session.scalars(select(Incident).where(Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast())).all()
     jobs = []
     for inc in incidents:

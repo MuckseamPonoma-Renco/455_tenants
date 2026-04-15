@@ -43,6 +43,7 @@ Body:
 - keep Android on charger + Wi‑Fi
 - keep notification access enabled after reboots
 - add a daily Tasker heartbeat POST to `/health`
+- add a local backlog queue on the phone and replay it to `POST /ingest/tasker_batch` after downtime
 
 ## First live test
 
@@ -50,3 +51,15 @@ Body:
 2. Confirm the API returns `ok: true`
 3. Open `/api/incidents` and verify an elevator incident was created
 4. Open `/api/queue` and verify a 311 filing job exists
+
+## Downtime fallback
+
+If the Mac or tunnel is down:
+
+1. The phone should keep appending intercepted messages to a local queue file.
+2. A retry task should later post that queue to `/ingest/tasker_batch`.
+3. If the phone did not retain the notifications, export the WhatsApp chat and import it on the Mac with:
+
+```bash
+./.venv/bin/python scripts/import_whatsapp_export.py "/path/to/WhatsApp Chat - 455 Tenants.zip"
+```

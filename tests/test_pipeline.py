@@ -1,9 +1,10 @@
 import json
 
 from pathlib import Path
-from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, ServiceRequestCase, get_session
+from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.nyc311.legal_export import export_legal_bundle
 from packages.nyc311.tracker import find_sr_numbers, normalize_sr_number
+from packages.timeutil import parse_ts_to_epoch
 
 
 def auth_headers():
@@ -29,6 +30,76 @@ def test_tasker_ingest_creates_incident_and_queue(client):
         assert incidents[0].category == 'elevator'
         assert len(jobs) == 1
         assert jobs[0].state in {'pending', 'claimed', 'submitted', 'failed'}
+
+
+def test_tasker_batch_ingest_creates_rows_and_queue(client):
+    response = client.post('/ingest/tasker_batch', headers=auth_headers(), json={
+        'items': [
+            {
+                'chat_name': '455 Tenants',
+                'text': 'Both elevators are out again',
+                'sender': 'Karen',
+                'ts_epoch': 1770000000,
+            },
+            {
+                'chat_name': '455 Tenants',
+                'text': 'North elevator still dead',
+                'sender': 'Tibor Simon',
+                'ts_epoch': 1770000300,
+            },
+        ]
+    })
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['received'] == 2
+    assert payload['inserted'] == 2
+    assert payload['deduped'] == 0
+    with get_session() as session:
+        assert session.query(RawMessage).count() == 2
+        assert session.query(MessageDecision).count() == 2
+        assert session.query(Incident).count() >= 1
+        assert session.query(FilingJob).count() == 1
+
+
+def test_tasker_batch_dedupes_existing_and_same_batch_duplicates(client):
+    first = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out again',
+        'sender': 'Karen',
+        'ts_epoch': 1770000000,
+    })
+    assert first.status_code == 200, first.text
+
+    response = client.post('/ingest/tasker_batch', headers=auth_headers(), json={
+        'items': [
+            {
+                'chat_name': '455 Tenants',
+                'text': 'Both elevators are out again',
+                'sender': 'Karen',
+                'ts_epoch': 1770000000,
+            },
+            {
+                'chat_name': '455 Tenants',
+                'text': 'North elevator still dead',
+                'sender': 'Tibor Simon',
+                'ts_epoch': 1770000300,
+            },
+            {
+                'chat_name': '455 Tenants',
+                'text': 'North elevator still dead',
+                'sender': 'Tibor Simon',
+                'ts_epoch': 1770000310,
+            },
+        ]
+    })
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['received'] == 3
+    assert payload['inserted'] == 1
+    assert payload['deduped'] == 2
+    with get_session() as session:
+        assert session.query(RawMessage).count() == 2
+        assert session.query(MessageDecision).count() == 2
 
 
 def test_filing_draft_description_is_short_and_casual(client):
@@ -108,6 +179,102 @@ def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path)
     assert payload['inserted'] == 1
     with get_session() as session:
         assert session.query(Incident).count() == 1
+
+
+def test_export_ingest_dedupes_matching_tasker_message_even_when_chat_name_differs(client, tmp_path):
+    client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift dead',
+        'sender': 'Karen KWA',
+        'ts_epoch': parse_ts_to_epoch('2/15/26 8:56:59 AM'),
+    })
+
+    export_path = tmp_path / 'chat.txt'
+    export_path.write_text('[2/15/26, 8:56:59 AM] Karen KWA: North lift dead\n', encoding='utf-8')
+    with export_path.open('rb') as f:
+        response = client.post('/ingest/export', headers=auth_headers(), files={'file': ('chat.txt', f, 'text/plain')})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['parsed'] == 1
+    assert payload['inserted'] == 0
+    assert payload['deduped'] == 1
+
+    with get_session() as session:
+        raws = session.query(RawMessage).all()
+        decisions = session.query(MessageDecision).all()
+
+    assert len(raws) == 1
+    assert len(decisions) == 1
+    assert raws[0].source == 'tasker'
+
+
+def test_tasker_batch_schedules_single_resync_after_bulk_processing(client, monkeypatch):
+    process_calls: list[tuple[str, bool]] = []
+    resync_calls: list[bool] = []
+
+    def fake_enqueue_process_message(message_id: str, *, sync_sheets: bool = True):
+        process_calls.append((message_id, sync_sheets))
+        return f"job-{message_id[:8]}"
+
+    def fake_enqueue_full_resync():
+        resync_calls.append(True)
+        return "resync-job"
+
+    monkeypatch.setattr('apps.api.routers.ingest.enqueue_process_message', fake_enqueue_process_message)
+    monkeypatch.setattr('apps.api.routers.ingest.enqueue_full_resync', fake_enqueue_full_resync)
+
+    response = client.post('/ingest/tasker_batch', headers=auth_headers(), json={
+        'items': [
+            {
+                'chat_name': '455 Tenants',
+                'text': 'Both elevators are out again',
+                'sender': 'Karen',
+                'ts_epoch': 1770000000,
+            },
+            {
+                'chat_name': '455 Tenants',
+                'text': 'North elevator still dead',
+                'sender': 'Tibor Simon',
+                'ts_epoch': 1770000300,
+            },
+        ]
+    })
+
+    assert response.status_code == 200, response.text
+    assert len(process_calls) == 2
+    assert all(sync_sheets is False for _message_id, sync_sheets in process_calls)
+    assert len(resync_calls) == 1
+
+
+def test_export_ingest_schedules_single_resync_after_bulk_processing(client, tmp_path, monkeypatch):
+    process_calls: list[tuple[str, bool]] = []
+    resync_calls: list[bool] = []
+
+    def fake_enqueue_process_message(message_id: str, *, sync_sheets: bool = True):
+        process_calls.append((message_id, sync_sheets))
+        return f"job-{message_id[:8]}"
+
+    def fake_enqueue_full_resync():
+        resync_calls.append(True)
+        return "resync-job"
+
+    monkeypatch.setattr('apps.api.routers.ingest.enqueue_process_message', fake_enqueue_process_message)
+    monkeypatch.setattr('apps.api.routers.ingest.enqueue_full_resync', fake_enqueue_full_resync)
+
+    export_path = tmp_path / 'bulk_chat.txt'
+    export_path.write_text(
+        '[2/15/26, 8:56:59 AM] Karen KWA: North lift dead\n'
+        '[2/15/26, 9:01:59 AM] Tibor Simon: South lift dead\n',
+        encoding='utf-8',
+    )
+    with export_path.open('rb') as f:
+        response = client.post('/ingest/export', headers=auth_headers(), files={'file': ('bulk_chat.txt', f, 'text/plain')})
+
+    assert response.status_code == 200, response.text
+    assert len(process_calls) == 2
+    assert all(sync_sheets is False for _message_id, sync_sheets in process_calls)
+    assert len(resync_calls) == 1
 
 
 def test_mobile_claim_submit_and_status_sync(client, monkeypatch):

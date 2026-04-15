@@ -1,8 +1,9 @@
 from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, ServiceRequestCase, get_session
 from packages.incident.dedupe import dedupe_open_incidents
+from packages.nyc311.planner import ensure_filing_jobs
 
 
-def test_dedupe_open_incidents_merges_same_cluster_into_case_backed_incident():
+def test_dedupe_open_incidents_merges_same_cluster_into_case_backed_incident(client):
     with get_session() as session:
         older = Incident(
             incident_id='old-inc',
@@ -67,4 +68,61 @@ def test_dedupe_open_incidents_merges_same_cluster_into_case_backed_incident():
         decision = session.get(MessageDecision, 'm1')
         assert decision is not None
         assert decision.incident_id == 'new-inc'
+        assert session.query(FilingJob).count() == 0
+
+
+def test_ensure_filing_jobs_closes_superseded_open_elevator_incidents(client):
+    with get_session() as session:
+        stale_open = Incident(
+            incident_id='stale-open',
+            category='elevator',
+            asset='elevator_north',
+            severity=4,
+            status='open',
+            start_ts='2026-04-10T13:15:37Z',
+            start_ts_epoch=1775826937,
+            last_ts_epoch=1775826937,
+            title='North elevator alarm',
+            summary='Older open elevator incident',
+            proof_refs='m-open',
+            report_count=1,
+            witness_count=0,
+            confidence=90,
+            needs_review=False,
+            updated_at='2026-04-10T13:15:37Z',
+        )
+        later_closed = Incident(
+            incident_id='later-closed',
+            category='elevator',
+            asset=None,
+            severity=5,
+            status='closed',
+            start_ts='2026-04-12T12:00:37Z',
+            start_ts_epoch=1776000037,
+            end_ts='2026-04-12T13:47:10Z',
+            end_ts_epoch=1776001630,
+            last_ts_epoch=1776001630,
+            title='Elevator service resumed',
+            summary='Later restore closed the outage.',
+            proof_refs='m-closed',
+            report_count=4,
+            witness_count=2,
+            confidence=95,
+            needs_review=False,
+            updated_at='2026-04-12T13:47:10Z',
+        )
+        session.add_all([stale_open, later_closed])
+        session.commit()
+
+        jobs = ensure_filing_jobs(session)
+        session.commit()
+
+        assert jobs == []
+
+    with get_session() as session:
+        repaired = session.get(Incident, 'stale-open')
+        assert repaired is not None
+        assert repaired.status == 'closed'
+        assert repaired.end_ts == '2026-04-12T13:47:10Z'
+        assert repaired.end_ts_epoch == 1776001630
         assert session.query(FilingJob).count() == 0

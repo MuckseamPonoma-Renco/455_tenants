@@ -3,19 +3,14 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-from sqlalchemy import select
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-load_dotenv(ROOT / ".env", override=True)
+from packages.local_env import load_local_env_file
+from packages.worker_jobs import process_pending_messages
 
-from packages.db import Incident, MessageDecision, RawMessage, get_session
-from packages.incident.extractor import classify_and_upsert_incident
-from packages.nyc311.planner import ensure_filing_jobs
-from packages.worker_jobs import full_resync_sheets
+load_local_env_file(ROOT / ".env")
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,7 +27,7 @@ def parse_args() -> argparse.Namespace:
         "--commit-every",
         type=int,
         default=25,
-        help="Commit progress every N processed messages.",
+        help="Reserved for backward compatibility.",
     )
     parser.add_argument(
         "--latest-first",
@@ -53,60 +48,19 @@ def main() -> None:
     if args.resync_sheets:
         os.environ["DISABLE_SHEETS_SYNC"] = "0"
 
-    order = RawMessage.ts_epoch.desc().nullslast() if args.latest_first else RawMessage.ts_epoch.asc().nullsfirst()
-
-    with get_session() as session:
-        pending_ids = [
-            mid
-            for (mid,) in session.execute(
-                select(RawMessage.message_id)
-                .outerjoin(MessageDecision, MessageDecision.message_id == RawMessage.message_id)
-                .where(MessageDecision.message_id.is_(None))
-                .order_by(order)
-                .limit(args.limit)
-            ).all()
-        ]
-
-    print(f"pending_selected={len(pending_ids)} latest_first={args.latest_first}")
-
-    processed = 0
-    errors = 0
-    for idx, message_id in enumerate(pending_ids, start=1):
-        try:
-            with get_session() as session:
-                raw = session.get(RawMessage, message_id)
-                if raw is None or session.get(MessageDecision, message_id) is not None:
-                    continue
-                classify_and_upsert_incident(session, raw)
-                session.commit()
-        except Exception as exc:
-            errors += 1
-            print(f"error message_id={message_id[:12]} err={exc}")
-            continue
-
-        processed += 1
-        if processed % args.commit_every == 0:
-            print(f"processed={processed}/{len(pending_ids)}")
-
-    with get_session() as session:
-        ensure_filing_jobs(session)
-        session.commit()
-
-        remaining = session.query(RawMessage).outerjoin(
-            MessageDecision, MessageDecision.message_id == RawMessage.message_id
-        ).filter(MessageDecision.message_id.is_(None)).count()
-        incidents = session.query(Incident).count()
-        decisions = session.query(MessageDecision).count()
-
-    print(f"processed_total={processed}")
-    print(f"errors_total={errors}")
-    print(f"remaining_pending={remaining}")
-    print(f"incidents_total={incidents}")
-    print(f"decisions_total={decisions}")
-
+    result = process_pending_messages(
+        limit=args.limit,
+        latest_first=args.latest_first,
+        resync_sheets=args.resync_sheets,
+    )
+    print(f"pending_selected={result['pending_selected']} latest_first={args.latest_first}")
+    print(f"processed_total={result['processed_total']}")
+    print(f"errors_total={result['errors_total']}")
+    print(f"remaining_pending={result['remaining_pending']}")
+    print(f"incidents_total={result['incidents_total']}")
+    print(f"decisions_total={result['decisions_total']}")
     if args.resync_sheets:
         print("resync_sheets=1")
-        full_resync_sheets()
         print("resync_sheets=0")
 
 

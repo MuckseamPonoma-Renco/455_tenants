@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
-from packages.tasker_capture import normalize_tasker_capture, tasker_duplicate_window_seconds
+from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
 
@@ -79,14 +79,22 @@ def _replace_tab_values(svc, sheet_id: str, tab: str, values: list[list[object]]
 
 def _should_skip_duplicate_tasker_decision(
     raw: RawMessage | None,
-    kept_tasker_signatures: dict[tuple[str, str, str], int],
+    decision: MessageDecision | None,
+    kept_tasker_signatures: dict[tuple[str, str, str], tuple[int, str | None, bool]],
 ) -> bool:
     if raw is None or raw.source != "tasker" or raw.ts_epoch is None:
         return False
+    if is_noise_tasker_capture(raw.chat_name, raw.sender, raw.text):
+        return True
     signature = normalize_tasker_capture(raw.chat_name, raw.sender, raw.text).signature
-    kept_ts_epoch = kept_tasker_signatures.get(signature)
-    if kept_ts_epoch is None:
+    kept = kept_tasker_signatures.get(signature)
+    if kept is None:
         return False
+    kept_ts_epoch, kept_incident_id, kept_is_issue = kept
+    if not bool(getattr(decision, "is_issue", False)) and not kept_is_issue:
+        return True
+    if decision is not None and decision.incident_id and kept_incident_id and decision.incident_id == kept_incident_id:
+        return True
     return abs(int(kept_ts_epoch) - int(raw.ts_epoch)) <= tasker_duplicate_window_seconds()
 
 
@@ -150,9 +158,11 @@ def _elevator_status_from_incidents(incidents: list[Incident], asset: str) -> di
     latest = relevant[0]
     age_sec = now_epoch - int(latest.last_ts_epoch or 0) if latest.last_ts_epoch else 10**9
     age_hours = age_sec / 3600.0
-    if age_hours > 6:
-        return {"status": "UNKNOWN", "last_evidence": _fmt_ts(latest.last_ts_epoch), "confidence": "Low", "incident_id": latest.incident_id}
     status = "OUT" if latest.status != "closed" else "WORKING"
+    if age_hours > 6:
+        if latest.status == "closed":
+            return {"status": "WORKING", "last_evidence": _fmt_ts(latest.last_ts_epoch), "confidence": "Low", "incident_id": latest.incident_id}
+        return {"status": "UNKNOWN", "last_evidence": _fmt_ts(latest.last_ts_epoch), "confidence": "Low", "incident_id": latest.incident_id}
     wc = int(latest.witness_count or 0)
     confidence = "High" if age_hours <= 2 and wc >= 2 else "Medium" if age_hours <= 6 and wc >= 1 else "Low"
     return {"status": status, "last_evidence": _fmt_ts(latest.last_ts_epoch), "confidence": confidence, "incident_id": latest.incident_id}
@@ -267,7 +277,11 @@ def sync_311_queue_to_sheets():
     sheet_id = _sheet_id()
     tab = _tab("SHEETS_311_QUEUE_TAB", "SHEETS_QUEUE_TAB", default="Queue311")
     with get_session() as session:
-        jobs = session.query(FilingJob).all()
+        jobs = (
+            session.query(FilingJob)
+            .filter(FilingJob.state.in_(["pending", "claimed", "failed"]))
+            .all()
+        )
     values = [["job_id", "incident_id", "state", "priority", "complaint_type", "form_target", "attempts", "created_at", "claimed_at", "completed_at", "notes"]]
     for job in sorted(jobs, key=lambda row: row.created_at or "", reverse=True):
         values.append([
@@ -302,14 +316,14 @@ def sync_decisions_to_sheets():
         "created_at", "message_id", "source", "text", "chosen_source", "is_issue", "category", "event_type",
         "confidence", "needs_review", "incident_id", "auto_file_candidate", "rules_json", "llm_json", "final_json",
     ]]
-    kept_tasker_signatures: dict[tuple[str, str, str], int] = {}
+    kept_tasker_signatures: dict[tuple[str, str, str], tuple[int, str | None, bool]] = {}
     for row in decisions:
         raw = raw_map.get(row.message_id)
-        if _should_skip_duplicate_tasker_decision(raw, kept_tasker_signatures):
+        if _should_skip_duplicate_tasker_decision(raw, row, kept_tasker_signatures):
             continue
         if raw is not None and raw.source == "tasker" and raw.ts_epoch is not None:
             signature = normalize_tasker_capture(raw.chat_name, raw.sender, raw.text).signature
-            kept_tasker_signatures[signature] = int(raw.ts_epoch)
+            kept_tasker_signatures[signature] = (int(raw.ts_epoch), row.incident_id, bool(row.is_issue))
         values.append([
             row.created_at or "",
             row.message_id,
