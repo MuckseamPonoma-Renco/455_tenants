@@ -18,6 +18,12 @@ curl http://127.0.0.1:8000/health
 curl https://api.455tenants.com/health
 ```
 
+On macOS, use the helper script instead:
+
+```bash
+./scripts/check_mac_services.sh
+```
+
 If the public hostname fails on this machine because local DNS is lagging, force Cloudflare resolution during checks:
 
 ```bash

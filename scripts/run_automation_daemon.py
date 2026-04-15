@@ -16,7 +16,7 @@ load_local_env_file()
 
 from packages.audit import append_audit_event, daily_hash_chain
 from packages.nyc311.portal_worker import run_portal_filing_once
-from packages.worker_jobs import sync_311_statuses
+from packages.worker_jobs import process_pending_messages, sync_311_statuses
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--status-sync-seconds", type=int, help="How often to run NYC311 case-status sync. Use 0 to disable.")
     parser.add_argument("--burst-size", type=int, help="Maximum filing jobs to process per cycle.")
     parser.add_argument("--between-jobs-seconds", type=int, help="Pause between successful filing jobs in the same cycle.")
+    parser.add_argument("--startup-catchup-limit", type=int, help="Process up to this many undecided raw messages before the main loop starts.")
     return parser.parse_args()
 
 
@@ -60,11 +61,13 @@ def main() -> None:
     status_sync_seconds = max(0, args.status_sync_seconds if args.status_sync_seconds is not None else _env_int("AUTOMATION_STATUS_SYNC_SECONDS", 3600))
     burst_size = max(1, args.burst_size or _env_int("AUTOMATION_BURST_SIZE", 2))
     between_jobs_seconds = max(0, args.between_jobs_seconds or _env_int("AUTOMATION_BETWEEN_JOBS_SECONDS", 5))
+    startup_catchup_limit = max(0, args.startup_catchup_limit if args.startup_catchup_limit is not None else _env_int("AUTOMATION_STARTUP_CATCHUP_LIMIT", 200))
 
     _log(
         "automation loop starting "
         f"headless={headless} verify_lookup={verify_lookup} poll_seconds={poll_seconds} "
-        f"status_sync_seconds={status_sync_seconds} burst_size={burst_size}"
+        f"status_sync_seconds={status_sync_seconds} burst_size={burst_size} "
+        f"startup_catchup_limit={startup_catchup_limit}"
     )
     append_audit_event(
         "AUTOMATION_LOOP_STARTED",
@@ -75,9 +78,15 @@ def main() -> None:
             "poll_seconds": poll_seconds,
             "status_sync_seconds": status_sync_seconds,
             "burst_size": burst_size,
+            "startup_catchup_limit": startup_catchup_limit,
         },
     )
     daily_hash_chain()
+
+    if startup_catchup_limit > 0:
+        catchup = process_pending_messages(limit=startup_catchup_limit, resync_sheets=True)
+        if catchup.get("pending_selected") or catchup.get("errors_total"):
+            _log(f"startup catch-up result: {catchup}")
 
     next_status_sync_at = time.monotonic() if status_sync_seconds > 0 else None
 

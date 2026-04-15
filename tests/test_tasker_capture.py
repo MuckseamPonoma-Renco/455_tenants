@@ -59,3 +59,47 @@ def test_tasker_ingest_dedupes_recent_duplicate_notification(client):
     assert raws[0].chat_name == "455 Tenants"
     assert raws[0].sender == "Molly"
     assert raws[0].text == "Btw, I did forward the News12 story to Weinreb."
+
+
+def test_tasker_ingest_dedupes_identical_capture_hours_later(client):
+    first = client.post("/ingest/tasker", headers=auth_headers(), json={
+        "chat_name": "455 Tenants: ~ Yvonne",
+        "text": "Good job on the news clip",
+        "sender": "%ansubtext",
+        "ts_epoch": 1775248224,
+    })
+    second = client.post("/ingest/tasker", headers=auth_headers(), json={
+        "chat_name": "455 Tenants: ~ Yvonne",
+        "text": "Good job on the news clip",
+        "sender": "%ansubtext",
+        "ts_epoch": 1775255034,
+    })
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["deduped"] is False
+    assert second.json()["deduped"] is True
+    assert second.json()["message_id"] == first.json()["message_id"]
+
+    with get_session() as session:
+        raws = session.query(RawMessage).all()
+        decisions = session.query(MessageDecision).all()
+
+    assert len(raws) == 1
+    assert len(decisions) == 1
+
+
+def test_tasker_ingest_ignores_notification_summary_noise(client):
+    response = client.post("/ingest/tasker", headers=auth_headers(), json={
+        "chat_name": "455 Tenants",
+        "text": "2 new messages",
+        "sender": "",
+        "ts_epoch": 1775255034,
+    })
+
+    assert response.status_code == 200
+    assert response.json()["deduped"] is True
+
+    with get_session() as session:
+        assert session.query(RawMessage).count() == 0
+        assert session.query(MessageDecision).count() == 0

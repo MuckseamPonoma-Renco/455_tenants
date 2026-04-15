@@ -10,6 +10,7 @@ from packages.db import RawMessage
 PLACEHOLDER_RE = re.compile(r"^%[A-Za-z0-9_]+$")
 CHAT_SENDER_RE = re.compile(r"^(?P<chat>.+?)(?: \((?:\d+) messages?\))?(?:: (?P<sender>.+))?$")
 TEXT_SENDER_RE = re.compile(r"^(?:~\s*)?(?P<sender>[^:]{1,120}): (?P<text>.+)$")
+NEW_MESSAGES_RE = re.compile(r"^\d+\s+new messages?$", re.IGNORECASE)
 
 
 def _clean(value: str | None) -> str:
@@ -41,13 +42,17 @@ class NormalizedTaskerCapture:
     def signature(self) -> tuple[str, str, str]:
         return (self.chat_name, self.sender, self.text)
 
+    @property
+    def sender_text_signature(self) -> tuple[str, str]:
+        return (self.sender, self.text)
+
 
 def tasker_duplicate_window_seconds() -> int:
     raw = (os.environ.get("TASKER_DUPLICATE_WINDOW_SECONDS") or "").strip()
     try:
         return max(0, int(raw))
     except Exception:
-        return 180
+        return 24 * 60 * 60
 
 
 def normalize_tasker_capture(chat_name: str | None, sender: str | None, text: str | None) -> NormalizedTaskerCapture:
@@ -82,13 +87,36 @@ def normalize_tasker_capture(chat_name: str | None, sender: str | None, text: st
     )
 
 
-def find_recent_tasker_duplicate(
+def is_noise_tasker_capture(chat_name: str | None, sender: str | None, text: str | None) -> bool:
+    normalized = normalize_tasker_capture(chat_name, sender, text)
+    if not normalized.text:
+        return True
+    return bool(NEW_MESSAGES_RE.fullmatch(normalized.text))
+
+
+def _recent_duplicate_candidates(session, *, ts_epoch: int, sources: tuple[str, ...] | None) -> list[RawMessage]:
+    candidates = (
+        session.query(RawMessage)
+        .filter(
+            RawMessage.ts_epoch.is_not(None),
+            RawMessage.ts_epoch >= int(ts_epoch) - tasker_duplicate_window_seconds(),
+            RawMessage.ts_epoch <= int(ts_epoch) + tasker_duplicate_window_seconds(),
+        )
+    )
+    if sources:
+        candidates = candidates.filter(RawMessage.source.in_(sources))
+    return candidates.all()
+
+
+def find_recent_duplicate(
     session,
     *,
     chat_name: str | None,
     sender: str | None,
     text: str | None,
     ts_epoch: int | None,
+    sources: tuple[str, ...] | None = None,
+    require_chat_match: bool = True,
 ) -> RawMessage | None:
     if ts_epoch is None:
         return None
@@ -101,17 +129,37 @@ def find_recent_tasker_duplicate(
     if window <= 0:
         return None
 
-    candidates = (
-        session.query(RawMessage)
-        .filter(
-            RawMessage.source == "tasker",
-            RawMessage.ts_epoch.is_not(None),
-            RawMessage.ts_epoch >= int(ts_epoch) - window,
-            RawMessage.ts_epoch <= int(ts_epoch) + window,
-        )
-        .all()
-    )
+    candidates = _recent_duplicate_candidates(session, ts_epoch=int(ts_epoch), sources=sources)
+    fallback: RawMessage | None = None
     for row in sorted(candidates, key=lambda item: abs(int(item.ts_epoch or 0) - int(ts_epoch))):
-        if normalize_tasker_capture(row.chat_name, row.sender, row.text).signature == target.signature:
+        normalized = normalize_tasker_capture(row.chat_name, row.sender, row.text)
+        if normalized.sender_text_signature != target.sender_text_signature:
+            continue
+        if normalized.chat_name == target.chat_name:
             return row
-    return None
+        if require_chat_match:
+            if not normalized.chat_name or not target.chat_name:
+                return row
+            continue
+        if fallback is None:
+            fallback = row
+    return fallback
+
+
+def find_recent_tasker_duplicate(
+    session,
+    *,
+    chat_name: str | None,
+    sender: str | None,
+    text: str | None,
+    ts_epoch: int | None,
+) -> RawMessage | None:
+    return find_recent_duplicate(
+        session,
+        chat_name=chat_name,
+        sender=sender,
+        text=text,
+        ts_epoch=ts_epoch,
+        sources=("tasker",),
+        require_chat_match=True,
+    )

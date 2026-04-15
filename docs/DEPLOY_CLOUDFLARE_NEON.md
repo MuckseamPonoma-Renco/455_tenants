@@ -144,6 +144,61 @@ sudo loginctl enable-linger "$USER"
 systemctl --user start tenant-issue-os-api.service tenant-issue-os-tunnel.service tenant-issue-os-automation.service
 ```
 
+## 4B. macOS runtime on this machine
+
+macOS does not use `systemd`, so this repo now includes simple helper scripts:
+
+- start after login: `./scripts/start_mac_services.sh`
+- verify: `./scripts/check_mac_services.sh`
+
+These start the API and automation loop in the background from Terminal after you log in.
+
+Important:
+
+- The tunnel only starts if this Mac has Cloudflare tunnel auth already copied over.
+- `scripts/run_cloudflared.sh` now accepts either:
+  - `CLOUDFLARED_TOKEN` in the environment
+  - `~/.cloudflared/tenant-issue-os.token`
+  - `~/.cloudflared/<tunnel-id>.json`
+- If tunnel auth is missing, the API still runs locally on `127.0.0.1:8000`, but `https://api.YOUR_DOMAIN` will stay down until the token or credentials file is added on this Mac.
+
+Exact transfer steps from the old machine:
+
+```bash
+# On the old machine, see which tunnel auth file exists
+ls -l ~/.cloudflared/tenant-issue-os.token ~/.cloudflared/273c3233-ee8a-4ffd-8f7e-d180614938c5.json
+```
+
+Copy whichever file exists to the same path on the Mac.
+
+Then on the Mac:
+
+```bash
+mkdir -p ~/.cloudflared
+chmod 700 ~/.cloudflared
+```
+
+If you copied the token file, place it here:
+
+```text
+~/.cloudflared/tenant-issue-os.token
+```
+
+If you copied the credentials JSON, place it here:
+
+```text
+~/.cloudflared/273c3233-ee8a-4ffd-8f7e-d180614938c5.json
+```
+
+Then verify and start:
+
+```bash
+./scripts/run_cloudflared.sh --check
+./scripts/start_mac_services.sh
+./scripts/check_mac_services.sh
+curl https://api.455tenants.com/health
+```
+
 ## 5. Final production checks
 
 Use a real fresh message, not an old imported one:

@@ -14,6 +14,24 @@ Accepts one WhatsApp message.
 
 `ts_epoch` is accepted in seconds or milliseconds and is normalized to ISO time internally.
 
+## POST /ingest/tasker_batch
+Accepts multiple WhatsApp notification messages in one request.
+
+```json
+{
+  "items": [
+    {
+      "chat_name": "455 Tenants",
+      "text": "Both elevators are out again",
+      "sender": "Tibor Simon",
+      "ts_epoch": 1770000000
+    }
+  ]
+}
+```
+
+Use this for replaying a phone-side backlog after downtime. Duplicate messages are ignored safely.
+
 ## POST /ingest/export
 Multipart form upload of TXT or ZIP containing `_chat.txt`.
 

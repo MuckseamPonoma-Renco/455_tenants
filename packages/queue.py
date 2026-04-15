@@ -19,14 +19,14 @@ def _queue_or_none():
         return None
 
 
-def enqueue_process_message(message_id: str):
+def enqueue_process_message(message_id: str, *, sync_sheets: bool = True):
     from packages.worker_jobs import process_message
 
     queue = _queue_or_none()
     if queue is None:
-        process_message(message_id)
+        process_message(message_id, sync_sheets=sync_sheets)
         return f"inline-process-{message_id[:8]}"
-    return queue.enqueue(process_message, message_id).id
+    return queue.enqueue(process_message, message_id, sync_sheets=sync_sheets).id
 
 
 def enqueue_full_resync():
