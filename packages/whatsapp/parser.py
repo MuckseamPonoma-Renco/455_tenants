@@ -22,6 +22,7 @@ BRACKET_RE = re.compile(
     r"(?:[\s\u202f]*(?P<ampm>AM|PM))?\]\s*(?P<body>.*)$"
 )
 ATTACH_RE = re.compile(r"<attached:\s*([^>]+)>", re.IGNORECASE)
+MEDIA_OMITTED_RE = re.compile(r"^(?P<kind>image|video|audio|sticker|gif)\s+omitted$", re.IGNORECASE)
 
 def _norm(s: str) -> str:
     s = (s or "").replace("\u202f", " ").replace("\u200e", "").replace("\u200f", "")
@@ -38,6 +39,17 @@ def _parse_header(line: str) -> Tuple[Optional[str], Optional[str]]:
         ts = f"{m.group('date')} {m.group('time')} {(m.group('ampm') or '').strip()}".strip()
         return ts, m.group("body")
     return None, None
+
+
+def omitted_media_kind(text: str | None) -> Optional[str]:
+    match = MEDIA_OMITTED_RE.fullmatch(_norm(text))
+    if not match:
+        return None
+    return match.group("kind").lower()
+
+
+def is_media_placeholder_text(text: str | None) -> bool:
+    return omitted_media_kind(text) is not None
 
 def parse_export_text(text: str, chat_name: str = "Tenants WhatsApp") -> List[ParsedMessage]:
     msgs: List[ParsedMessage] = []
@@ -60,6 +72,9 @@ def parse_export_text(text: str, chat_name: str = "Tenants WhatsApp") -> List[Pa
 
             atts = ATTACH_RE.findall(msg_text)
             attachments = ",".join([_norm(a) for a in atts]) if atts else None
+            omitted_kind = omitted_media_kind(msg_text)
+            if omitted_kind and not attachments:
+                attachments = f"omitted:{omitted_kind}"
 
             cur = ParsedMessage(chat_name=chat_name, sender=sender, ts_iso=ts, text=msg_text, attachments=attachments)
         else:

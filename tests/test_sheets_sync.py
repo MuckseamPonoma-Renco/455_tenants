@@ -172,3 +172,59 @@ def test_elevator_status_keeps_stale_open_outage_as_unknown():
 
     assert status["status"] == "UNKNOWN"
     assert status["confidence"] == "Low"
+
+
+def test_sync_decisions_to_sheets_skips_media_placeholder_rows(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_sheet_id", lambda: "sheet-123")
+
+    with get_session() as session:
+        session.add_all([
+            RawMessage(
+                message_id="media-row",
+                chat_name="Tenants WhatsApp",
+                sender="Karen",
+                sender_hash="hash-1",
+                ts_iso="4/12/26 9:45:00 AM",
+                ts_epoch=1776001500,
+                text="image omitted",
+                attachments="omitted:image",
+                source="export",
+            ),
+            RawMessage(
+                message_id="real-row",
+                chat_name="Tenants WhatsApp",
+                sender="Karen",
+                sender_hash="hash-2",
+                ts_iso="4/12/26 9:46:00 AM",
+                ts_epoch=1776001560,
+                text="2 elevators OOS",
+                attachments=None,
+                source="export",
+            ),
+            MessageDecision(
+                message_id="media-row",
+                created_at="2026-04-12T13:45:00Z",
+                chosen_source="media_placeholder",
+                is_issue=False,
+            ),
+            MessageDecision(
+                message_id="real-row",
+                created_at="2026-04-12T13:46:00Z",
+                chosen_source="rules",
+                is_issue=True,
+                category="elevator",
+                event_type="outage",
+                confidence=85,
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_decisions_to_sheets()
+
+    values = service.calls[1][1]["body"]["values"]
+    assert values[0][0] == "created_at"
+    assert len(values) == 2
+    assert values[1][1] == "real-row"
+    assert values[1][3] == "2 elevators OOS"

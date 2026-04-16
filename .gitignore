@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.DS_Store
 .env
 .venv/
 .venv.badmove/
@@ -19,3 +20,5 @@ local.db
 /WhatsApp Chat - *.zip
 /mnt/data/
 secrets/*.json
+ssh_key_github
+ssh_key_github.pub

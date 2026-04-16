@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase
+from packages.timeutil import normalize_timestamp
 
 SR_NORMALIZE_RE = re.compile(r"(?<![A-Za-z0-9])(?:311[-\s]?)?(\d{8})(?!\d)")
 SR_TEXT_RE = re.compile(r"(?<![A-Za-z0-9])311[-\s]?(\d{8})(?!\d)")
@@ -47,6 +48,7 @@ def upsert_service_request_case(
     agency: str | None = None,
     resolution_description: str | None = None,
     raw_status: dict | None = None,
+    submitted_at: str | None = None,
 ) -> ServiceRequestCase:
     existing = session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.service_request_number == sr_number))
     if existing:
@@ -62,6 +64,8 @@ def upsert_service_request_case(
             existing.status = status
         if resolution_description:
             existing.resolution_description = resolution_description[:2000]
+        if submitted_at and not existing.submitted_at:
+            existing.submitted_at = submitted_at
         existing.last_checked_at = now_iso()
         if raw_status:
             existing.raw_status_json = json.dumps(raw_status, ensure_ascii=False, sort_keys=True)
@@ -75,7 +79,7 @@ def upsert_service_request_case(
         complaint_type=complaint_type,
         status=status,
         agency=agency,
-        submitted_at=now_iso(),
+        submitted_at=submitted_at or now_iso(),
         last_checked_at=now_iso(),
         resolution_description=(resolution_description or "")[:2000] or None,
         raw_status_json=json.dumps(raw_status, ensure_ascii=False, sort_keys=True) if raw_status else None,
@@ -150,6 +154,9 @@ def attach_manual_cases_from_text(
 ) -> list[ServiceRequestCase]:
     out = []
     linked_incident = incident or (_infer_incident_for_manual_case(session, raw_message=raw_message) if raw_message else None)
+    message_submitted_at = None
+    if raw_message:
+        message_submitted_at = normalize_timestamp(raw_message.ts_iso, fallback=raw_message.ts_epoch)
     for sr_number in find_sr_numbers(text):
         case = upsert_service_request_case(
             session,
@@ -158,6 +165,7 @@ def attach_manual_cases_from_text(
             source="whatsapp_message",
             complaint_type="Unknown",
             status="submitted",
+            submitted_at=message_submitted_at,
         )
         out.append(case)
     return out

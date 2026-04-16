@@ -12,6 +12,7 @@ from packages.llm.classifier import llm_classify_message, llm_review_decision
 from packages.llm.triage import should_call_llm
 from packages.nyc311.planner import ensure_filing_job_for_incident, incident_is_auto_eligible
 from packages.nyc311.tracker import attach_manual_cases_from_text
+from packages.whatsapp.parser import is_media_placeholder_text
 
 OTHER_WINDOW_SECONDS = int(os.environ.get("OTHER_WINDOW_SECONDS", "21600"))
 ELEVATOR_SILENCE_GAP_SECONDS = int(os.environ.get("ELEVATOR_SILENCE_GAP_SECONDS", "7200"))
@@ -62,6 +63,8 @@ def _recent_related_context(session, rm: RawMessage) -> list[dict]:
 
     out = []
     for msg in query:
+        if is_media_placeholder_text(msg.text):
+            continue
         lower = (msg.text or "").lower()
         if any(token in lower for token in hits):
             out.append({"ts": msg.ts_iso, "sender": msg.sender, "text": (msg.text or "")[:140]})
@@ -87,6 +90,7 @@ def _recent_chat_context(session, rm: RawMessage) -> list[dict]:
             "text": (row.text or "")[:180],
         }
         for row in rows
+        if not is_media_placeholder_text(row.text)
     ]
 
 
@@ -437,6 +441,18 @@ def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | No
 
 
 def classify_and_upsert_incident(session, rm: RawMessage) -> str:
+    if is_media_placeholder_text(rm.text):
+        _record_decision(
+            session,
+            rm,
+            {"kind": "media_placeholder", "is_issue": False},
+            None,
+            None,
+            "media_placeholder",
+            None,
+        )
+        return ""
+
     chosen, rules, llm_choice, chosen_source = _pick_decision(session, rm)
     incident = None
 

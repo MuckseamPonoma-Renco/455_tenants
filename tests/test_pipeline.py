@@ -164,6 +164,45 @@ def test_export_ingest_links_manual_sr_number_to_recent_incident(client, tmp_pat
         incident = session.get(Incident, case.incident_id)
         assert incident is not None
         assert incident.category == 'heat_hot_water'
+        assert parse_ts_to_epoch(case.submitted_at) == parse_ts_to_epoch('1/4/26 5:09:40 PM')
+
+
+def test_export_ingest_media_placeholder_is_not_classified_as_issue(client, tmp_path, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+    llm_calls: list[str] = []
+
+    def fake_llm(*args, **kwargs):
+        llm_calls.append(args[0])
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': None,
+            'event_type': 'still_out',
+            'severity': 4,
+            'confidence': 95,
+            'title': 'Elevator issue',
+            'summary': 'Placeholder should not reach the model.',
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    export_path = tmp_path / 'media_only.txt'
+    export_path.write_text('[4/12/26, 9:45:00 AM] Karen KWA: image omitted\n', encoding='utf-8')
+    with export_path.open('rb') as f:
+        response = client.post('/ingest/export', headers=auth_headers(), files={'file': ('media_only.txt', f, 'text/plain')})
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        decision = session.query(MessageDecision).one()
+        raw = session.query(RawMessage).one()
+        assert raw.attachments == 'omitted:image'
+        assert decision.chosen_source == 'media_placeholder'
+        assert decision.is_issue is False
+        assert session.query(Incident).count() == 0
+    assert llm_calls == []
 
 
 def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path):

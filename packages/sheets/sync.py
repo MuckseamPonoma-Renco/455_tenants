@@ -10,6 +10,7 @@ from packages.db import FilingJob, Incident, MessageDecision, RawMessage, Servic
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
+from packages.whatsapp.parser import is_media_placeholder_text
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 NY = ZoneInfo("America/New_York")
@@ -319,6 +320,8 @@ def sync_decisions_to_sheets():
     kept_tasker_signatures: dict[tuple[str, str, str], tuple[int, str | None, bool]] = {}
     for row in decisions:
         raw = raw_map.get(row.message_id)
+        if raw is not None and is_media_placeholder_text(raw.text):
+            continue
         if _should_skip_duplicate_tasker_decision(raw, row, kept_tasker_signatures):
             continue
         if raw is not None and raw.source == "tasker" and raw.ts_epoch is not None:

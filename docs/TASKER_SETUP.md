@@ -71,12 +71,22 @@ Suggested Tasker globals:
 - `%API_BASE` = `https://api.455tenants.com`
 - `%INGEST_TOKEN` = your ingest token
 - `%QUEUE_FILE` = `/sdcard/Tasker/tenant_issue_os_queue.jsonl`
+- `%TENANT_GROUP_NAME` = your exact WhatsApp group title
+
+Before you build the tasks:
+
+1. Open Tasker once and grant storage/file access if Android asks.
+2. Make sure AutoNotification still has notification access after reboot.
+3. Disable battery optimization for Tasker, AutoNotification, and WhatsApp.
+4. Create the folder `/sdcard/Tasker/` if it does not already exist.
+5. In Tasker, create the three globals above exactly in uppercase so Tasker keeps them globally.
 
 Create this profile:
 
 1. `Profile` -> `Event` -> `Plugin` -> `AutoNotification` -> `Intercept`
 2. App filter: `WhatsApp`
-3. If possible, limit to the tenant group title so unrelated chats do not enter the queue
+3. If AutoNotification shows a title or text filter field, set it to `%TENANT_GROUP_NAME`
+4. If you cannot filter inside the plugin, keep the plugin broad and add a Tasker `If %WA_CHAT ~ %TENANT_GROUP_NAME` check in the task
 
 Attach this task: `Capture Tenant Notification`
 
@@ -110,7 +120,23 @@ To: `%ansubtext`
 Name: `%WA_TS`
 To: `%TIMES`
 
-9. `Variable Set`
+9. `If`
+Condition:
+`%WA_CHAT !~ %TENANT_GROUP_NAME`
+
+10. `Stop`
+
+11. `End If`
+
+12. `If`
+Condition:
+`%WA_TEXT !Set`
+
+13. `Stop`
+
+14. `End If`
+
+15. `Variable Set`
 Name: `%QUEUE_LINE`
 To:
 
@@ -121,13 +147,13 @@ To:
 Important:
 turn on variable replacement for this action
 
-10. `Write File`
+16. `Write File`
 File: `%QUEUE_FILE`
 Text: `%QUEUE_LINE`
 Append: `On`
 Add Newline: `On`
 
-11. `HTTP Request`
+17. `HTTP Request`
 Method: `POST`
 URL: `%API_BASE/ingest/tasker`
 Headers:
@@ -148,17 +174,25 @@ Body:
 }
 ```
 
-12. `If`
+Recommended Tasker options for this action:
+
+- Body Content Type: `application/json`
+- Timeout: leave default or set `30`
+- Continue Task After Error: `On`
+
+18. `If`
 Condition:
 `%http_response_code ~ 200`
 
-13. `Perform Task`
+19. `Perform Task`
 Name: `Replay Tenant Queue`
 Priority: `%priority`
+Stop: `Off`
+Local Variable Passthrough: `Off`
 
-14. `End If`
+20. `End If`
 
-15. `End If`
+21. `End If`
 
 Create a second task: `Replay Tenant Queue`
 
@@ -189,12 +223,43 @@ Condition:
 
 9. `Variable Search Replace`
 Variable: `%QUEUE_RAW`
-Search: `\n`
-Replace Matches: `,`
+Search: `\r`
+Replace Matches:
+leave empty
 Store Matches In: leave empty
 Regex: `On`
 
 10. `Variable Set`
+Name: `%QUEUE_RAW`
+To: `%QUEUE_RAW`
+
+Important:
+turn on `Do Maths/Variable Replacement`
+
+11. `Variable Search Replace`
+Variable: `%QUEUE_RAW`
+Search: `[\n]+`
+Replace Matches: `,`
+Store Matches In: leave empty
+Regex: `On`
+
+12. `Variable Search Replace`
+Variable: `%QUEUE_RAW`
+Search: `,+$`
+Replace Matches:
+leave empty
+Store Matches In: leave empty
+Regex: `On`
+
+13. `If`
+Condition:
+`%QUEUE_RAW !Set`
+
+14. `Stop`
+
+15. `End If`
+
+16. `Variable Set`
 Name: `%QUEUE_BODY`
 To:
 
@@ -202,7 +267,10 @@ To:
 {"items":[%QUEUE_RAW]}
 ```
 
-11. `HTTP Request`
+Important:
+turn on variable replacement for this action
+
+17. `HTTP Request`
 Method: `POST`
 URL: `%API_BASE/ingest/tasker_batch`
 Headers:
@@ -214,17 +282,23 @@ Content-Type: application/json
 
 Body: `%QUEUE_BODY`
 
-12. `If`
+Recommended Tasker options for this action:
+
+- Body Content Type: `application/json`
+- Timeout: leave default or set `60`
+- Continue Task After Error: `On`
+
+18. `If`
 Condition:
 `%http_response_code ~ 200`
 
-13. `Write File`
+19. `Write File`
 File: `%QUEUE_FILE`
 Text:
 leave empty
 Append: `Off`
 
-14. `End If`
+20. `End If`
 
 Create a third profile:
 
@@ -243,3 +317,27 @@ Create a fourth profile:
 - phone-side local buffering when the Mac or tunnel is down
 - automatic replay after reboot or after the Mac comes back online
 - safe duplicate handling if a message was already ingested live
+
+## Fast test
+
+After you finish the setup:
+
+1. Start the Mac side:
+```bash
+cd /Users/max/Desktop/scripts/455-tenants-finalized-v6/455-tenants-finalized
+./scripts/start_mac_services.sh
+./scripts/check_mac_services.sh
+```
+2. Send one fresh WhatsApp message in the tenant group:
+`both elevators are out right now`
+3. Confirm the Mac shows the local API as healthy.
+4. Confirm:
+```bash
+curl -H "Authorization: Bearer YOUR_INGEST_TOKEN" http://127.0.0.1:8000/api/summary
+curl -H "Authorization: Bearer YOUR_INGEST_TOKEN" http://127.0.0.1:8000/api/queue
+```
+5. Turn Wi‑Fi off on the Mac or stop the Mac services.
+6. Send another tenant-group message from WhatsApp.
+7. Turn the Mac back on or restart the services.
+8. Manually run `Replay Tenant Queue` once in Tasker.
+9. Confirm the queued message appears after replay.
