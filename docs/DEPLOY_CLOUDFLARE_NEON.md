@@ -146,12 +146,23 @@ systemctl --user start tenant-issue-os-api.service tenant-issue-os-tunnel.servic
 
 ## 4B. macOS runtime on this machine
 
-macOS does not use `systemd`, so this repo now includes simple helper scripts:
+macOS does not use `systemd`, so this repo now includes a per-user `launchd` setup:
 
-- start after login: `./scripts/start_mac_services.sh`
+- install or update agents: `./scripts/install_mac_launch_agents.sh`
 - verify: `./scripts/check_mac_services.sh`
+- repair unhealthy services on demand: `./scripts/check_mac_services.sh --repair`
+- manual fallback starter: `./scripts/start_mac_services.sh`
 
-These start the API and automation loop in the background from Terminal after you log in.
+The LaunchAgents are:
+
+- `tenant-issue-os.api`
+- `tenant-issue-os.automation`
+- `tenant-issue-os.tunnel` when tunnel auth is configured
+- `tenant-issue-os.watchdog`, which runs every 5 minutes and calls `check_mac_services.sh --repair`
+
+This gives you auto-start after login, crash restart via `KeepAlive`, and periodic health-based repair when a process is alive but unhealthy.
+
+`install_mac_launch_agents.sh` also stages a launchd-safe runtime copy under `~/.local/share/tenant-issue-os/runtime` so the agents do not have to execute directly from a Desktop-hosted repo. Re-run the installer after code changes so the staged runtime stays current.
 
 Important:
 
@@ -161,6 +172,7 @@ Important:
   - `~/.cloudflared/tenant-issue-os.token`
   - `~/.cloudflared/<tunnel-id>.json`
 - If tunnel auth is missing, the API still runs locally on `127.0.0.1:8000`, but `https://api.YOUR_DOMAIN` will stay down until the token or credentials file is added on this Mac.
+- If this repo stays under `~/Desktop`, `launchd` can run into macOS privacy/TCC quirks. If agents fail to start from Desktop-hosted paths, move the repo out of Desktop or grant the relevant tools Full Disk Access.
 
 Exact transfer steps from the old machine:
 
@@ -190,13 +202,30 @@ If you copied the credentials JSON, place it here:
 ~/.cloudflared/273c3233-ee8a-4ffd-8f7e-d180614938c5.json
 ```
 
-Then verify and start:
+Then install and verify:
 
 ```bash
 ./scripts/run_cloudflared.sh --check
+./scripts/install_mac_launch_agents.sh
+./scripts/check_mac_services.sh
+launchctl print "gui/$(id -u)/tenant-issue-os.api"
+launchctl print "gui/$(id -u)/tenant-issue-os.automation"
+launchctl print "gui/$(id -u)/tenant-issue-os.watchdog"
+curl https://api.455tenants.com/health
+```
+
+Useful checks:
+
+```bash
+./scripts/check_mac_services.sh --json
+./scripts/check_mac_services.sh --repair
+```
+
+Manual fallback if you have not installed the LaunchAgents yet:
+
+```bash
 ./scripts/start_mac_services.sh
 ./scripts/check_mac_services.sh
-curl https://api.455tenants.com/health
 ```
 
 ## 5. Final production checks

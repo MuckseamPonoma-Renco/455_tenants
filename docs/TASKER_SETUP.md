@@ -325,7 +325,7 @@ After you finish the setup:
 1. Start the Mac side:
 ```bash
 cd /Users/max/Desktop/scripts/455-tenants-finalized-v6/455-tenants-finalized
-./scripts/start_mac_services.sh
+./scripts/install_mac_launch_agents.sh
 ./scripts/check_mac_services.sh
 ```
 2. Send one fresh WhatsApp message in the tenant group:
@@ -338,6 +338,6 @@ curl -H "Authorization: Bearer YOUR_INGEST_TOKEN" http://127.0.0.1:8000/api/queu
 ```
 5. Turn Wi‑Fi off on the Mac or stop the Mac services.
 6. Send another tenant-group message from WhatsApp.
-7. Turn the Mac back on or restart the services.
+7. Turn the Mac back on or run `./scripts/check_mac_services.sh --repair`.
 8. Manually run `Replay Tenant Queue` once in Tasker.
 9. Confirm the queued message appears after replay.

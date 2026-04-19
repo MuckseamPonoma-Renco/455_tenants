@@ -18,11 +18,18 @@ curl http://127.0.0.1:8000/health
 curl https://api.455tenants.com/health
 ```
 
-On macOS, use the helper script instead:
+On macOS, install the LaunchAgents once and use the helper scripts:
 
 ```bash
+./scripts/install_mac_launch_agents.sh
 ./scripts/check_mac_services.sh
+./scripts/check_mac_services.sh --repair
+launchctl print "gui/$(id -u)/tenant-issue-os.api"
+launchctl print "gui/$(id -u)/tenant-issue-os.automation"
+launchctl print "gui/$(id -u)/tenant-issue-os.watchdog"
 ```
+
+Re-run `./scripts/install_mac_launch_agents.sh` after repo-side code changes so the staged launchd runtime stays in sync.
 
 If the public hostname fails on this machine because local DNS is lagging, force Cloudflare resolution during checks:
 

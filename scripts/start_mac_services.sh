@@ -2,74 +2,74 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="$HOME/.local/var/log/tenant-issue-os"
-PID_DIR="$HOME/.local/var/run/tenant-issue-os"
-PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+source "$REPO_ROOT/scripts/mac_service_helpers.sh"
 
-mkdir -p "$LOG_DIR" "$PID_DIR"
+usage() {
+  cat <<'EOF'
+Usage:
+  ./scripts/start_mac_services.sh
+  ./scripts/start_mac_services.sh api automation
+  ./scripts/start_mac_services.sh --restart api
+  ./scripts/start_mac_services.sh --restart
 
-start_service() {
-  local name="$1"
-  local script_path="$2"
-  local pid_file="$PID_DIR/${name}.pid"
-
-  if [[ -f "$pid_file" ]]; then
-    local pid
-    pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      echo "${name} already running (pid ${pid})"
-      return 0
-    fi
-    rm -f "$pid_file"
-  fi
-
-  if [[ ! -x "$PYTHON_BIN" ]]; then
-    echo "Missing $PYTHON_BIN" >&2
-    return 1
-  fi
-
-  local pid
-  pid="$("$PYTHON_BIN" - "$script_path" "$REPO_ROOT" "$LOG_DIR/${name}.out.log" "$LOG_DIR/${name}.err.log" <<'PY'
-import os
-import subprocess
-import sys
-
-script_path, repo_root, stdout_path, stderr_path = sys.argv[1:5]
-
-with open(os.devnull, "rb") as devnull:
-    with open(stdout_path, "ab", buffering=0) as stdout:
-        with open(stderr_path, "ab", buffering=0) as stderr:
-            proc = subprocess.Popen(
-                [script_path],
-                cwd=repo_root,
-                stdin=devnull,
-                stdout=stdout,
-                stderr=stderr,
-                start_new_session=True,
-                close_fds=True,
-            )
-
-print(proc.pid)
-PY
-)"
-  echo "$pid" >"$pid_file"
-  sleep 1
-
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "Started ${name} (pid ${pid})"
-    return 0
-  fi
-
-  echo "Failed to start ${name}. See ${LOG_DIR}/${name}.err.log" >&2
-  return 1
+Behavior:
+  - No args starts api + automation and starts tunnel only if tunnel auth is configured.
+  - Named services limit the action to those services.
+  - --restart performs targeted restarts instead of a start-if-missing action.
+EOF
 }
 
-start_service "api" "$REPO_ROOT/scripts/run_api.sh"
-start_service "automation" "$REPO_ROOT/scripts/run_automation.sh"
+MODE="start"
+REQUESTED_SERVICES=()
 
-if reason="$("$REPO_ROOT/scripts/run_cloudflared.sh" --check 2>&1 >/dev/null)"; then
-  start_service "tunnel" "$REPO_ROOT/scripts/run_cloudflared.sh"
-else
-  echo "Skipped tunnel:"
-  echo "$reason"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --restart)
+      MODE="restart"
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    api|automation|tunnel)
+      REQUESTED_SERVICES+=("$1")
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+if [[ ${#REQUESTED_SERVICES[@]} -eq 0 ]]; then
+  REQUESTED_SERVICES=(api automation tunnel)
 fi
+
+mac_service_ensure_dirs
+
+for name in "${REQUESTED_SERVICES[@]}"; do
+  if [[ "$name" == "tunnel" ]] && ! mac_service_tunnel_configured; then
+    echo "Skipped tunnel:"
+    mac_service_tunnel_check_message
+    continue
+  fi
+
+  if [[ "$MODE" == "restart" ]]; then
+    mac_service_restart_service "$name"
+    continue
+  fi
+
+  if mac_service_launchd_loaded "$name"; then
+    pid="$(mac_service_launchd_pid "$name" 2>/dev/null || true)"
+    if mac_service_pid_alive "$pid"; then
+      echo "${name} managed by launchd (pid ${pid})"
+      continue
+    fi
+    mac_service_start_service "$name"
+    continue
+  fi
+
+  mac_service_start_manual_service "$name"
+done
