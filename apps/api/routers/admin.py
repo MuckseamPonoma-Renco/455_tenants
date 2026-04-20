@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Header
 from packages.auth import require_bearer_token
 from packages.queue import (
+    enqueue_export_elevator_replacement_bundle,
     enqueue_export_legal_bundle,
     enqueue_full_resync,
     enqueue_queue_311_jobs,
@@ -41,3 +42,9 @@ def sync_311_statuses(authorization: str | None = Header(default=None)):
 def export_legal_bundle(authorization: str | None = Header(default=None)):
     require_bearer_token(authorization)
     return {'ok': True, 'job_id': enqueue_export_legal_bundle()}
+
+
+@router.post('/export_elevator_replacement_bundle')
+def export_elevator_replacement_bundle(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    return {'ok': True, 'job_id': enqueue_export_elevator_replacement_bundle()}

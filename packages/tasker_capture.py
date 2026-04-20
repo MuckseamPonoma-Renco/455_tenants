@@ -11,6 +11,7 @@ PLACEHOLDER_RE = re.compile(r"^%[A-Za-z0-9_]+$")
 CHAT_SENDER_RE = re.compile(r"^(?P<chat>.+?)(?: \((?:\d+) messages?\))?(?:: (?P<sender>.+))?$")
 TEXT_SENDER_RE = re.compile(r"^(?:~\s*)?(?P<sender>[^:]{1,120}): (?P<text>.+)$")
 NEW_MESSAGES_RE = re.compile(r"^\d+\s+new messages?$", re.IGNORECASE)
+LIVE_CAPTURE_SOURCES = ("tasker", "whatsapp_web")
 
 
 def _clean(value: str | None) -> str:
@@ -161,5 +162,24 @@ def find_recent_tasker_duplicate(
         text=text,
         ts_epoch=ts_epoch,
         sources=("tasker",),
+        require_chat_match=True,
+    )
+
+
+def find_recent_live_capture_duplicate(
+    session,
+    *,
+    chat_name: str | None,
+    sender: str | None,
+    text: str | None,
+    ts_epoch: int | None,
+) -> RawMessage | None:
+    return find_recent_duplicate(
+        session,
+        chat_name=chat_name,
+        sender=sender,
+        text=text,
+        ts_epoch=ts_epoch,
+        sources=LIVE_CAPTURE_SOURCES,
         require_chat_match=True,
     )

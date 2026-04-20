@@ -39,6 +39,9 @@ mac_service_service_script() {
     automation)
       printf '%s/scripts/run_automation.sh\n' "$MAC_SERVICE_REPO_ROOT"
       ;;
+    whatsapp_capture)
+      printf '%s/scripts/run_whatsapp_capture.sh\n' "$MAC_SERVICE_REPO_ROOT"
+      ;;
     tunnel)
       printf '%s/scripts/run_cloudflared.sh\n' "$MAC_SERVICE_REPO_ROOT"
       ;;
@@ -74,6 +77,16 @@ mac_service_valid_pid() {
 mac_service_pid_alive() {
   local pid="${1:-}"
   mac_service_valid_pid "$pid" && kill -0 "$pid" 2>/dev/null
+}
+
+mac_service_pid_elapsed_seconds() {
+  local pid="${1:-}"
+  local elapsed
+
+  mac_service_valid_pid "$pid" || return 1
+  elapsed="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  mac_service_valid_pid "$elapsed" || return 1
+  printf '%s\n' "$elapsed"
 }
 
 mac_service_read_pidfile() {
@@ -149,6 +162,19 @@ mac_service_tunnel_check_message() {
   "$MAC_SERVICE_REPO_ROOT/scripts/run_cloudflared.sh" --check 2>&1 >/dev/null || true
 }
 
+mac_service_whatsapp_capture_configured() {
+  if [[ ! -f "$MAC_SERVICE_REPO_ROOT/.env" ]]; then
+    return 1
+  fi
+  local raw
+  raw="$(awk -F= '/^WHATSAPP_CAPTURE_CHAT_NAMES=/{print $2; exit}' "$MAC_SERVICE_REPO_ROOT/.env" | tr -d '"' | tr -d "'")"
+  [[ -n "${raw//[[:space:],]/}" ]]
+}
+
+mac_service_whatsapp_capture_check_message() {
+  echo "Set WHATSAPP_CAPTURE_CHAT_NAMES in $MAC_SERVICE_REPO_ROOT/.env to enable the optional Chrome/Playwright WhatsApp capture service."
+}
+
 mac_service_stop_manual_service() {
   local name="$1"
   local pid
@@ -181,6 +207,11 @@ mac_service_start_manual_service() {
   if [[ "$name" == "tunnel" ]] && ! mac_service_tunnel_configured; then
     echo "Skipped tunnel:"
     mac_service_tunnel_check_message
+    return 0
+  fi
+  if [[ "$name" == "whatsapp_capture" ]] && ! mac_service_whatsapp_capture_configured; then
+    echo "Skipped whatsapp_capture:"
+    mac_service_whatsapp_capture_check_message
     return 0
   fi
 

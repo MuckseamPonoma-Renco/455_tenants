@@ -10,7 +10,7 @@ from packages.db import RawMessage, get_session
 from packages.queue import enqueue_full_resync, enqueue_process_message
 from packages.tasker_capture import (
     find_recent_duplicate,
-    find_recent_tasker_duplicate,
+    find_recent_live_capture_duplicate,
     is_noise_tasker_capture,
     normalize_tasker_capture,
     tasker_duplicate_window_seconds,
@@ -21,19 +21,24 @@ from packages.whatsapp.parser import parse_export_text
 router = APIRouter()
 
 
-class TaskerPayload(BaseModel):
+class CapturePayload(BaseModel):
     chat_name: str | None = None
     text: str
     sender: str | None = None
     ts_iso: str | None = None
     ts_epoch: int | float | str | None = None
+    attachments: str | None = None
 
 
-class TaskerBatchPayload(BaseModel):
-    items: list[TaskerPayload]
+class CaptureBatchPayload(BaseModel):
+    items: list[CapturePayload]
 
 
-def _prepare_tasker_row(payload: TaskerPayload) -> tuple[dict[str, object], tuple[str, str, str]]:
+TaskerPayload = CapturePayload
+TaskerBatchPayload = CaptureBatchPayload
+
+
+def _prepare_tasker_row(payload: CapturePayload) -> tuple[dict[str, object], tuple[str, str, str]]:
     source_ts = payload.ts_epoch if payload.ts_epoch is not None else payload.ts_iso
     resolved_epoch = parse_ts_to_epoch(source_ts)
     resolved_ts = payload.ts_iso or epoch_to_iso(source_ts)
@@ -50,6 +55,7 @@ def _prepare_tasker_row(payload: TaskerPayload) -> tuple[dict[str, object], tupl
         'ts_iso': resolved_ts,
         'ts_epoch': resolved_epoch,
         'text': stored_text,
+        'attachments': payload.attachments,
     }, normalized.signature
 
 
@@ -67,7 +73,13 @@ def _batch_recent_duplicate(signature: tuple[str, str, str], ts_epoch: int | Non
     return None
 
 
-def _store_tasker_payload(session, payload: TaskerPayload, *, recent_rows: list[tuple[tuple[str, str, str], int | None, str]] | None = None) -> tuple[dict[str, object], bool]:
+def _store_capture_payload(
+    session,
+    payload: CapturePayload,
+    *,
+    source: str,
+    recent_rows: list[tuple[tuple[str, str, str], int | None, str]] | None = None,
+) -> tuple[dict[str, object], bool]:
     prepared, signature = _prepare_tasker_row(payload)
     mid = str(prepared['message_id'])
 
@@ -83,7 +95,7 @@ def _store_tasker_payload(session, payload: TaskerPayload, *, recent_rows: list[
             prepared['message_id'] = recent_mid
             return prepared, False
 
-    recent_duplicate = find_recent_tasker_duplicate(
+    recent_duplicate = find_recent_live_capture_duplicate(
         session,
         chat_name=prepared['chat_name'],
         sender=prepared['sender'],
@@ -102,8 +114,8 @@ def _store_tasker_payload(session, payload: TaskerPayload, *, recent_rows: list[
         ts_iso=prepared['ts_iso'],
         ts_epoch=prepared['ts_epoch'],
         text=prepared['text'],
-        attachments=None,
-        source='tasker',
+        attachments=prepared['attachments'],
+        source=source,
     ))
     session.flush()
     if recent_rows is not None:
@@ -111,27 +123,25 @@ def _store_tasker_payload(session, payload: TaskerPayload, *, recent_rows: list[
     return prepared, True
 
 
-@router.post('/tasker')
-def ingest_tasker(payload: TaskerPayload, authorization: str | None = Header(default=None)):
+def _ingest_single_capture(payload: CapturePayload, *, authorization: str | None, source: str):
     require_bearer_token(authorization)
     with get_session() as session:
-        prepared, inserted = _store_tasker_payload(session, payload)
+        prepared, inserted = _store_capture_payload(session, payload, source=source)
         session.commit()
 
     if not inserted:
         return {'ok': True, 'deduped': True, 'message_id': prepared['message_id']}
 
     message_id = str(prepared['message_id'])
-    append_audit_event('INGEST_RAW', message_id, {'source': 'tasker'})
+    append_audit_event('INGEST_RAW', message_id, {'source': source})
     job_id = enqueue_process_message(message_id)
     return {'ok': True, 'deduped': False, 'message_id': message_id, 'job_id': job_id}
 
 
-@router.post('/tasker_batch')
-def ingest_tasker_batch(payload: TaskerBatchPayload, authorization: str | None = Header(default=None)):
+def _ingest_batch_capture(payload: CaptureBatchPayload, *, authorization: str | None, source: str):
     require_bearer_token(authorization)
     if not payload.items:
-        raise HTTPException(status_code=400, detail='Provide at least one tasker message')
+        raise HTTPException(status_code=400, detail='Provide at least one capture message')
 
     inserted_rows: list[dict[str, object]] = []
     deduped = 0
@@ -139,7 +149,7 @@ def ingest_tasker_batch(payload: TaskerBatchPayload, authorization: str | None =
 
     with get_session() as session:
         for item in payload.items:
-            prepared, inserted = _store_tasker_payload(session, item, recent_rows=recent_rows)
+            prepared, inserted = _store_capture_payload(session, item, source=source, recent_rows=recent_rows)
             if inserted:
                 inserted_rows.append(prepared)
             else:
@@ -150,7 +160,7 @@ def ingest_tasker_batch(payload: TaskerBatchPayload, authorization: str | None =
     if inserted_rows:
         enqueue_full_resync()
     append_audit_event('INGEST_RAW_BATCH', None, {
-        'source': 'tasker_batch',
+        'source': source,
         'received': len(payload.items),
         'inserted': len(inserted_rows),
         'deduped': deduped,
@@ -163,6 +173,26 @@ def ingest_tasker_batch(payload: TaskerBatchPayload, authorization: str | None =
         'message_ids': [str(row['message_id']) for row in inserted_rows],
         'job_ids': job_ids,
     }
+
+
+@router.post('/tasker')
+def ingest_tasker(payload: TaskerPayload, authorization: str | None = Header(default=None)):
+    return _ingest_single_capture(payload, authorization=authorization, source='tasker')
+
+
+@router.post('/tasker_batch')
+def ingest_tasker_batch(payload: TaskerBatchPayload, authorization: str | None = Header(default=None)):
+    return _ingest_batch_capture(payload, authorization=authorization, source='tasker')
+
+
+@router.post('/whatsapp_web')
+def ingest_whatsapp_web(payload: CapturePayload, authorization: str | None = Header(default=None)):
+    return _ingest_single_capture(payload, authorization=authorization, source='whatsapp_web')
+
+
+@router.post('/whatsapp_web_batch')
+def ingest_whatsapp_web_batch(payload: CaptureBatchPayload, authorization: str | None = Header(default=None)):
+    return _ingest_batch_capture(payload, authorization=authorization, source='whatsapp_web')
 
 
 @router.post('/export')

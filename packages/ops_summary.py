@@ -176,6 +176,12 @@ def build_ops_summary(session) -> dict[str, Any]:
     if recent_elevator_count >= 3 or len(open_incidents) >= 2:
         actions.append({
             'kind': 'pressure',
+            'title': 'Export the elevator replacement bundle',
+            'detail': 'Generate the focused pressure packet with elevator incidents, WhatsApp evidence, 311 cases, and portal screenshots.',
+        })
+    if recent_elevator_count >= 3 or len(open_incidents) >= 2:
+        actions.append({
+            'kind': 'pressure',
             'title': 'Export the legal bundle',
             'detail': 'Generate the chronology packet and circulate it to tenant organizers, the attorney, or building leadership when pressure is needed.',
         })

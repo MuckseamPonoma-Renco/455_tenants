@@ -77,3 +77,13 @@ def enqueue_export_legal_bundle():
         result = export_legal_bundle()
         return f"inline-export-{result.get('markdown','bundle')}"
     return queue.enqueue(export_legal_bundle).id
+
+
+def enqueue_export_elevator_replacement_bundle():
+    from packages.worker_jobs import export_elevator_replacement_bundle
+
+    queue = _queue_or_none()
+    if queue is None:
+        result = export_elevator_replacement_bundle()
+        return f"inline-export-{result.get('markdown', 'replacement-bundle')}"
+    return queue.enqueue(export_elevator_replacement_bundle).id

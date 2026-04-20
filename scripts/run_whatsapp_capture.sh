@@ -14,8 +14,4 @@ if [[ ! -f "$REPO_ROOT/.env" ]]; then
   exit 1
 fi
 
-exec "$REPO_ROOT/.venv/bin/python" -m uvicorn \
-  --env-file "$REPO_ROOT/.env" \
-  apps.api.main:app \
-  --host 127.0.0.1 \
-  --port 8000
+exec "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/scripts/run_whatsapp_capture.py" "$@"

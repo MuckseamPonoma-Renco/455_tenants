@@ -23,6 +23,7 @@ LOCAL_HEALTH_CODE="000"
 PUBLIC_HEALTH_CODE=""
 LOCAL_API_HEALTHY=0
 PUBLIC_HEALTHY=0
+STARTUP_GRACE_SECONDS="${MAC_SERVICE_STARTUP_GRACE_SECONDS:-20}"
 
 usage() {
   cat <<'EOF'
@@ -41,6 +42,15 @@ EOF
 
 sanitize_field() {
   printf '%s' "${1:-}" | tr '\t\r\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//'
+}
+
+pid_within_startup_grace() {
+  local pid="${1:-}"
+  local elapsed
+
+  elapsed="$(mac_service_pid_elapsed_seconds "$pid" 2>/dev/null || true)"
+  [[ "$elapsed" =~ ^[0-9]+$ ]] || return 1
+  (( elapsed < STARTUP_GRACE_SECONDS ))
 }
 
 refresh_endpoint_health() {
@@ -82,6 +92,14 @@ service_status_row() {
       "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
     return 0
   fi
+  if [[ "$name" == "whatsapp_capture" ]] && ! mac_service_whatsapp_capture_configured; then
+    configured="false"
+    state="not_configured"
+    reason="$(sanitize_field "$(mac_service_whatsapp_capture_check_message)")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
 
   if mac_service_launchd_loaded "$name"; then
     launchd_loaded="true"
@@ -102,6 +120,9 @@ service_status_row() {
         state="orphaned"
         needs_repair="true"
         reason="local /health returned 200 but tracked api pid is missing"
+      elif [[ "$running" == "true" ]] && pid_within_startup_grace "$pid"; then
+        state="starting"
+        reason="api pid is running but local /health returned ${LOCAL_HEALTH_CODE}; within ${STARTUP_GRACE_SECONDS}s startup grace"
       elif [[ "$running" == "true" ]]; then
         state="unhealthy"
         needs_repair="true"
@@ -122,6 +143,16 @@ service_status_row() {
         reason="automation pid is not running"
       fi
       ;;
+    whatsapp_capture)
+      if [[ "$running" == "true" ]]; then
+        state="healthy"
+        reason="whatsapp_capture pid is running"
+      else
+        state="unhealthy"
+        needs_repair="true"
+        reason="whatsapp_capture pid is not running"
+      fi
+      ;;
     tunnel)
       if [[ -z "$PUBLIC_BASE_URL" ]]; then
         if [[ "$running" == "true" ]]; then
@@ -138,6 +169,9 @@ service_status_row() {
       elif [[ "$LOCAL_API_HEALTHY" -ne 1 ]]; then
         state="blocked"
         reason="local api is unhealthy, so public /health ${PUBLIC_HEALTH_CODE:-unavailable} is treated as an api problem first"
+      elif [[ "$running" == "true" ]] && pid_within_startup_grace "$pid"; then
+        state="starting"
+        reason="tunnel pid is running but public /health returned ${PUBLIC_HEALTH_CODE:-unavailable}; within ${STARTUP_GRACE_SECONDS}s startup grace"
       elif [[ "$running" == "true" ]]; then
         state="unhealthy"
         needs_repair="true"
@@ -164,6 +198,7 @@ collect_statuses() {
   : >"$STATUS_FILE"
   service_status_row api >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
+  service_status_row whatsapp_capture >>"$STATUS_FILE"
   service_status_row tunnel >>"$STATUS_FILE"
 }
 

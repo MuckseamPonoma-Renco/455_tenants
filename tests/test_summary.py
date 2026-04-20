@@ -105,6 +105,37 @@ def test_api_surfaces_normalize_legacy_incident_timestamps(client):
     assert summary_incident['updated_at'] == '2026-03-18T23:01:00Z'
 
 
+def test_summary_surfaces_replacement_bundle_action(client):
+    with get_session() as session:
+        for idx in range(3):
+            session.add(Incident(
+                incident_id=f'elevator-{idx}',
+                category='elevator',
+                asset='elevator_north',
+                status='open',
+                severity=4,
+                start_ts='2026-04-18T00:00:00Z',
+                start_ts_epoch=1776460800 + idx,
+                end_ts=None,
+                end_ts_epoch=None,
+                last_ts_epoch=1776460800 + idx,
+                title=f'Elevator outage {idx}',
+                summary='Repeated elevator outage',
+                proof_refs=f'proof-{idx}',
+                report_count=1,
+                witness_count=1,
+                confidence=80,
+                needs_review=False,
+                updated_at='2026-04-18T00:10:00Z',
+            ))
+        session.commit()
+
+    response = client.get('/api/summary', headers=auth_headers())
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert any(action['title'] == 'Export the elevator replacement bundle' for action in payload['actions'])
+
+
 def test_queue_endpoint_normalizes_legacy_payload_timestamps(client):
     with get_session() as session:
         session.add(FilingJob(

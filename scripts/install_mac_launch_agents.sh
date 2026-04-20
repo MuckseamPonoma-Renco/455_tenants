@@ -17,6 +17,7 @@ Usage:
 Installs or updates these per-user LaunchAgents:
   tenant-issue-os.api
   tenant-issue-os.automation
+  tenant-issue-os.whatsapp_capture  (only when WHATSAPP_CAPTURE_CHAT_NAMES is configured)
   tenant-issue-os.tunnel      (only when tunnel auth is configured)
   tenant-issue-os.watchdog
 EOF
@@ -130,6 +131,15 @@ bootstrap_agent api
 bootstrap_agent automation
 bootstrap_agent watchdog
 
+if mac_service_whatsapp_capture_configured; then
+  render_template "tenant-issue-os.whatsapp_capture.plist.template" "$(mac_service_service_plist_path whatsapp_capture)"
+  bootstrap_agent whatsapp_capture
+else
+  mac_service_bootout_launch_agent whatsapp_capture
+  rm -f "$(mac_service_service_plist_path whatsapp_capture)"
+  echo "Skipped tenant-issue-os.whatsapp_capture because WHATSAPP_CAPTURE_CHAT_NAMES is not configured."
+fi
+
 if mac_service_tunnel_configured; then
   render_template "tenant-issue-os.tunnel.plist.template" "$(mac_service_service_plist_path tunnel)"
   bootstrap_agent tunnel
@@ -141,6 +151,9 @@ fi
 
 print_agent_summary api
 print_agent_summary automation
+if mac_service_whatsapp_capture_configured; then
+  print_agent_summary whatsapp_capture
+fi
 if mac_service_tunnel_configured; then
   print_agent_summary tunnel
 fi

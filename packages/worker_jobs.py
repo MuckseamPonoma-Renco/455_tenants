@@ -4,6 +4,7 @@ from packages.audit import append_audit_event, daily_hash_chain
 from packages.db import Incident, MessageDecision, RawMessage, get_session
 from packages.incident.extractor import classify_and_upsert_incident
 from packages.nyc311.legal_export import export_legal_bundle as export_bundle_impl
+from packages.nyc311.replacement_export import export_elevator_replacement_bundle as export_replacement_bundle_impl
 from packages.nyc311.planner import ensure_filing_jobs
 from packages.nyc311.tracker import sync_all_case_statuses
 from packages.sheets.sync import (
@@ -144,4 +145,11 @@ def export_legal_bundle():
     with get_session() as session:
         result = export_bundle_impl(session)
     append_audit_event("EXPORT_LEGAL_BUNDLE", None, result)
+    return {"ok": True, **result}
+
+
+def export_elevator_replacement_bundle():
+    with get_session() as session:
+        result = export_replacement_bundle_impl(session)
+    append_audit_event("EXPORT_ELEVATOR_REPLACEMENT_BUNDLE", None, result)
     return {"ok": True, **result}

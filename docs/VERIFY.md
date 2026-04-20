@@ -64,6 +64,16 @@ Then verify:
 5. Run `/admin/sync_311_statuses` the next day.
 6. Export `/admin/export_legal_bundle`.
 
+## WhatsApp Web Chrome capture test
+
+1. Set `WHATSAPP_CAPTURE_CHAT_NAMES` in `.env`.
+2. Run `./scripts/run_whatsapp_capture.sh --headful`.
+3. Scan the WhatsApp QR code once if Chrome asks.
+4. Let the first pass prime the currently visible messages.
+5. Send one fresh test message into one configured chat.
+6. Wait one poll cycle, or run `./scripts/run_whatsapp_capture.sh --once --headful --no-prime` for a deliberate one-pass test.
+7. Confirm `/api/incidents`, `/api/decisions`, or `/api/summary` reflects the new message.
+
 ## Fastest way to know where you are
 
 Call `GET /api/summary` after every major setup step. It will tell you the current stage and the next best action.

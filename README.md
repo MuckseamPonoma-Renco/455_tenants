@@ -4,7 +4,7 @@ This repo is the working backend for the 455 Ocean Parkway tenant project.
 
 The core loop is:
 
-1. Android captures a WhatsApp notification.
+1. Android Tasker or Mac Chrome Playwright captures a WhatsApp message.
 2. Backend stores the raw message.
 3. Backend decides whether it is a real building issue.
 4. Backend clusters it into an incident.
@@ -31,6 +31,7 @@ The API is still useful, but the Sheet is not a side feature. It is the main ope
 ## Core product functions
 
 - WhatsApp capture from Android Tasker
+- WhatsApp Web capture from Chrome on the Mac mini via Playwright
 - raw message dedupe
 - hybrid rules + LLM message classification
 - incident clustering
@@ -116,6 +117,8 @@ docker compose up --build
 - `GET /health`
 - `POST /ingest/tasker`
 - `POST /ingest/tasker_batch`
+- `POST /ingest/whatsapp_web`
+- `POST /ingest/whatsapp_web_batch`
 - `POST /ingest/export`
 - `GET /report`
 - `POST /report/submit`
@@ -151,6 +154,7 @@ docker compose up --build
 2. Import the WhatsApp export.
 3. Review `Dashboard`, `Incidents`, `Queue311`, and `DecisionLog`.
 4. Turn on Android capture for WhatsApp notifications.
+   Or run the Chrome/Playwright watcher on the Mac mini for the exact tenant chats you want to monitor.
 5. Run the Playwright portal worker.
 6. Submit one real complaint.
 7. Confirm SR appears in `Cases311`.
@@ -159,6 +163,7 @@ docker compose up --build
 ## Files to read next
 
 - `docs/ANDROID_CAPTURE_SETUP.md`
+- `docs/WHATSAPP_WEB_CAPTURE_SETUP.md`
 - `docs/NYC311_PORTAL_AUTOMATION.md`
 - `docs/DEPLOY_CLOUDFLARE_NEON.md`
 - `docs/VERIFY.md`

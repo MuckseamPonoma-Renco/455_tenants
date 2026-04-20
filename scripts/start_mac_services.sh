@@ -9,11 +9,12 @@ usage() {
 Usage:
   ./scripts/start_mac_services.sh
   ./scripts/start_mac_services.sh api automation
+  ./scripts/start_mac_services.sh whatsapp_capture
   ./scripts/start_mac_services.sh --restart api
   ./scripts/start_mac_services.sh --restart
 
 Behavior:
-  - No args starts api + automation and starts tunnel only if tunnel auth is configured.
+  - No args starts api + automation, starts whatsapp_capture only when configured, and starts tunnel only if tunnel auth is configured.
   - Named services limit the action to those services.
   - --restart performs targeted restarts instead of a start-if-missing action.
 EOF
@@ -31,7 +32,7 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    api|automation|tunnel)
+    api|automation|whatsapp_capture|tunnel)
       REQUESTED_SERVICES+=("$1")
       ;;
     *)
@@ -44,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#REQUESTED_SERVICES[@]} -eq 0 ]]; then
-  REQUESTED_SERVICES=(api automation tunnel)
+  REQUESTED_SERVICES=(api automation whatsapp_capture tunnel)
 fi
 
 mac_service_ensure_dirs
@@ -53,6 +54,11 @@ for name in "${REQUESTED_SERVICES[@]}"; do
   if [[ "$name" == "tunnel" ]] && ! mac_service_tunnel_configured; then
     echo "Skipped tunnel:"
     mac_service_tunnel_check_message
+    continue
+  fi
+  if [[ "$name" == "whatsapp_capture" ]] && ! mac_service_whatsapp_capture_configured; then
+    echo "Skipped whatsapp_capture:"
+    mac_service_whatsapp_capture_check_message
     continue
   fi
 

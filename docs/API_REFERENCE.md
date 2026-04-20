@@ -32,6 +32,18 @@ Accepts multiple WhatsApp notification messages in one request.
 
 Use this for replaying a phone-side backlog after downtime. Duplicate messages are ignored safely.
 
+## POST /ingest/whatsapp_web
+Accepts one WhatsApp Web message captured from Chrome/Playwright on the Mac mini.
+
+Payload shape is the same as `/ingest/tasker`, plus optional `attachments` JSON for downloaded media and reply/context metadata.
+
+## POST /ingest/whatsapp_web_batch
+Accepts multiple WhatsApp Web messages in one request.
+
+Payload shape is the same as `/ingest/tasker_batch`.
+
+Use this for the Chrome/Playwright live watcher. Duplicate messages are deduped against both Android Tasker and Chrome live capture.
+
 ## POST /ingest/export
 Multipart form upload of TXT or ZIP containing `_chat.txt`.
 
@@ -72,3 +84,6 @@ Stores a status update from the portal worker or another trusted source.
 
 ## POST /mobile/sr_updates/sync_now
 Runs the 311 case tracker sync immediately.
+
+## POST /admin/export_elevator_replacement_bundle
+Builds the focused elevator pressure bundle with elevator incidents, WhatsApp evidence, linked 311 cases, and recent portal screenshots.
