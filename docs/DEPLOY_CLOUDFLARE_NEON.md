@@ -236,7 +236,7 @@ Use a real fresh message, not an old imported one:
 curl -X POST \
   -H "Authorization: Bearer $INGEST_TOKEN" \
   -H "Content-Type: application/json" \
-  https://api.YOUR_DOMAIN/ingest/tasker \
+  https://api.YOUR_DOMAIN/ingest/whatsapp_web \
   -d '{"chat_name":"455 Tenants","text":"Both elevators are out right now","sender":"Deployment Test","ts_epoch":'\"$(date +%s)\"'}'
 ```
 
@@ -246,4 +246,4 @@ Then verify:
 - `https://api.YOUR_DOMAIN/api/summary`
 - `https://api.YOUR_DOMAIN/api/queue`
 
-If the message is fresh and the rules match, `/api/summary` should move to `ready_for_android_filer`.
+If the message is fresh and the rules match, `/api/summary` should move to `ready_for_portal_worker`.

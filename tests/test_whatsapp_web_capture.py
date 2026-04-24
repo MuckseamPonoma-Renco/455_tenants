@@ -1,7 +1,7 @@
 from packages.db import RawMessage, get_session
 from packages.timeutil import parse_ts_to_epoch
 from packages.whatsapp.attachments import attachment_items, build_attachment_manifest, parse_attachment_manifest
-from packages.whatsapp.web_capture import parse_whatsapp_message_meta
+from packages.whatsapp.web_capture import _expanded_screenshot_clip, parse_whatsapp_message_meta
 
 
 def auth_headers():
@@ -22,6 +22,20 @@ def test_parse_whatsapp_message_meta_day_first_format():
     assert sender == "Karen"
     assert ts_epoch == parse_ts_to_epoch("4/17/2026 18:21")
     assert ts_iso == "2026-04-17T22:21:00Z"
+
+
+def test_bubble_screenshot_clip_expands_single_line_messages():
+    clip = _expanded_screenshot_clip(
+        {"x": 420, "y": 300, "width": 508, "height": 20},
+        viewport_width=1200,
+        viewport_height=900,
+    )
+
+    assert clip is not None
+    assert clip["width"] >= 508
+    assert clip["height"] == 110
+    assert clip["x"] < 420
+    assert clip["y"] < 300
 
 
 def test_ingest_whatsapp_web_stores_distinct_source(client):
@@ -101,6 +115,43 @@ def test_ingest_whatsapp_web_dedupes_against_tasker_capture(client):
         rows = session.query(RawMessage).all()
         assert len(rows) == 1
         assert rows[0].source == "tasker"
+
+
+def test_ingest_whatsapp_web_duplicate_can_fill_missing_attachments(client):
+    first = client.post(
+        "/ingest/whatsapp_web",
+        headers=auth_headers(),
+        json={
+            "chat_name": "455 Tenants Test",
+            "text": "stair A handrail broken",
+            "sender": "Karen",
+            "ts_epoch": 1771000500,
+        },
+    )
+    manifest = build_attachment_manifest(
+        items=[{"kind": "image", "status": "captured", "path": "/tmp/handrail.png", "filename": "handrail.png"}],
+        source="whatsapp_web",
+    )
+    second = client.post(
+        "/ingest/whatsapp_web",
+        headers=auth_headers(),
+        json={
+            "chat_name": "455 Tenants Test",
+            "text": "stair A handrail broken",
+            "sender": "Karen",
+            "ts_epoch": 1771000500,
+            "attachments": manifest,
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["deduped"] is True
+    with get_session() as session:
+        row = session.query(RawMessage).one()
+        items = attachment_items(row.attachments)
+        assert len(items) == 1
+        assert items[0]["filename"] == "handrail.png"
 
 
 def test_parse_attachment_manifest_supports_legacy_placeholder():

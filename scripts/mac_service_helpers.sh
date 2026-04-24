@@ -3,6 +3,7 @@
 MAC_SERVICE_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAC_SERVICE_LOG_DIR="${HOME}/.local/var/log/tenant-issue-os"
 MAC_SERVICE_PID_DIR="${HOME}/.local/var/run/tenant-issue-os"
+MAC_SERVICE_STATE_DIR="${HOME}/.local/state/tenant-issue-os"
 MAC_SERVICE_LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 MAC_SERVICE_LABEL_PREFIX="tenant-issue-os"
 MAC_SERVICE_UID="$(id -u)"
@@ -20,7 +21,15 @@ mac_service_runtime_python() {
 }
 
 mac_service_ensure_dirs() {
-  mkdir -p "$MAC_SERVICE_LOG_DIR" "$MAC_SERVICE_PID_DIR" "$MAC_SERVICE_LAUNCH_AGENTS_DIR"
+  mkdir -p "$MAC_SERVICE_LOG_DIR" "$MAC_SERVICE_PID_DIR" "$MAC_SERVICE_STATE_DIR" "$MAC_SERVICE_LAUNCH_AGENTS_DIR"
+}
+
+mac_service_install_lock_path() {
+  printf '%s/%s\n' "$MAC_SERVICE_STATE_DIR" "install.lock"
+}
+
+mac_service_install_in_progress() {
+  [[ -d "$(mac_service_install_lock_path)" ]]
 }
 
 mac_service_service_label() {
@@ -180,10 +189,54 @@ mac_service_stop_manual_service() {
   local pid
   if ! pid="$(mac_service_read_pidfile "$name" 2>/dev/null)"; then
     rm -f "$(mac_service_service_pid_file "$name")"
-    return 0
+  else
+    if mac_service_pid_alive "$pid"; then
+      kill "$pid" 2>/dev/null || true
+      local _i
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if ! mac_service_pid_alive "$pid"; then
+          break
+        fi
+        sleep 1
+      done
+      if mac_service_pid_alive "$pid"; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    fi
   fi
 
-  if mac_service_pid_alive "$pid"; then
+  rm -f "$(mac_service_service_pid_file "$name")"
+}
+
+mac_service_residual_process_pattern() {
+  case "$1" in
+    api)
+      printf '%s\n' 'apps.api.main:app --host 127.0.0.1 --port 8000'
+      ;;
+    automation)
+      printf '%s\n' 'run_automation_daemon.py'
+      ;;
+    whatsapp_capture)
+      printf '%s\n' 'run_whatsapp_capture.py'
+      ;;
+    tunnel)
+      printf '%s\n' 'cloudflared.*cloudflare/config.yml'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+mac_service_stop_residual_processes() {
+  local name="$1"
+  local pattern pid
+
+  pattern="$(mac_service_residual_process_pattern "$name" 2>/dev/null || true)"
+  [[ -n "$pattern" ]] || return 0
+
+  while IFS= read -r pid; do
+    mac_service_valid_pid "$pid" || continue
     kill "$pid" 2>/dev/null || true
     local _i
     for _i in 1 2 3 4 5 6 7 8 9 10; do
@@ -195,9 +248,7 @@ mac_service_stop_manual_service() {
     if mac_service_pid_alive "$pid"; then
       kill -9 "$pid" 2>/dev/null || true
     fi
-  fi
-
-  rm -f "$(mac_service_service_pid_file "$name")"
+  done < <(pgrep -f "$pattern" 2>/dev/null || true)
 }
 
 mac_service_start_manual_service() {

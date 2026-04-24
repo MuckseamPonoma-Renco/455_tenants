@@ -55,4 +55,4 @@ This is a portal-side verification helper only. The app still uses `NYC311_TRACK
 - When `311_EMAIL` and `311_PASSWORD` exist in `.env`, the worker signs into NYC311 first and then still submits the elevator flow anonymously if requested by the form step.
 - The confirmation page does not always render the SR number in visible text; the worker falls back to the `View Details or Subscribe for Updates` link and extracts `srnum=...` from that URL.
 - `/mobile/filings/claim_next`, `/submitted`, and `/failed` still define the filing lifecycle.
-- `/api/summary` still uses the legacy stage name `ready_for_android_filer` for compatibility, even though the filing path is now browser-based.
+- `/api/summary` uses `ready_for_portal_worker` when queue jobs are ready for the browser filer.

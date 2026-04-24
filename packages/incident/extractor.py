@@ -7,7 +7,7 @@ from sqlalchemy import func
 from zoneinfo import ZoneInfo
 from packages.audit import compute_message_id
 from packages.db import Incident, IncidentWitness, MessageDecision, RawMessage
-from packages.incident.rules import classify_rules, explicit_elevator_asset
+from packages.incident.rules import classify_rules, explicit_elevator_asset, text_explicitly_supports_category
 from packages.llm.classifier import llm_classify_message, llm_review_decision
 from packages.llm.triage import should_call_llm
 from packages.nyc311.planner import ensure_filing_job_for_incident, incident_is_auto_eligible
@@ -21,6 +21,8 @@ RECENT_CHAT_CONTEXT_WINDOW_SECONDS = int(os.environ.get("RECENT_CHAT_CONTEXT_WIN
 RECENT_CHAT_CONTEXT_LIMIT = int(os.environ.get("RECENT_CHAT_CONTEXT_LIMIT", "8"))
 LLM_MODE = os.environ.get("LLM_MODE", "uncertain").lower().strip()
 BUILDING_TZ = ZoneInfo(os.environ.get("BUILDING_TIMEZONE", "America/New_York"))
+VALID_CATEGORIES = {"elevator", "heat_hot_water", "leaks_water_damage", "pests", "security_access", "other"}
+NONISSUE_GUARDRAIL_CONFIDENCE = int(os.environ.get("NONISSUE_GUARDRAIL_CONFIDENCE", "85"))
 
 
 def _now_iso():
@@ -370,6 +372,56 @@ def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[d
     return None, "none"
 
 
+def _normalize_choice(choice: dict | None) -> dict | None:
+    if not isinstance(choice, dict):
+        return None
+    normalized = dict(choice)
+    category = str(normalized.get("category") or "other")
+    if category not in VALID_CATEGORIES:
+        normalized["category"] = "other"
+        normalized["needs_review"] = True
+    return normalized
+
+
+def _supports_chosen_category_from_text(text: str, choice: dict | None) -> bool:
+    if not isinstance(choice, dict) or not choice.get("is_issue"):
+        return False
+    category = choice.get("category") or "other"
+    if category == "elevator":
+        return True
+    return text_explicitly_supports_category(text, category)
+
+
+def _non_issue_guardrail(text: str, rule_choice: dict | None, llm_choice: dict | None, chosen: dict | None) -> tuple[dict | None, str | None]:
+    if not isinstance(chosen, dict) or not chosen.get("is_issue"):
+        return None, None
+    if not isinstance(llm_choice, dict) or llm_choice.get("is_issue"):
+        return None, None
+    if bool(llm_choice.get("refers_to_open_incident")):
+        return None, None
+    if int(llm_choice.get("confidence", 0) or 0) < NONISSUE_GUARDRAIL_CONFIDENCE:
+        return None, None
+    if _supports_chosen_category_from_text(text, chosen):
+        return None, None
+
+    blocked = {
+        "is_issue": False,
+        "signal_type": llm_choice.get("signal_type") or "discussion",
+        "category": "other",
+        "asset": None,
+        "event_type": "non_issue",
+        "severity": int(llm_choice.get("severity", 1) or 1),
+        "confidence": int(llm_choice.get("confidence", 0) or 0),
+        "title": llm_choice.get("title") or "",
+        "summary": llm_choice.get("summary") or "",
+        "close_incident": False,
+        "needs_review": True,
+    }
+    if rule_choice:
+        blocked["summary"] = (blocked["summary"] or f"Blocked unsupported {rule_choice.get('category') or 'issue'} classification.")[:2000]
+    return blocked, "guardrail_non_issue"
+
+
 def _should_request_review(rule_choice: dict | None, llm_choice: dict | None, llm_called: bool) -> bool:
     if not llm_called or not llm_choice:
         return False
@@ -417,9 +469,17 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             review_choice["needs_review"] = bool(
                 review_choice.get("needs_review", False) or int(review_choice.get("confidence", 0)) < 80
             )
+            review_choice = _normalize_choice(review_choice)
+            guarded_choice, guarded_source = _non_issue_guardrail(rm.text or "", rule_choice, llm_choice, review_choice)
+            if guarded_choice is not None:
+                return guarded_choice, rules, llm_choice, guarded_source or "guardrail_non_issue"
             return review_choice, rules, llm_choice, "review"
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
+    chosen = _normalize_choice(chosen)
+    guarded_choice, guarded_source = _non_issue_guardrail(rm.text or "", rule_choice, llm_choice, chosen)
+    if guarded_choice is not None:
+        return guarded_choice, rules, llm_choice, guarded_source or "guardrail_non_issue"
     return chosen, rules, llm_choice, chosen_source
 
 

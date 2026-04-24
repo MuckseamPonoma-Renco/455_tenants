@@ -7,7 +7,7 @@ from packages.audit import append_audit_event
 from packages.db import FilingJob, get_session
 from packages.nyc311.planner import claim_next_job
 from packages.nyc311.portal import lookup_service_request_status, submit_elevator_complaint
-from packages.nyc311.tracker import create_case_from_filing_job
+from packages.nyc311.tracker import apply_portal_lookup_status, create_case_from_filing_job
 from packages.worker_jobs import _safe_sync_sheets
 
 
@@ -67,6 +67,8 @@ def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True)
         if lookup and isinstance(lookup, dict) and lookup.get("error"):
             job.notes = _append_note(job.notes, f"lookup_error={lookup['error']}")
         case = create_case_from_filing_job(session, job=job, sr_number=submission.service_request_number)
+        if lookup and not (isinstance(lookup, dict) and lookup.get("error")):
+            apply_portal_lookup_status(case, lookup)
         session.commit()
 
     _safe_sync_sheets()

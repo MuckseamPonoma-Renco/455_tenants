@@ -17,7 +17,7 @@ BACK = re.compile(
 
 HEAT = re.compile(r"\bheat\b|hot\s+water|no\s+hot\s+water|cold\s+water|boiler", re.I)
 LEAK = re.compile(r"leak|flood|water\s+damage|ceiling\s+collapsed|mold", re.I)
-PESTS = re.compile(r"roach|mice|mouse|rat|bed\s*bug|bugs", re.I)
+PESTS = re.compile(r"\b(?:roach(?:es)?|mice|mouse|rats?|bed\s*bugs?|bugs)\b", re.I)
 SEC = re.compile(r"lock|door|intercom|camera|security|stair|fire\s+door|handrail", re.I)
 QUESTION_ONLY = re.compile(r"\?$")
 
@@ -34,6 +34,24 @@ def _asset(text: str):
 
 def explicit_elevator_asset(text: str):
     return _asset(text or "")
+
+
+def text_explicitly_supports_category(text: str, category: str | None) -> bool:
+    t = (text or "").strip()
+    cat = (category or "").strip()
+    if not t or not cat:
+        return False
+    if cat == "elevator":
+        return bool(ELEVATOR.search(t))
+    if cat == "heat_hot_water":
+        return bool(HEAT.search(t))
+    if cat == "leaks_water_damage":
+        return bool(LEAK.search(t))
+    if cat == "pests":
+        return bool(PESTS.search(t))
+    if cat == "security_access":
+        return bool(SEC.search(t))
+    return False
 
 
 def classify_rules(text: str) -> dict:

@@ -14,6 +14,7 @@ from packages.sheets.sync import (
     sync_dashboard_to_sheets,
     sync_decisions_to_sheets,
     sync_incidents_to_sheets,
+    sync_public_updates_to_sheets,
 )
 
 
@@ -25,6 +26,7 @@ def _safe_sync_sheets():
         sync_311_cases_to_sheets()
         sync_311_queue_to_sheets()
         sync_decisions_to_sheets()
+        sync_public_updates_to_sheets()
     except Exception as exc:
         append_audit_event("SHEETS_SYNC_SKIPPED", None, {"error": str(exc)[:300]})
 

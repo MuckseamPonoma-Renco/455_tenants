@@ -8,6 +8,7 @@ TEMPLATE_DIR="$REPO_ROOT/launchd"
 PYTHON_BIN="$(mac_service_runtime_python)"
 STAGING_BASE="$HOME/.local/share/tenant-issue-os"
 RUNTIME_ROOT="$STAGING_BASE/runtime"
+INSTALL_LOCK_DIR="$(mac_service_install_lock_path)"
 
 usage() {
   cat <<'EOF'
@@ -39,6 +40,12 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 mac_service_ensure_dirs
+
+if ! mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
+  echo "Another macOS launchd install/update is already running: $INSTALL_LOCK_DIR" >&2
+  exit 1
+fi
+trap 'rmdir "$INSTALL_LOCK_DIR" >/dev/null 2>&1 || true' EXIT
 
 if ! command -v rsync >/dev/null 2>&1; then
   echo "install_mac_launch_agents.sh requires rsync" >&2
@@ -91,6 +98,22 @@ PY
   plutil -lint "$destination" >/dev/null
 }
 
+bootstrap_with_retry() {
+  local name="$1"
+  local plist_path="$2"
+  local attempt output status
+
+  for attempt in 1 2 3 4 5; do
+    output="$(launchctl bootstrap "gui/$MAC_SERVICE_UID" "$plist_path" 2>&1)" && return 0
+    status=$?
+    mac_service_bootout_launch_agent "$name"
+    sleep 1
+  done
+
+  printf '%s\n' "$output" >&2
+  return "$status"
+}
+
 bootstrap_agent() {
   local name="$1"
   local plist_path
@@ -98,21 +121,29 @@ bootstrap_agent() {
 
   if [[ "$name" != "watchdog" ]]; then
     mac_service_stop_manual_service "$name"
+    mac_service_stop_residual_processes "$name"
   fi
 
   mac_service_bootout_launch_agent "$name"
-  launchctl bootstrap "gui/$MAC_SERVICE_UID" "$plist_path"
+  bootstrap_with_retry "$name" "$plist_path"
   launchctl enable "$(mac_service_service_target "$name")"
+  sleep 1
 }
 
 print_agent_summary() {
   local name="$1"
   local label target
+  local printed
   label="$(mac_service_service_label "$name")"
   target="$(mac_service_service_target "$name")"
   echo "Loaded ${label}"
   echo "  plist: $(mac_service_service_plist_path "$name")"
-  launchctl print "$target" | awk '
+  printed="$(launchctl print "$target" 2>&1 || true)"
+  if [[ "$printed" == *"Could not find service"* ]]; then
+    echo "  state = missing"
+    return 1
+  fi
+  printf '%s\n' "$printed" | awk '
     /program = / {print "  " $0; next}
     /stdout path = / {print "  " $0; next}
     /stderr path = / {print "  " $0; next}
@@ -121,6 +152,7 @@ print_agent_summary() {
 }
 
 echo "Staging launchd runtime copy at $RUNTIME_ROOT"
+mac_service_bootout_launch_agent watchdog
 stage_runtime_copy
 
 render_template "tenant-issue-os.api.plist.template" "$(mac_service_service_plist_path api)"
@@ -129,7 +161,6 @@ render_template "tenant-issue-os.watchdog.plist.template" "$(mac_service_service
 
 bootstrap_agent api
 bootstrap_agent automation
-bootstrap_agent watchdog
 
 if mac_service_whatsapp_capture_configured; then
   render_template "tenant-issue-os.whatsapp_capture.plist.template" "$(mac_service_service_plist_path whatsapp_capture)"
@@ -148,6 +179,8 @@ else
   rm -f "$(mac_service_service_plist_path tunnel)"
   echo "Skipped tenant-issue-os.tunnel because tunnel auth is not configured."
 fi
+
+bootstrap_agent watchdog
 
 print_agent_summary api
 print_agent_summary automation

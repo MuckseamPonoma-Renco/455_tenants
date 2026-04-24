@@ -114,7 +114,7 @@ def build_ops_summary(session) -> dict[str, Any]:
     ) or 0
 
     stage = 'bootstrap'
-    next_step = 'Import the WhatsApp export or send one trigger message through /ingest/tasker.'
+    next_step = 'Import the WhatsApp export or send one trigger message through /ingest/whatsapp_web.'
     if raw_count > 0:
         stage = 'capture_live'
         next_step = 'Keep live WhatsApp capture running so new reports keep entering the system.'
@@ -122,7 +122,7 @@ def build_ops_summary(session) -> dict[str, Any]:
         stage = 'tracking_live'
         next_step = 'Keep the NYC311 portal worker available for new incidents and run case-status sync daily.'
     if open_incidents and (job_counts.get('pending', 0) or job_counts.get('failed', 0)):
-        stage = 'ready_for_android_filer'
+        stage = 'ready_for_portal_worker'
         next_step = 'Run the Playwright NYC311 portal worker and submit one real complaint.'
 
     alerts: list[dict[str, Any]] = []

@@ -380,6 +380,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 mac_service_ensure_dirs
+
+if [[ "$REPAIR_MODE" -eq 1 ]] && mac_service_install_in_progress; then
+  if [[ "$JSON_MODE" -eq 1 ]]; then
+    python_bin="$(mac_service_runtime_python)" || {
+      echo '{"outcome":"install_in_progress","exit_code":0}' 
+      exit 0
+    }
+    "$python_bin" - <<'PY'
+import json
+print(json.dumps({"outcome": "install_in_progress", "exit_code": 0, "message": "install_mac_launch_agents.sh is updating LaunchAgents; repairs skipped"}))
+PY
+  else
+    echo "install_mac_launch_agents.sh is updating LaunchAgents; skipping repairs."
+  fi
+  exit 0
+fi
+
 refresh_endpoint_health
 collect_statuses
 

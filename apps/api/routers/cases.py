@@ -99,7 +99,12 @@ def list_incidents(authorization: str | None = Header(default=None)):
 def list_decisions(authorization: str | None = Header(default=None)):
     require_bearer_token(authorization)
     with get_session() as session:
-        rows = session.scalars(select(MessageDecision).order_by(MessageDecision.created_at.desc().nullslast()).limit(200)).all()
+        rows = session.scalars(
+            select(MessageDecision)
+            .outerjoin(RawMessage, RawMessage.message_id == MessageDecision.message_id)
+            .order_by(RawMessage.ts_epoch.desc().nullslast(), MessageDecision.created_at.desc().nullslast())
+            .limit(200)
+        ).all()
         message_ids = [row.message_id for row in rows]
         raw_map = {row.message_id: row for row in session.scalars(select(RawMessage).where(RawMessage.message_id.in_(message_ids))).all()} if message_ids else {}
         return {
@@ -108,7 +113,8 @@ def list_decisions(authorization: str | None = Header(default=None)):
             'decisions': [
                 {
                     'message_id': row.message_id,
-                    'created_at': normalize_timestamp(row.created_at),
+                    'message_ts': normalize_timestamp(getattr(raw_map.get(row.message_id), 'ts_iso', None), fallback=getattr(raw_map.get(row.message_id), 'ts_epoch', None)),
+                    'decision_updated_at': normalize_timestamp(row.created_at),
                     'source': getattr(raw_map.get(row.message_id), 'source', None),
                     'text': getattr(raw_map.get(row.message_id), 'text', None),
                     'chosen_source': row.chosen_source,

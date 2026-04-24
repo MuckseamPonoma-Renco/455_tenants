@@ -286,6 +286,24 @@ def test_tasker_batch_schedules_single_resync_after_bulk_processing(client, monk
     assert len(resync_calls) == 1
 
 
+def test_operator_text_no_longer_false_matches_pests(client):
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'The 311 operator took that complaint as well.',
+        'sender': 'Molly',
+        'ts_epoch': 1776800000,
+    })
+
+    assert response.status_code == 200, response.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, response.json()['message_id'])
+        assert decision is not None
+        assert decision.is_issue is False
+        assert decision.category is None
+        assert session.query(Incident).count() == 0
+
+
 def test_export_ingest_schedules_single_resync_after_bulk_processing(client, tmp_path, monkeypatch):
     process_calls: list[tuple[str, bool]] = []
     resync_calls: list[bool] = []
@@ -493,6 +511,58 @@ def test_llm_assist_can_promote_issue_and_logs_decision(client, monkeypatch):
         assert incident.category == 'elevator'
         assert decision.chosen_source in {'llm', 'hybrid'}
         assert decision.is_issue is True
+
+
+def test_guardrail_blocks_unsupported_issue_when_llm_confidently_says_non_issue(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'assist')
+
+    def fake_rules(_text):
+        return {
+            'is_issue': True,
+            'category': 'pests',
+            'asset': None,
+            'severity': 3,
+            'title': 'Pest issue',
+            'summary': 'Tenant reports pests.',
+            'kind': 'issue',
+        }
+
+    def fake_llm(message_text, open_incidents=None, recent_related=None, recent_chat=None):
+        return {
+            'is_issue': False,
+            'signal_type': 'discussion',
+            'category': 'other',
+            'asset': None,
+            'event_type': 'non_issue',
+            'severity': 1,
+            'confidence': 95,
+            'title': 'Discussion only',
+            'summary': 'This is not a building issue.',
+            'refers_to_open_incident': False,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.classify_rules', fake_rules)
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'We should organize better next week.',
+        'sender': 'Karen',
+        'ts_epoch': 1776801000,
+    })
+
+    assert response.status_code == 200, response.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, response.json()['message_id'])
+        assert decision is not None
+        assert decision.is_issue is False
+        assert decision.chosen_source == 'guardrail_non_issue'
+        assert decision.category == 'other'
+        assert decision.needs_review is True
+        assert session.query(Incident).count() == 0
 
 
 def test_review_model_resolves_ambiguous_elevator_follow_up(client, monkeypatch):

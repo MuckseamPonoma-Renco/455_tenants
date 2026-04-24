@@ -12,8 +12,8 @@ def mobile_headers():
     return {'Authorization': 'Bearer mobile-token'}
 
 
-def test_summary_endpoint_shows_android_filer_stage(client):
-    client.post('/ingest/tasker', headers=auth_headers(), json={
+def test_summary_endpoint_shows_portal_worker_stage(client):
+    client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
         'chat_name': '455 Tenants',
         'text': 'Both elevators are out again and I had to walk up to the 16th floor!',
         'sender': 'Tibor Simon',
@@ -23,7 +23,7 @@ def test_summary_endpoint_shows_android_filer_stage(client):
     response = client.get('/api/summary', headers=auth_headers())
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload['stage'] == 'ready_for_android_filer'
+    assert payload['stage'] == 'ready_for_portal_worker'
     assert payload['metrics']['filing_jobs_pending'] >= 1
     assert any(action['title'] == 'Submit the first real complaint' for action in payload['actions'])
 

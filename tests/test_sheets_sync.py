@@ -1,17 +1,19 @@
-from packages.db import FilingJob, Incident, MessageDecision, RawMessage, get_session
+from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.sheets import sync as sheets_sync
 from packages.sheets.sync import _elevator_status_from_incidents, _replace_tab_values, _should_skip_duplicate_tasker_decision
+from packages.whatsapp.attachments import build_attachment_manifest
 
 
 class _FakeRequest:
-    def __init__(self, calls, kind, kwargs):
+    def __init__(self, calls, kind, kwargs, response=None):
         self.calls = calls
         self.kind = kind
         self.kwargs = kwargs
+        self.response = response
 
     def execute(self):
         self.calls.append((self.kind, self.kwargs))
-        return {}
+        return self.response or {}
 
 
 class _FakeValues:
@@ -32,6 +34,27 @@ class _FakeSpreadsheets:
     def values(self):
         return _FakeValues(self.calls)
 
+    def get(self, **kwargs):
+        return _FakeRequest(
+            self.calls,
+            "get",
+            kwargs,
+            response={
+                "sheets": [
+                    {"properties": {"title": "Incidents", "sheetId": 1}},
+                    {"properties": {"title": "Dashboard", "sheetId": 2}},
+                    {"properties": {"title": "Coverage", "sheetId": 3}},
+                    {"properties": {"title": "Cases311", "sheetId": 4}},
+                    {"properties": {"title": "Queue311", "sheetId": 5}},
+                    {"properties": {"title": "DecisionLog", "sheetId": 6}},
+                    {"properties": {"title": "Tenant Log", "sheetId": 7}},
+                ]
+            },
+        )
+
+    def batchUpdate(self, **kwargs):
+        return _FakeRequest(self.calls, "batchUpdate", kwargs)
+
 
 class _FakeService:
     def __init__(self):
@@ -41,16 +64,80 @@ class _FakeService:
         return _FakeSpreadsheets(self.calls)
 
 
-def test_replace_tab_values_clears_stale_rows_before_update():
+class _SingleSheetService(_FakeService):
+    def spreadsheets(self):
+        calls = self.calls
+
+        class _SingleSheetSpreadsheets(_FakeSpreadsheets):
+            def get(self, **kwargs):
+                return _FakeRequest(
+                    calls,
+                    "get",
+                    kwargs,
+                    response={"sheets": [{"properties": {"title": "Sheet1", "sheetId": 9}}]},
+                )
+
+        return _SingleSheetSpreadsheets(calls)
+
+
+def test_replace_tab_values_writes_first_then_clears_stale_cells():
     service = _FakeService()
 
     _replace_tab_values(service, "sheet-123", "Incidents", [["incident_id"], ["inc-1"]])
 
-    assert [kind for kind, _kwargs in service.calls] == ["clear", "update"]
+    assert [kind for kind, _kwargs in service.calls] == ["update", "clear", "clear"]
     assert service.calls[0][1]["spreadsheetId"] == "sheet-123"
-    assert service.calls[0][1]["range"] == "Incidents!A:ZZ"
-    assert service.calls[1][1]["range"] == "Incidents!A1"
-    assert service.calls[1][1]["body"] == {"values": [["incident_id"], ["inc-1"]]}
+    assert service.calls[0][1]["range"] == "Incidents!A1"
+    assert service.calls[0][1]["body"] == {"values": [["incident_id"], ["inc-1"]]}
+    assert service.calls[1][1]["range"] == "Incidents!A3:ZZ"
+    assert service.calls[2][1]["range"] == "Incidents!B1:ZZ2"
+
+
+def test_ensure_tab_exists_can_reuse_single_default_sheet():
+    service = _SingleSheetService()
+
+    sheets_sync._ensure_tab_exists(service, "sheet-123", "Tenant Log", rename_single_existing=True)
+
+    assert [kind for kind, _kwargs in service.calls] == ["get", "batchUpdate"]
+    body = service.calls[1][1]["body"]
+    request = body["requests"][0]["updateSheetProperties"]
+    assert request["properties"]["sheetId"] == 9
+    assert request["properties"]["title"] == "Tenant Log"
+
+
+def test_public_status_summary_uses_last_evidence_when_last_report_missing():
+    summary = sheets_sync._public_status_summary(
+        {"last_evidence": "2026-04-21 2:44 PM", "confidence": "Low"},
+        ServiceRequestCase(service_request_number="311-12345678"),
+    )
+
+    assert "2026-04-21 2:44 PM" in summary
+    assert "311-12345678" in summary
+
+
+def test_public_case_sort_key_orders_active_cases_by_filing_recency():
+    older_active = ServiceRequestCase(
+        service_request_number="311-older",
+        status="In Progress",
+        submitted_at="2026-04-08T13:38:00Z",
+        last_checked_at="2026-04-24T03:01:30Z",
+    )
+    newer_active = ServiceRequestCase(
+        service_request_number="311-newer",
+        status="In Progress",
+        submitted_at="2026-04-21T18:09:00Z",
+        last_checked_at="2026-04-24T02:59:52Z",
+    )
+    submitted = ServiceRequestCase(
+        service_request_number="311-submitted",
+        status="submitted",
+        submitted_at="2026-04-22T18:09:00Z",
+        last_checked_at="2026-04-24T03:02:00Z",
+    )
+
+    ordered = sorted([older_active, submitted, newer_active], key=sheets_sync._public_case_sort_key, reverse=True)
+
+    assert [row.service_request_number for row in ordered] == ["311-newer", "311-older", "311-submitted"]
 
 
 def test_should_skip_duplicate_tasker_decision_uses_normalized_signature():
@@ -125,7 +212,7 @@ def test_sync_311_queue_to_sheets_only_writes_active_jobs(client, monkeypatch):
 
     sheets_sync.sync_311_queue_to_sheets()
 
-    values = service.calls[1][1]["body"]["values"]
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
     assert values[0] == ["job_id", "incident_id", "state", "priority", "complaint_type", "form_target", "attempts", "created_at", "claimed_at", "completed_at", "notes"]
     assert [row[0] for row in values[1:]] == [3, 2, 1]
 
@@ -223,8 +310,503 @@ def test_sync_decisions_to_sheets_skips_media_placeholder_rows(client, monkeypat
 
     sheets_sync.sync_decisions_to_sheets()
 
-    values = service.calls[1][1]["body"]["values"]
-    assert values[0][0] == "created_at"
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    assert values[0][0] == "message_ts"
     assert len(values) == 2
-    assert values[1][1] == "real-row"
-    assert values[1][3] == "2 elevators OOS"
+    assert values[1][2] == "real-row"
+    assert values[1][4] == "2 elevators OOS"
+
+
+def test_sync_decisions_to_sheets_exposes_media_preview_and_links(client, monkeypatch, tmp_path):
+    service = _FakeService()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    image_path = media_dir / "evidence.png"
+    image_path.write_bytes(b"png-bytes")
+
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_sheet_id", lambda: "sheet-123")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+
+    manifest = build_attachment_manifest(
+        items=[{"kind": "image", "status": "downloaded", "path": str(image_path), "filename": "evidence.png"}],
+        message_context={"reply_text": "north elevator photo"},
+        links=["https://example.com/more"],
+        source="whatsapp_web",
+    )
+
+    with get_session() as session:
+        session.add(
+            RawMessage(
+                message_id="media-row",
+                chat_name="455 Tenants",
+                sender="Karen",
+                sender_hash="hash-1",
+                ts_iso="2026-04-21T14:00:00Z",
+                ts_epoch=1776780000,
+                text="North elevator photo",
+                attachments=manifest,
+                source="whatsapp_web",
+            )
+        )
+        session.add(
+            MessageDecision(
+                message_id="media-row",
+                created_at="2026-04-21T14:00:10Z",
+                chosen_source="rules",
+                is_issue=True,
+                category="elevator",
+                event_type="outage",
+                confidence=85,
+            )
+        )
+        session.commit()
+
+    sheets_sync.sync_decisions_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    header = values[0]
+    row = values[1]
+    assert row[header.index("media_preview")].startswith('=IMAGE("https://tenant.example/media/whatsapp/media-row/0?v=')
+    assert row[header.index("media_1")].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/media-row/0?v=')
+    assert row[header.index("media_1")].endswith('","evidence.png")')
+    assert row[header.index("reply_context")] == "north elevator photo"
+    assert row[header.index("link_1")] == '=HYPERLINK("https://example.com/more","Link 1")'
+    layout_call = next(kwargs for kind, kwargs in service.calls if kind == "batchUpdate")
+    requests = layout_call["body"]["requests"]
+    assert any(req.get("updateSheetProperties", {}).get("properties", {}).get("gridProperties", {}).get("frozenRowCount") == 1 for req in requests)
+    assert any(req.get("updateDimensionProperties", {}).get("properties", {}).get("pixelSize") == 120 for req in requests)
+
+
+def test_sync_decisions_to_sheets_orders_by_message_timestamp_not_reprocess_time(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_sheet_id", lambda: "sheet-123")
+
+    with get_session() as session:
+        session.add_all([
+            RawMessage(
+                message_id="older-message",
+                chat_name="455 Tenants",
+                sender="Karen",
+                sender_hash="hash-1",
+                ts_iso="2026-04-20T10:00:00Z",
+                ts_epoch=1776688800,
+                text="Older update",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            RawMessage(
+                message_id="newer-message",
+                chat_name="455 Tenants",
+                sender="Karen",
+                sender_hash="hash-2",
+                ts_iso="2026-04-21T10:00:00Z",
+                ts_epoch=1776775200,
+                text="Newer update",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            MessageDecision(
+                message_id="older-message",
+                created_at="2026-04-22T12:00:00Z",
+                chosen_source="rules",
+                is_issue=True,
+                category="elevator",
+            ),
+            MessageDecision(
+                message_id="newer-message",
+                created_at="2026-04-21T12:00:00Z",
+                chosen_source="rules",
+                is_issue=True,
+                category="elevator",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_decisions_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    assert values[1][2] == "newer-message"
+    assert values[2][2] == "older-message"
+
+
+def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkeypatch, tmp_path):
+    service = _FakeService()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    image_path = media_dir / "proof.png"
+    image_path.write_bytes(b"proof")
+
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+
+    manifest = build_attachment_manifest(
+        items=[{"kind": "image", "status": "downloaded", "path": str(image_path), "filename": "proof.png"}],
+        message_context={"reply_text": "south elevator photo"},
+        source="whatsapp_web",
+    )
+
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-public",
+                category="elevator",
+                asset="elevator_south",
+                severity=4,
+                status="open",
+                start_ts="2026-04-21T18:07:00Z",
+                start_ts_epoch=1776804420,
+                last_ts_epoch=1776804420,
+                title="South elevator out of service",
+                summary="Residents report the south elevator is out.",
+                proof_refs="msg-public",
+                report_count=2,
+                witness_count=1,
+                confidence=90,
+                updated_at="2026-04-21T18:10:00Z",
+            ),
+            Incident(
+                incident_id="inc-old-public",
+                category="security_access",
+                asset=None,
+                severity=2,
+                status="closed",
+                start_ts="2026-04-01T12:00:00Z",
+                start_ts_epoch=1775044800,
+                last_ts_epoch=1775044800,
+                title="Lobby door did not close",
+                summary="Older public incident was resolved but should stay in the full tenant log.",
+                proof_refs="msg-old-public",
+                report_count=1,
+                witness_count=1,
+                confidence=80,
+                updated_at="2026-04-01T12:05:00Z",
+            ),
+            Incident(
+                incident_id="inc-private",
+                category="security_access",
+                asset=None,
+                severity=4,
+                status="open",
+                start_ts="2026-04-21T19:07:00Z",
+                start_ts_epoch=1776808020,
+                last_ts_epoch=1776808020,
+                title="Private test issue",
+                summary="Should not be shown on public sheet.",
+                proof_refs="msg-private",
+                report_count=1,
+                witness_count=0,
+                confidence=85,
+                updated_at="2026-04-21T19:08:00Z",
+            ),
+            RawMessage(
+                message_id="msg-public",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-public",
+                ts_iso="2026-04-21T18:07:00Z",
+                ts_epoch=1776804420,
+                text="South lift out",
+                attachments=manifest,
+                source="whatsapp_web",
+            ),
+            RawMessage(
+                message_id="msg-old-public",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-old-public",
+                ts_iso="2026-04-01T12:00:00Z",
+                ts_epoch=1775044800,
+                text="Lobby door did not close",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            RawMessage(
+                message_id="msg-private",
+                chat_name="Building Test Group",
+                sender="Tester",
+                sender_hash="hash-private",
+                ts_iso="2026-04-21T19:07:00Z",
+                ts_epoch=1776808020,
+                text="Private issue",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            ServiceRequestCase(
+                service_request_number="311-12345678",
+                incident_id="inc-public",
+                source="portal_playwright",
+                complaint_type="Elevator or Escalator Complaint",
+                status="submitted",
+                submitted_at="2026-04-21T18:12:00Z",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(
+        kwargs["body"]["values"]
+        for kind, kwargs in service.calls
+        if kind == "update" and kwargs["range"] == f"{sheets_sync._public_updates_tab()}!A1"
+    )
+    assert values[0][0] == "455 Tenants Log"
+    assert "tenant-facing" not in values[1][0]
+    assert "internal workflow" not in values[1][0]
+    assert values[2][0] == "At a glance"
+    assert values[3] == ["Item", "Count / detail", "What this means", "", "", "", "", "", "", ""]
+    metrics = {row[0]: row[1] for row in values if row and row[0] in {"Incidents", "311 filings", "Evidence items", "Most common issue type", "Latest update"}}
+    assert metrics == {
+        "Incidents": 2,
+        "311 filings": 1,
+        "Evidence items": 2,
+        "Most common issue type": "Elevator",
+        "Latest update": "South elevator",
+    }
+    assert values[11][0] == "Category snapshot"
+    assert values[12] == ["Category", "Incidents", "Evidence items", "311 filings", "Latest update", "Latest issue", "", "", "", ""]
+
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    assert values[all_incidents_row + 1] == ["Updated", "Issue", "Category", "Evidence items", "311 follow-up", "Preview", "Open evidence", "Summary", "", ""]
+    incident_rows = values[all_incidents_row + 2:]
+    public_issue_row = next(row for row in incident_rows if len(row) >= 10 and row[1] == "South elevator")
+    assert public_issue_row[2] == "Elevator"
+    assert public_issue_row[3] == 1
+    assert public_issue_row[4] == "311-12345678 (submitted)"
+    assert public_issue_row[5].startswith('=IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=')
+    assert public_issue_row[5].endswith('",4,110,240)')
+    assert public_issue_row[6].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-public/0?v=')
+    assert public_issue_row[6].endswith('","Open photo")')
+    old_issue_row = next(row for row in incident_rows if len(row) >= 10 and row[1] == "Lobby door did not close")
+    assert old_issue_row[2] == "Security / access"
+
+    case_watch_row = next(idx for idx, row in enumerate(values) if row[0] == "311 case watch")
+    assert values[case_watch_row + 1] == ["Case", "NYC status", "Complaint", "Related issue", "Submitted", "NYC lookup", "Notes", "", "", ""]
+    public_case_row = next(row for row in values if len(row) >= 8 and row[0] == "311-12345678")
+    assert public_case_row[0] == "311-12345678"
+    assert public_case_row[1] == "Submitted"
+    assert public_case_row[2] == "Elevator or Escalator Complaint"
+    assert public_case_row[3] == "South elevator"
+    assert public_case_row[5] == "Not checked yet"
+    assert public_case_row[6] == "Waiting for first NYC status lookup."
+    flattened = " ".join(str(cell) for row in values for cell in row if cell)
+    assert "Private test issue" not in flattened
+    assert "Evidence log" not in flattened
+    layout_call = [
+        kwargs for kind, kwargs in service.calls
+        if kind == "batchUpdate"
+        and any(
+            request.get("updateSheetProperties", {}).get("properties", {}).get("gridProperties", {}).get("frozenRowCount")
+            for request in kwargs["body"]["requests"]
+        )
+    ][-1]
+    frozen_request = next(
+        request for request in layout_call["body"]["requests"]
+        if request.get("updateSheetProperties", {}).get("properties", {}).get("gridProperties", {}).get("frozenRowCount")
+    )
+    assert frozen_request["updateSheetProperties"]["properties"]["gridProperties"]["frozenRowCount"] == 1
+    for removed_public_label in ["Smart Log", "Plain English note", "Open issues", "Resolved", "Witnesses", "Reports", "tenant-facing", "internal workflow"]:
+        assert removed_public_label not in flattened
+
+
+def test_sync_public_updates_links_but_does_not_preview_tiny_message_screenshots(client, monkeypatch, tmp_path):
+    service = _FakeService()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    tiny = media_dir / "tiny.png"
+    tiny.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (508).to_bytes(4, "big") + (20).to_bytes(4, "big"))
+
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+
+    manifest = build_attachment_manifest(
+        items=[{"kind": "message_screenshot", "status": "captured", "path": str(tiny), "filename": "tiny.png"}],
+        source="whatsapp_web",
+    )
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-tiny",
+                category="other",
+                severity=2,
+                status="open",
+                last_ts_epoch=1776804420,
+                title="Tiny screenshot evidence",
+                summary="One-line message screenshot should remain linked, not previewed.",
+                proof_refs="msg-tiny",
+                report_count=1,
+                witness_count=1,
+                confidence=85,
+            ),
+            RawMessage(
+                message_id="msg-tiny",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-tiny",
+                ts_iso="2026-04-21T18:07:00Z",
+                ts_epoch=1776804420,
+                text="One-line message",
+                attachments=manifest,
+                source="whatsapp_web",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Tiny screenshot evidence")
+    assert row[5] == ""
+    assert row[6].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-tiny/0?v=')
+    assert row[6].endswith('","Open screenshot")')
+
+
+def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client, monkeypatch, tmp_path):
+    service = _FakeService()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    bubble = media_dir / "bubble.png"
+    photo = media_dir / "photo.png"
+    bubble.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (246).to_bytes(4, "big") + (165).to_bytes(4, "big"))
+    photo.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (900).to_bytes(4, "big") + (700).to_bytes(4, "big"))
+
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+
+    manifest = build_attachment_manifest(
+        items=[
+            {"kind": "message_screenshot", "status": "captured", "path": str(bubble), "filename": "bubble.png"},
+            {"kind": "image", "status": "downloaded", "path": str(photo), "filename": "photo.png"},
+        ],
+        source="whatsapp_web",
+    )
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-photo",
+                category="elevator",
+                severity=4,
+                status="open",
+                last_ts_epoch=1776804420,
+                title="Photo evidence",
+                summary="Downloaded media should be shown instead of the WhatsApp bubble screenshot.",
+                proof_refs="msg-photo",
+                report_count=1,
+                witness_count=1,
+                confidence=90,
+            ),
+            RawMessage(
+                message_id="msg-photo",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-photo",
+                ts_iso="2026-04-21T18:07:00Z",
+                ts_epoch=1776804420,
+                text="Photo attached",
+                attachments=manifest,
+                source="whatsapp_web",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Photo evidence")
+    assert "/media/whatsapp/msg-photo/1?v=" in row[5]
+    assert row[6].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-photo/1?v=')
+    assert row[6].endswith('","Open photo")')
+    assert "msg-photo/0" not in row[5]
+    assert "msg-photo/0" not in row[6]
+
+
+def test_sync_public_updates_does_not_link_bubble_when_media_was_not_captured(client, monkeypatch, tmp_path):
+    service = _FakeService()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    bubble = media_dir / "bubble.png"
+    bubble.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (246).to_bytes(4, "big") + (165).to_bytes(4, "big"))
+
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+
+    manifest = build_attachment_manifest(
+        items=[
+            {"kind": "message_screenshot", "status": "captured", "path": str(bubble), "filename": "bubble.png"},
+            {"kind": "image", "label": "metadata_only", "status": "metadata_only"},
+        ],
+        source="whatsapp_web",
+    )
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-missing-media",
+                category="elevator",
+                severity=4,
+                status="open",
+                last_ts_epoch=1776804420,
+                title="Missing media evidence",
+                summary="A WhatsApp card thumbnail should not be exposed as the real media evidence.",
+                proof_refs="msg-missing-media",
+                report_count=1,
+                witness_count=1,
+                confidence=90,
+            ),
+            RawMessage(
+                message_id="msg-missing-media",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-missing-media",
+                ts_iso="2026-04-21T18:07:00Z",
+                ts_epoch=1776804420,
+                text="Image message",
+                attachments=manifest,
+                source="whatsapp_web",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Missing media evidence")
+    assert row[5] == ""
+    assert row[6] == ""
+
+
+def test_sync_dashboard_to_sheets_hides_public_share_url_without_dedicated_public_workbook(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_sheet_id", lambda: "internal-sheet-123")
+    monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "internal-sheet-123")
+    monkeypatch.delenv("GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID", raising=False)
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    sheets_sync.sync_dashboard_to_sheets()
+
+    values = next(
+        kwargs["body"]["values"]
+        for kind, kwargs in service.calls
+        if kind == "update" and kwargs["range"] == "Dashboard!A1"
+    )
+    metrics = {row[0]: row[1] for row in values if len(row) >= 2 and row[0]}
+    assert metrics["spreadsheet_url"] == "https://docs.google.com/spreadsheets/d/internal-sheet-123/edit"
+    assert metrics["public_updates_sheet_url"] == ""
+    assert metrics["report_form_url"] == "https://tenant.example/report"

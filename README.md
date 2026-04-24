@@ -4,7 +4,7 @@ This repo is the working backend for the 455 Ocean Parkway tenant project.
 
 The core loop is:
 
-1. Android Tasker or Mac Chrome Playwright captures a WhatsApp message.
+1. Mac Chrome Playwright captures a WhatsApp message.
 2. Backend stores the raw message.
 3. Backend decides whether it is a real building issue.
 4. Backend clusters it into an incident.
@@ -15,7 +15,9 @@ The core loop is:
 
 ## What is the primary face of the system
 
-The Google Sheet is the primary day-to-day control surface.
+The Google Sheet is the primary day-to-day operator control surface.
+
+For residents, do not share the raw multi-tab workbook by default. Sync a separate clean `Tenant Log` workbook/tab instead so they see the tenant incident, evidence, and 311 record.
 
 It should show:
 
@@ -30,8 +32,8 @@ The API is still useful, but the Sheet is not a side feature. It is the main ope
 
 ## Core product functions
 
-- WhatsApp capture from Android Tasker
 - WhatsApp Web capture from Chrome on the Mac mini via Playwright
+- retired Tasker ingest kept only as a compatibility shim for old stored or migration data
 - raw message dedupe
 - hybrid rules + LLM message classification
 - incident clustering
@@ -42,6 +44,7 @@ The API is still useful, but the Sheet is not a side feature. It is the main ope
 - 311 case status tracking
 - legal chronology export
 - spreadsheet sync for all major state
+- complete `Tenant Log` sheet sync for resident incident history, evidence links, and 311 case tracking
 - optional QR/link report form for tenants (`/report`)
 
 ## LLM role
@@ -59,8 +62,9 @@ The final filing queue remains deterministic and still under your control via co
 
 ## What is finished in code
 
-- Real-time `/ingest/tasker` ingestion with Tasker-friendly timestamps
-- Real-time `/ingest/tasker_batch` backlog replay for phone-side retry after downtime
+- Real-time `/ingest/whatsapp_web` ingestion with media-aware attachment capture
+- Real-time `/ingest/whatsapp_web_batch` backlog replay from the Chrome/Playwright watcher
+- Retired legacy `/ingest/tasker` compatibility ingest for old stored or migration data
 - Bulk WhatsApp export ingestion with automatic reprocessing
 - Elevator outage / restore clustering with witness counting
 - Auto-extraction of SR numbers from chat messages like `311-25815998`
@@ -90,9 +94,11 @@ Fill in:
 - `MOBILE_FILER_TOKEN` (optional; defaults to `INGEST_TOKEN`)
 - `DATABASE_URL`
 - `GOOGLE_SHEETS_SPREADSHEET_ID`
+- optionally `GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID` for a separate clean tenant log; this should be a dedicated workbook because Google Sheets sharing is workbook-wide, not tab-wide
 - `GOOGLE_APPLICATION_CREDENTIALS`
 - building/contact fields used in filing drafts
-- optionally `PUBLIC_BASE_URL` so the Dashboard can expose the tenant report form link
+- optionally `PUBLIC_BASE_URL` so the Dashboard can expose the tenant report form link and Sheets can open captured WhatsApp media
+- optionally `PUBLIC_UPDATES_CHAT_NAMES` to scope the resident evidence log more tightly than the live watcher if you do not want every watched chat surfaced there
 
 For Cloudflare Tunnel + Neon hosting, use the guide in `docs/DEPLOY_CLOUDFLARE_NEON.md`.
 
@@ -115,10 +121,10 @@ docker compose up --build
 ### Ingest
 
 - `GET /health`
-- `POST /ingest/tasker`
-- `POST /ingest/tasker_batch`
 - `POST /ingest/whatsapp_web`
 - `POST /ingest/whatsapp_web_batch`
+- `POST /ingest/tasker` (legacy compatibility only)
+- `POST /ingest/tasker_batch` (legacy compatibility only)
 - `POST /ingest/export`
 - `GET /report`
 - `POST /report/submit`
@@ -153,18 +159,23 @@ docker compose up --build
 1. Initialize and connect the Sheet.
 2. Import the WhatsApp export.
 3. Review `Dashboard`, `Incidents`, `Queue311`, and `DecisionLog`.
-4. Turn on Android capture for WhatsApp notifications.
-   Or run the Chrome/Playwright watcher on the Mac mini for the exact tenant chats you want to monitor.
+4. Run the Chrome/Playwright watcher on the Mac mini for the exact tenant chats you want to monitor.
+   Keep the Android Tasker path off unless you explicitly need temporary backward compatibility.
 5. Run the Playwright portal worker.
 6. Submit one real complaint.
 7. Confirm SR appears in `Cases311`.
-8. Add a QR or link to `/report` only if the first tenant tests show it is intuitive.
+8. Share the separate `Tenant Log` spreadsheet when you want tenants to see the clean public incident record, and add a QR or link to `/report` only if the first tenant tests show it is intuitive.
 
 ## Files to read next
 
-- `docs/ANDROID_CAPTURE_SETUP.md`
 - `docs/WHATSAPP_WEB_CAPTURE_SETUP.md`
 - `docs/NYC311_PORTAL_AUTOMATION.md`
 - `docs/DEPLOY_CLOUDFLARE_NEON.md`
 - `docs/VERIFY.md`
 - `docs/API_REFERENCE.md`
+
+Legacy-only references, not setup guides:
+
+- `docs/ANDROID_CAPTURE_SETUP.md`
+- `docs/TASKER_SETUP.md`
+- `docs/ANDROID_FILER_SETUP.md`

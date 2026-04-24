@@ -359,10 +359,21 @@ def _extract_confirmation_sr_number(page: Page, confirmation_text: str) -> str |
 
 
 def _extract_lookup_status(page_text: str) -> str | None:
-    for pattern in (r"\bSR Status\s+([^\n]+)", r"\bStatus\s+([^\n]+)"):
-        match = re.search(pattern, page_text, flags=re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
+    invalid = {"sign in | sign up", "subscribe", "service request status"}
+    lines = [
+        line.replace("\u202f", " ").replace("\u200e", "").replace("\u200f", "").strip()
+        for line in (page_text or "").splitlines()
+    ]
+    for label in ("SR Status", "Status"):
+        for idx, line in enumerate(lines):
+            if line.casefold() != label.casefold():
+                continue
+            for candidate in lines[idx + 1 :]:
+                if not candidate:
+                    continue
+                if candidate.casefold() in invalid:
+                    continue
+                return candidate
     return None
 
 

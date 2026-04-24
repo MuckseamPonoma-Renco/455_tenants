@@ -53,7 +53,7 @@ Then verify:
 - `/api/incidents` contains elevator incidents
 - `/api/queue` contains filing jobs
 - `/api/cases` contains any SR numbers already mentioned in chat
-- `/api/summary` says the stage is `ready_for_android_filer` once queue jobs exist
+- `/api/summary` says the stage is `ready_for_portal_worker` once queue jobs exist
 
 ## NYC311 portal live test
 
@@ -73,6 +73,7 @@ Then verify:
 5. Send one fresh test message into one configured chat.
 6. Wait one poll cycle, or run `./scripts/run_whatsapp_capture.sh --once --headful --no-prime` for a deliberate one-pass test.
 7. Confirm `/api/incidents`, `/api/decisions`, or `/api/summary` reflects the new message.
+8. Confirm the public `Tenant Log` shows any tenant-useful screenshot as a preview and keeps tiny message-strip screenshots as `Open screenshot` links instead of unreadable thumbnails.
 
 ## Fastest way to know where you are
 

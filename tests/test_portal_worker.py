@@ -91,7 +91,22 @@ def test_run_portal_filing_once_marks_job_submitted(client, monkeypatch):
     )
     monkeypatch.setattr(
         'packages.nyc311.portal_worker.lookup_service_request_status',
-        lambda sr_number, **kwargs: {'service_request_number': sr_number, 'found': True, 'status': 'Submitted'},
+        lambda sr_number, **kwargs: {
+            'service_request_number': sr_number,
+            'found': True,
+            'status': 'In Progress',
+            'page_text': (
+                'Your Service Request has been submitted to the Department of Buildings.\n'
+                'SR Number\n311-77778888\n'
+                'Updated On\n04/19/2026, 09:49 PM\n'
+                'Date Reported\n04/19/2026, 09:37 PM\n'
+                'Date Closed\n-\n'
+                'SR Status\nIn Progress\n'
+                'Problem\nElevator\n'
+                'Problem Details\\nNot Working'
+            ),
+            'final_url': 'https://portal.311.nyc.gov/check-status/',
+        },
     )
 
     result = run_portal_filing_once(headless=True, verify_lookup=True)
@@ -105,6 +120,12 @@ def test_run_portal_filing_once_marks_job_submitted(client, monkeypatch):
         assert job.state == 'submitted'
         assert job.filing_channel == 'portal_playwright'
         assert case.source == 'portal_playwright'
+        assert case.status == 'In Progress'
+        assert case.agency == 'DOB'
+        assert case.complaint_type == 'Elevator or Escalator Complaint'
+        assert case.submitted_at == '2026-04-20T01:37:00Z'
+        assert case.last_checked_at is not None
+        assert '"source": "nyc311_portal"' in (case.raw_status_json or '')
 
 
 def test_run_portal_filing_once_returns_none_when_queue_empty():
@@ -214,6 +235,11 @@ def test_extract_confirmation_sr_number_falls_back_to_details_link():
 def test_extract_lookup_status_prefers_sr_status_label():
     text = 'Service Request Status\nSign In | Sign Up\nSR Status\nIn Progress\nProblem\nElevator'
     assert _extract_lookup_status(text) == 'In Progress'
+
+
+def test_extract_lookup_status_ignores_navigation_status_text():
+    text = 'Service Request Status\nSign In | Sign Up\nSubscribe\nProblem\nElevator'
+    assert _extract_lookup_status(text) is None
 
 
 def test_submit_elevator_complaint_passes_viewport_to_new_context(monkeypatch, tmp_path):

@@ -11,6 +11,7 @@ Use this when you want the Mac mini itself to watch WhatsApp Web in Chrome and s
 - scrolls upward until it finds an already-seen message fingerprint so short bursts do not get missed
 - stores media evidence and message-bubble screenshots under `.local/whatsapp_media/`
 - primes the currently visible messages on first run so it starts as a live watcher instead of re-importing the whole screen
+- writes capture status to `WHATSAPP_CAPTURE_STATUS_PATH` so `/health` and operators can see when WhatsApp needs a fresh login
 
 ## Required env
 
@@ -30,6 +31,7 @@ Optional:
 WHATSAPP_CAPTURE_API_BASE=http://127.0.0.1:8000
 WHATSAPP_CAPTURE_USER_DATA_DIR=~/.local/share/tenant-issue-os/whatsapp_capture/chrome_profile
 WHATSAPP_CAPTURE_STATE_PATH=~/.local/share/tenant-issue-os/whatsapp_capture/state.json
+WHATSAPP_CAPTURE_STATUS_PATH=~/.local/share/tenant-issue-os/whatsapp_capture/status.json
 WHATSAPP_CAPTURE_MEDIA_DIR=.local/whatsapp_media
 ```
 
@@ -39,6 +41,7 @@ Notes:
 - The first API target is local `http://127.0.0.1:8000`; if that is unavailable, the worker will also try `PUBLIC_BASE_URL`.
 - `WHATSAPP_CAPTURE_HEADLESS=0` is the safest starting mode because you may need to scan the QR code once.
 - Media downloads are best-effort. When WhatsApp Web does not expose a downloadable asset cleanly, the watcher still stores metadata and a message-bubble screenshot.
+- If `PUBLIC_BASE_URL` is set, the synced Sheet can now show inline image previews plus tenant-openable media links for captured WhatsApp evidence.
 
 ## First run
 
@@ -64,7 +67,7 @@ curl -H "Authorization: Bearer $INGEST_TOKEN" http://127.0.0.1:8000/api/summary
 
 Use `--no-prime` only for a deliberate one-time test after you send a fresh message.
 
-If the capture is working, the new test message should appear in the normal incident/decision pipeline exactly like Android live capture.
+If the capture is working, the new test message should appear in the normal incident/decision pipeline and any captured image should get a public spreadsheet link.
 
 ## Run it as a Mac service
 
@@ -82,4 +85,4 @@ The optional `whatsapp_capture` LaunchAgent is only installed when `WHATSAPP_CAP
 
 - This watcher reads what WhatsApp Web currently exposes in the browser; it is not a historical backfill tool.
 - For older history, keep using `POST /ingest/export` with a WhatsApp export ZIP/TXT.
-- If both Android Tasker and Chrome capture the same message, the backend now dedupes those live sources against each other.
+- The old Android Tasker route is now legacy-only. Leave it off unless you need a temporary migration bridge.

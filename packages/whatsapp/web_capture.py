@@ -16,6 +16,7 @@ from playwright.sync_api import BrowserContext, Download, Error as PlaywrightErr
 from packages.audit import append_audit_event
 from packages.timeutil import NY, epoch_to_iso, parse_ts_to_epoch
 from packages.whatsapp.attachments import build_attachment_manifest, make_attachment_item
+from packages.whatsapp.status import default_status_path, write_capture_status
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com/"
 DEFAULT_CAPTURE_ROOT = Path.home() / ".local" / "share" / "tenant-issue-os" / "whatsapp_capture"
@@ -32,6 +33,10 @@ READY_SELECTORS = (
     "#side",
     "#main",
 )
+LOGIN_REQUIRED_SELECTORS = (
+    "canvas",
+    "[data-testid='qrcode']",
+)
 MESSAGE_NODE_SELECTOR = "#main [data-pre-plain-text]"
 DOWNLOAD_SELECTORS = (
     'button[aria-label*="Download"]',
@@ -45,6 +50,10 @@ OPEN_MEDIA_SELECTORS = (
     "[data-icon='document']",
     "[data-testid*='media-viewer']",
 )
+BUBBLE_SCREENSHOT_PADDING_X = 18
+BUBBLE_SCREENSHOT_PADDING_Y = 12
+BUBBLE_SCREENSHOT_MIN_WIDTH = 360
+BUBBLE_SCREENSHOT_MIN_HEIGHT = 110
 
 
 def _log(message: str) -> None:
@@ -99,6 +108,10 @@ def _default_user_data_dir() -> Path:
 
 def _default_state_path() -> Path:
     return DEFAULT_CAPTURE_ROOT / "state.json"
+
+
+def _default_status_path() -> Path:
+    return default_status_path()
 
 
 def _default_media_dir() -> Path:
@@ -219,6 +232,7 @@ class WhatsAppCaptureConfig:
     max_scroll_pages: int
     user_data_dir: Path
     state_path: Path
+    status_path: Path
     media_dir: Path
     browser_channel: str
     login_timeout_seconds: int
@@ -320,6 +334,7 @@ def capture_config_from_env(
     message_limit: int | None = None,
     user_data_dir: str | Path | None = None,
     state_path: str | Path | None = None,
+    status_path: str | Path | None = None,
     media_dir: str | Path | None = None,
     browser_channel: str | None = None,
     login_timeout_seconds: int | None = None,
@@ -342,6 +357,7 @@ def capture_config_from_env(
         max_scroll_pages=max(1, _int_env("WHATSAPP_CAPTURE_SCROLL_PAGES", 8)),
         user_data_dir=Path(user_data_dir or os.environ.get("WHATSAPP_CAPTURE_USER_DATA_DIR") or _default_user_data_dir()).expanduser(),
         state_path=Path(state_path or os.environ.get("WHATSAPP_CAPTURE_STATE_PATH") or _default_state_path()).expanduser(),
+        status_path=Path(status_path or os.environ.get("WHATSAPP_CAPTURE_STATUS_PATH") or _default_status_path()).expanduser(),
         media_dir=Path(media_dir or os.environ.get("WHATSAPP_CAPTURE_MEDIA_DIR") or _default_media_dir()).expanduser(),
         browser_channel=_clean(browser_channel or os.environ.get("WHATSAPP_CAPTURE_BROWSER_CHANNEL") or "chrome"),
         login_timeout_seconds=max(0, login_timeout_seconds if login_timeout_seconds is not None else _int_env("WHATSAPP_CAPTURE_LOGIN_TIMEOUT_SECONDS", 0)),
@@ -425,6 +441,8 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
         () => {{
           const nodes = Array.from(document.querySelectorAll({MESSAGE_NODE_SELECTOR!r}));
           return nodes.map((node, domIndex) => {{
+            const captureId = `tenant-capture-${{Date.now()}}-${{domIndex}}-${{Math.random().toString(36).slice(2)}}`;
+            node.setAttribute('data-tenant-capture-id', captureId);
             const prePlainText = (node.getAttribute('data-pre-plain-text') || '').trim();
             const selectable = Array.from(node.querySelectorAll('span.selectable-text, div.selectable-text'))
               .map(el => (el.innerText || '').trim())
@@ -433,9 +451,37 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
               .map(el => (el.href || '').trim())
               .filter(Boolean);
             const bodyText = (node.innerText || '').trim();
+            const hasCssBackgroundImage = Array.from(node.querySelectorAll('div, span')).some(el => {{
+              const labels = [
+                el.getAttribute('aria-label'),
+                el.getAttribute('title'),
+                el.getAttribute('data-testid'),
+                el.getAttribute('data-icon'),
+              ].join(' ');
+              if (!/photo|image|picture|media/i.test(labels)) return false;
+              const inlineStyle = String(el.getAttribute('style') || '');
+              if (inlineStyle.includes('background-image')) return true;
+              try {{
+                const background = window.getComputedStyle(el).backgroundImage || '';
+                return background.startsWith('url(');
+              }} catch (_) {{
+                return false;
+              }}
+            }});
+            const hasImageMedia = Boolean(node.querySelector([
+              'img',
+              'canvas',
+              '[aria-label*="Photo" i]',
+              '[aria-label*="Image" i]',
+              '[aria-label*="picture" i]',
+              '[aria-label*="Open media" i]',
+              '[data-icon*="image" i]',
+              '[data-testid*="image" i]',
+              '[data-testid*="media" i]',
+            ].join(','))) || hasCssBackgroundImage;
             const mediaKinds = [];
-            if (node.querySelector('img')) mediaKinds.push('image');
-            if (node.querySelector('video')) mediaKinds.push('video');
+            if (hasImageMedia) mediaKinds.push('image');
+            if (node.querySelector('video, [aria-label*="Video" i], [data-testid*="video" i]')) mediaKinds.push('video');
             if (node.querySelector('[data-icon="document"], [data-testid*="media-document"], a[download]')) mediaKinds.push('document');
             if (node.querySelector('[data-icon="audio-download"], audio, [data-testid*="audio-player"]')) mediaKinds.push('audio');
             const replyLabel = Array.from(node.querySelectorAll('[aria-label*="Quoted"], [data-testid*="quoted"]'))
@@ -445,6 +491,7 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
               .trim();
             const caption = selectable.length ? selectable[selectable.length - 1] : '';
             return {{
+              capture_id: captureId,
               dom_index: domIndex,
               pre_plain_text: prePlainText,
               text: selectable.join('\\n').trim() || bodyText,
@@ -500,6 +547,36 @@ def _is_ready(page: Page) -> bool:
     return True
 
 
+def _body_text(page: Page) -> str:
+    try:
+        return _clean(page.locator("body").inner_text(timeout=2_000))
+    except Exception:
+        return ""
+
+
+def _is_login_required(page: Page) -> bool:
+    body_text = _body_text(page).casefold()
+    phrases = (
+        "scan the qr code",
+        "log into whatsapp web",
+        "keep your phone connected",
+        "use whatsapp on your phone",
+    )
+    if any(phrase in body_text for phrase in phrases):
+        return True
+    for selector in LOGIN_REQUIRED_SELECTORS:
+        try:
+            if page.locator(selector).count() > 0 and not _is_ready(page):
+                return True
+        except PlaywrightError:
+            continue
+    return False
+
+
+def _capture_status(config: WhatsAppCaptureConfig, **updates: Any) -> dict[str, Any]:
+    return write_capture_status(config.status_path, **updates)
+
+
 def wait_for_whatsapp_ready(page: Page, *, timeout_seconds: int = 0) -> None:
     deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
     login_notice_shown = False
@@ -517,6 +594,42 @@ def wait_for_whatsapp_ready(page: Page, *, timeout_seconds: int = 0) -> None:
         if deadline is not None and time.monotonic() > deadline:
             raise RuntimeError("Timed out waiting for WhatsApp Web to become ready")
         page.wait_for_timeout(2_000)
+
+
+def _ensure_session_ready(page: Page, config: WhatsAppCaptureConfig, *, startup: bool = False) -> bool:
+    if _is_ready(page):
+        _capture_status(config, state="ready", login_required=False, last_ready_at=epoch_to_iso(int(time.time())))
+        return True
+
+    if _is_login_required(page):
+        if startup:
+            wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
+            _capture_status(config, state="ready", login_required=False, last_ready_at=epoch_to_iso(int(time.time())))
+            return True
+        _capture_status(config, state="login_required", login_required=True)
+        append_audit_event("WHATSAPP_WEB_CAPTURE_LOGIN_REQUIRED", None, {"chat_names": list(config.chat_names)})
+        _log("WhatsApp Web needs a fresh login. Scan the QR code in the Chrome profile and the watcher will resume.")
+        return False
+
+    try:
+        page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded", timeout=120_000)
+    except Exception as exc:
+        _capture_status(config, state="navigation_error", login_required=False, last_error=str(exc)[:500])
+        raise
+
+    if _is_login_required(page):
+        if startup:
+            wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
+            _capture_status(config, state="ready", login_required=False, last_ready_at=epoch_to_iso(int(time.time())))
+            return True
+        _capture_status(config, state="login_required", login_required=True)
+        append_audit_event("WHATSAPP_WEB_CAPTURE_LOGIN_REQUIRED", None, {"chat_names": list(config.chat_names)})
+        _log("WhatsApp Web needs a fresh login. Scan the QR code in the Chrome profile and the watcher will resume.")
+        return False
+
+    wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
+    _capture_status(config, state="ready", login_required=False, last_ready_at=epoch_to_iso(int(time.time())))
+    return True
 
 
 def _post_messages(client: httpx.Client, config: WhatsAppCaptureConfig, messages: Sequence[WhatsAppCaptureMessage]) -> dict[str, Any]:
@@ -563,8 +676,43 @@ def _locator_exists(locator: Locator) -> bool:
         return False
 
 
-def _message_locator(page: Page, dom_index: int) -> Locator:
-    return page.locator(MESSAGE_NODE_SELECTOR).nth(dom_index)
+def _message_locator(page: Page, row: dict[str, Any]) -> Locator:
+    capture_id = _clean(str(row.get("capture_id") or ""))
+    if capture_id:
+        marked = page.locator(f'{MESSAGE_NODE_SELECTOR}[data-tenant-capture-id="{capture_id}"]')
+        if _locator_exists(marked):
+            return marked.first
+
+    pre_plain_text = _clean(str(row.get("pre_plain_text") or ""))
+    expected_text = _clean(str(row.get("caption") or "")) or _clean(str(row.get("text") or "")) or _clean(str(row.get("body_text") or ""))
+    fallback_id = f"tenant-capture-fallback-{hashlib.sha256((pre_plain_text + expected_text).encode('utf-8')).hexdigest()[:16]}"
+    try:
+        matched = page.evaluate(
+            f"""
+            (args) => {{
+              const clean = (value) => String(value || '').replace(/\\u202f/g, ' ').replace(/[\\u200e\\u200f]/g, '').trim();
+              const nodes = Array.from(document.querySelectorAll({MESSAGE_NODE_SELECTOR!r}));
+              for (const node of nodes) {{
+                const pre = clean(node.getAttribute('data-pre-plain-text'));
+                const text = clean(node.innerText);
+                if (pre === args.prePlainText && (!args.expectedText || text.includes(args.expectedText))) {{
+                  node.setAttribute('data-tenant-capture-id', args.captureId);
+                  return true;
+                }}
+              }}
+              return false;
+            }}
+            """,
+            {"prePlainText": pre_plain_text, "expectedText": expected_text, "captureId": fallback_id},
+        )
+        if matched:
+            matched_locator = page.locator(f'{MESSAGE_NODE_SELECTOR}[data-tenant-capture-id="{fallback_id}"]')
+            if _locator_exists(matched_locator):
+                return matched_locator.first
+    except Exception:
+        pass
+
+    return page.locator(MESSAGE_NODE_SELECTOR).nth(int(row.get("dom_index") or 0))
 
 
 def _timestamp_slug(ts_iso: str | None) -> str:
@@ -582,10 +730,69 @@ def _media_storage_dir(config: WhatsAppCaptureConfig, chat_name: str, ts_iso: st
     return path
 
 
-def _save_bubble_screenshot(message_locator: Locator, target_dir: Path, prefix: str) -> str | None:
+def _expanded_screenshot_clip(
+    box: dict[str, float],
+    *,
+    viewport_width: float,
+    viewport_height: float,
+    padding_x: float = BUBBLE_SCREENSHOT_PADDING_X,
+    padding_y: float = BUBBLE_SCREENSHOT_PADDING_Y,
+    min_width: float = BUBBLE_SCREENSHOT_MIN_WIDTH,
+    min_height: float = BUBBLE_SCREENSHOT_MIN_HEIGHT,
+) -> dict[str, float] | None:
+    if viewport_width <= 0 or viewport_height <= 0:
+        return None
+
+    left = float(box["x"]) - padding_x
+    top = float(box["y"]) - padding_y
+    right = float(box["x"]) + float(box["width"]) + padding_x
+    bottom = float(box["y"]) + float(box["height"]) + padding_y
+
+    width = max(right - left, min_width)
+    height = max(bottom - top, min_height)
+    center_x = float(box["x"]) + float(box["width"]) / 2
+    center_y = float(box["y"]) + float(box["height"]) / 2
+
+    left = center_x - width / 2
+    top = center_y - height / 2
+    right = left + width
+    bottom = top + height
+
+    if left < 0:
+        right -= left
+        left = 0
+    if top < 0:
+        bottom -= top
+        top = 0
+    if right > viewport_width:
+        left = max(0.0, left - (right - viewport_width))
+        right = viewport_width
+    if bottom > viewport_height:
+        top = max(0.0, top - (bottom - viewport_height))
+        bottom = viewport_height
+
+    if right <= left or bottom <= top:
+        return None
+    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
+
+
+def _save_bubble_screenshot(page: Page, message_locator: Locator, target_dir: Path, prefix: str) -> str | None:
     path = target_dir / f"{prefix}_bubble.png"
     try:
-        message_locator.screenshot(path=str(path))
+        box = message_locator.bounding_box(timeout=1_000)
+        viewport = page.viewport_size or page.evaluate("() => ({width: window.innerWidth, height: window.innerHeight})") or {}
+        viewport_width = float(viewport.get("width") or 0)
+        viewport_height = float(viewport.get("height") or 0)
+        if not box:
+            return None
+        clip = _expanded_screenshot_clip(box, viewport_width=viewport_width, viewport_height=viewport_height)
+        if clip is None:
+            return None
+        page.screenshot(
+            path=str(path),
+            clip=clip,
+            timeout=5_000,
+        )
         return str(path.resolve())
     except Exception:
         return None
@@ -650,21 +857,21 @@ def _attachment_manifest_for_candidate(page: Page, candidate: WhatsAppCaptureCan
     links = [_clean(link) for link in (row.get("links") or []) if _clean(link)]
 
     media_items: list[dict[str, Any]] = []
-    if row.get("media_kinds"):
-        target_dir = _media_storage_dir(config, candidate.chat_name, candidate.ts_iso)
-        prefix = f"{_timestamp_slug(candidate.ts_iso)}_{candidate.fingerprint[:8]}"
-        message_locator = _message_locator(page, int(row.get("dom_index") or 0))
-        screenshot_path = _save_bubble_screenshot(message_locator, target_dir, prefix)
-        if screenshot_path:
-            media_items.append(
-                make_attachment_item(
-                    kind="message_screenshot",
-                    label="whatsapp_bubble",
-                    status="captured",
-                    path=screenshot_path,
-                    filename=Path(screenshot_path).name,
-                )
+    target_dir = _media_storage_dir(config, candidate.chat_name, candidate.ts_iso)
+    prefix = f"{_timestamp_slug(candidate.ts_iso)}_{candidate.fingerprint[:8]}"
+    message_locator = _message_locator(page, row)
+    screenshot_path = _save_bubble_screenshot(page, message_locator, target_dir, prefix)
+    if screenshot_path:
+        media_items.append(
+            make_attachment_item(
+                kind="message_screenshot",
+                label="whatsapp_bubble",
+                status="captured",
+                path=screenshot_path,
+                filename=Path(screenshot_path).name,
             )
+        )
+    if row.get("media_kinds"):
         for kind in [kind for kind in row.get("media_kinds") or [] if isinstance(kind, str) and kind]:
             item = _try_download_message_media(page, message_locator, target_dir, prefix, kind)
             if item is None:
@@ -724,7 +931,7 @@ def _collect_new_messages(page: Page, chat_name: str, state: CaptureStateStore, 
             break
 
         added_this_page = 0
-        for candidate in visible_candidates:
+        for candidate in reversed(visible_candidates):
             if state.has(chat_name, candidate.fingerprint):
                 seen_known_fingerprint = True
                 continue
@@ -851,7 +1058,14 @@ def run_capture_loop(config: WhatsAppCaptureConfig, *, once: bool = False) -> di
     try:
         page = _ensure_page(runtime)
         page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded", timeout=120_000)
-        wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
+        _capture_status(
+            config,
+            state="starting",
+            login_required=False,
+            poll_seconds=config.poll_seconds,
+            chat_names=list(config.chat_names),
+        )
+        _ensure_session_ready(page, config, startup=True)
         _log(
             "WhatsApp Web capture running "
             f"headless={config.headless} chats={list(config.chat_names)} poll_seconds={config.poll_seconds}"
@@ -869,7 +1083,15 @@ def run_capture_loop(config: WhatsAppCaptureConfig, *, once: bool = False) -> di
 
         last_cycle: dict[str, Any] = {"ok": True, "results": []}
         while True:
+            if not _ensure_session_ready(page, config):
+                last_cycle = {"ok": False, "login_required": True, "results": []}
+                if once:
+                    return last_cycle
+                time.sleep(config.poll_seconds)
+                continue
+
             cycle_results: list[dict[str, Any]] = []
+            cycle_captured = 0
             for chat_name in config.chat_names:
                 try:
                     result = capture_chat_once(page, chat_name=chat_name, state=state, client=client, config=config)
@@ -877,6 +1099,7 @@ def run_capture_loop(config: WhatsAppCaptureConfig, *, once: bool = False) -> di
                         _log(f'Primed "{chat_name}" with {result.get("visible_messages", 0)} visible messages.')
                     elif result.get("captured"):
                         _log(f'Captured {result["captured"]} new WhatsApp messages from "{chat_name}".')
+                        cycle_captured += int(result.get("captured") or 0)
                     cycle_results.append(result)
                 except Exception as exc:
                     append_audit_event("WHATSAPP_WEB_CAPTURE_ERROR", None, {"chat_name": chat_name, "error": str(exc)[:500]})
@@ -884,6 +1107,15 @@ def run_capture_loop(config: WhatsAppCaptureConfig, *, once: bool = False) -> di
                     _log(f'WhatsApp Web capture error for "{chat_name}": {exc}')
 
             last_cycle = {"ok": True, "results": cycle_results}
+            status_updates: dict[str, Any] = {
+                "state": "ready",
+                "login_required": False,
+                "last_cycle_at": epoch_to_iso(int(time.time())),
+                "last_error": "",
+            }
+            if cycle_captured:
+                status_updates["last_capture_at"] = epoch_to_iso(int(time.time()))
+            _capture_status(config, **status_updates)
             if once:
                 return last_cycle
             time.sleep(config.poll_seconds)

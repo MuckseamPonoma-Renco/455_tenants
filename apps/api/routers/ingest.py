@@ -16,6 +16,7 @@ from packages.tasker_capture import (
     tasker_duplicate_window_seconds,
 )
 from packages.timeutil import epoch_to_iso, parse_ts_to_epoch
+from packages.whatsapp.attachments import build_attachment_manifest, parse_attachment_manifest
 from packages.whatsapp.parser import parse_export_text
 
 router = APIRouter()
@@ -73,6 +74,46 @@ def _batch_recent_duplicate(signature: tuple[str, str, str], ts_epoch: int | Non
     return None
 
 
+def _merge_attachment_manifest(existing: str | None, incoming: str | None) -> str | None:
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    old = parse_attachment_manifest(existing)
+    new = parse_attachment_manifest(incoming)
+    merged_items: list[dict[str, object]] = []
+    seen_items: set[str] = set()
+    for item in list(old.get("items") or []) + list(new.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        key = "|".join(str(item.get(part) or "") for part in ("path", "kind", "label", "status", "source_url"))
+        if key in seen_items:
+            continue
+        seen_items.add(key)
+        merged_items.append(item)
+    merged_links: list[str] = []
+    seen_links: set[str] = set()
+    for link in list(old.get("links") or []) + list(new.get("links") or []):
+        if not isinstance(link, str) or not link.strip() or link in seen_links:
+            continue
+        seen_links.add(link)
+        merged_links.append(link)
+    context: dict[str, object] = {}
+    if isinstance(old.get("message_context"), dict):
+        context.update(old["message_context"])
+    if isinstance(new.get("message_context"), dict):
+        context.update(new["message_context"])
+    return build_attachment_manifest(items=merged_items, links=merged_links, message_context=context, source=str(new.get("source") or old.get("source") or "unknown"))
+
+
+def _merge_duplicate_capture_attachments(existing: RawMessage | None, incoming_attachments: str | None) -> None:
+    if existing is None or not incoming_attachments:
+        return
+    merged = _merge_attachment_manifest(existing.attachments, incoming_attachments)
+    if merged and merged != existing.attachments:
+        existing.attachments = merged
+
+
 def _store_capture_payload(
     session,
     payload: CapturePayload,
@@ -86,7 +127,9 @@ def _store_capture_payload(
     if is_noise_tasker_capture(prepared['chat_name'], prepared['sender'], prepared['text']):
         return prepared, False
 
-    if session.get(RawMessage, mid):
+    existing = session.get(RawMessage, mid)
+    if existing:
+        _merge_duplicate_capture_attachments(existing, payload.attachments)
         return prepared, False
 
     if recent_rows is not None:
@@ -103,6 +146,7 @@ def _store_capture_payload(
         ts_epoch=prepared['ts_epoch'],
     )
     if recent_duplicate:
+        _merge_duplicate_capture_attachments(recent_duplicate, payload.attachments)
         prepared['message_id'] = recent_duplicate.message_id
         return prepared, False
 
@@ -125,6 +169,8 @@ def _store_capture_payload(
 
 def _ingest_single_capture(payload: CapturePayload, *, authorization: str | None, source: str):
     require_bearer_token(authorization)
+    if source == "tasker":
+        append_audit_event("LEGACY_TASKER_INGEST_USED", None, {"mode": "single"})
     with get_session() as session:
         prepared, inserted = _store_capture_payload(session, payload, source=source)
         session.commit()
@@ -142,6 +188,8 @@ def _ingest_batch_capture(payload: CaptureBatchPayload, *, authorization: str | 
     require_bearer_token(authorization)
     if not payload.items:
         raise HTTPException(status_code=400, detail='Provide at least one capture message')
+    if source == "tasker":
+        append_audit_event("LEGACY_TASKER_INGEST_USED", None, {"mode": "batch", "received": len(payload.items)})
 
     inserted_rows: list[dict[str, object]] = []
     deduped = 0

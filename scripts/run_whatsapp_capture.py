@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--media-dir", help="Directory where downloaded WhatsApp media evidence should be stored.")
     parser.add_argument("--user-data-dir", help="Persistent Chrome profile directory for WhatsApp Web login/session state.")
     parser.add_argument("--state-path", help="Path to the local capture state file.")
+    parser.add_argument("--status-path", help="Path to the WhatsApp capture status JSON file.")
     parser.add_argument("--browser-channel", help='Playwright browser channel. Defaults to "chrome".')
     parser.add_argument("--login-timeout-seconds", type=int, help="How long to wait for WhatsApp Web login before failing. 0 waits forever.")
     parser.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
@@ -48,6 +49,7 @@ def main() -> None:
         media_dir=args.media_dir,
         user_data_dir=args.user_data_dir,
         state_path=args.state_path,
+        status_path=args.status_path,
         browser_channel=args.browser_channel,
         login_timeout_seconds=args.login_timeout_seconds,
         prime_visible_messages=False if args.no_prime else None,

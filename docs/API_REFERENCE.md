@@ -1,6 +1,20 @@
 # API reference
 
+## POST /ingest/whatsapp_web
+Accepts one WhatsApp Web message captured from Chrome/Playwright on the Mac mini.
+
+Payload shape matches the legacy Tasker payload, plus optional `attachments` JSON for downloaded media and reply/context metadata.
+
+## POST /ingest/whatsapp_web_batch
+Accepts multiple WhatsApp Web messages in one request.
+
+Payload shape is the same as `/ingest/whatsapp_web`.
+
+Use this for the Chrome/Playwright live watcher. Duplicate messages are deduped against both legacy Android Tasker and Chrome live capture. Captured media can be opened through `/media/whatsapp/{message_id}/{attachment_index}` and is surfaced into Sheets when `PUBLIC_BASE_URL` is configured.
+
 ## POST /ingest/tasker
+Legacy compatibility endpoint for the retired Android Tasker capture flow.
+
 Accepts one WhatsApp message.
 
 ```json
@@ -15,6 +29,8 @@ Accepts one WhatsApp message.
 `ts_epoch` is accepted in seconds or milliseconds and is normalized to ISO time internally.
 
 ## POST /ingest/tasker_batch
+Legacy compatibility endpoint for replaying multiple Android Tasker notification messages in one request.
+
 Accepts multiple WhatsApp notification messages in one request.
 
 ```json
@@ -32,17 +48,11 @@ Accepts multiple WhatsApp notification messages in one request.
 
 Use this for replaying a phone-side backlog after downtime. Duplicate messages are ignored safely.
 
-## POST /ingest/whatsapp_web
-Accepts one WhatsApp Web message captured from Chrome/Playwright on the Mac mini.
+## GET /api/messages/{message_id}/attachments
+Returns the parsed attachment manifest for one stored message plus any tenant-openable public media URLs.
 
-Payload shape is the same as `/ingest/tasker`, plus optional `attachments` JSON for downloaded media and reply/context metadata.
-
-## POST /ingest/whatsapp_web_batch
-Accepts multiple WhatsApp Web messages in one request.
-
-Payload shape is the same as `/ingest/tasker_batch`.
-
-Use this for the Chrome/Playwright live watcher. Duplicate messages are deduped against both Android Tasker and Chrome live capture.
+## GET /media/whatsapp/{message_id}/{attachment_index}
+Public file route used by the spreadsheet for captured WhatsApp screenshots and downloaded media.
 
 ## POST /ingest/export
 Multipart form upload of TXT or ZIP containing `_chat.txt`.
