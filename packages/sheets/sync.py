@@ -40,14 +40,12 @@ PUBLIC_INLINE_UNIT_RE = re.compile(
 )
 PUBLIC_TIME_LINE_RE = re.compile(r"^\d{1,2}:\d{2}\s*(?:AM|PM)?$", re.IGNORECASE)
 PUBLIC_PERSON_ACTION_RE = re.compile(
-    r"(?:\s+(?:and|,)?\s*)?\b(?:has\s+)?(?:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
+    r"(?:\s+(?:and|,)?\s*)?\b(?i:has\s+)?(?i:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
     r"(?:it\s+)?(?!to\s+)[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b\.?",
-    re.IGNORECASE,
 )
 PUBLIC_REPORT_RECIPIENT_ACTION_RE = re.compile(
-    r"\b(?:has\s+)?(?:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
+    r"\b(?i:has\s+)?(?i:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
     r"(?:it\s+)?to\s+(?P<person>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b\.?",
-    re.IGNORECASE,
 )
 PUBLIC_LEADING_PERSON_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?:said|says|reported|asked|texted|called|wrote)\b[:,]?\s*")
 PUBLIC_AS_PER_PERSON_RE = re.compile(r"(?:\s*[,;:]?\s*)\b(?:as per|according to)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b")

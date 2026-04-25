@@ -276,6 +276,11 @@ def test_public_safe_summary_keeps_issue_phrases_that_look_like_reporter_names()
     assert sheets_sync._public_safe_summary_text("Possible elevator outage reported") == "Possible elevator outage reported"
     assert sheets_sync._public_safe_summary_text("South lift irregular floor skipping reported") == "South lift irregular floor skipping reported"
     assert sheets_sync._public_safe_summary_text("Someone stuck in elevator reported") == "Someone stuck in elevator reported"
+    assert (
+        sheets_sync._public_safe_summary_text("North lift was reported no longer working after an earlier working update.")
+        == "North lift was reported no longer working after an earlier working update."
+    )
+    assert "Jack" not in sheets_sync._public_safe_summary_text("Tenant has reported Jack about the elevator noise.")
 
 
 def test_public_detail_text_falls_back_when_title_redaction_would_be_empty():
