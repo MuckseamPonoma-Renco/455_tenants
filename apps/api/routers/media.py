@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from packages.auth import require_bearer_token
 from packages.db import RawMessage, get_session
 from packages.whatsapp.attachments import attachment_items, parse_attachment_manifest
-from packages.whatsapp.media import public_attachment_entries, resolve_allowed_media_path
+from packages.whatsapp.media import attachment_public_image_eligible, public_attachment_entries, resolve_allowed_media_path
 
 router = APIRouter()
 
@@ -29,7 +29,17 @@ def list_message_attachments(message_id: str, authorization: str | None = Header
     shareable = {item["attachment_index"]: item for item in public_attachment_entries(row.message_id, row.attachments)}
     items = []
     for index, item in enumerate(attachment_items(row.attachments)):
+        kind = str(item.get("kind") or "").strip().casefold()
+        if kind == "message_screenshot":
+            continue
+        if kind == "image" and not attachment_public_image_eligible(item):
+            continue
+        path = resolve_allowed_media_path(item.get("path"))
+        if path is None or not path.exists() or not path.is_file():
+            continue
         rendered = dict(item)
+        rendered["attachment_index"] = index
+        rendered["path"] = str(path)
         if index in shareable:
             rendered["public_url"] = shareable[index]["public_url"]
         items.append(rendered)
@@ -50,6 +60,11 @@ def get_whatsapp_media(message_id: str, attachment_index: int):
     if attachment_index < 0 or attachment_index >= len(items):
         raise HTTPException(status_code=404, detail="Unknown attachment")
     item = items[attachment_index]
+    kind = str(item.get("kind") or "").strip().casefold()
+    if kind == "message_screenshot":
+        raise HTTPException(status_code=404, detail="Unknown attachment")
+    if kind == "image" and not attachment_public_image_eligible(item):
+        raise HTTPException(status_code=404, detail="Unknown attachment")
     path = resolve_allowed_media_path(item.get("path"))
     if path is None or not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Attachment file is not available")

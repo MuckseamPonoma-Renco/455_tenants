@@ -86,7 +86,10 @@ def _merge_attachment_manifest(existing: str | None, incoming: str | None) -> st
     for item in list(old.get("items") or []) + list(new.get("items") or []):
         if not isinstance(item, dict):
             continue
-        key = "|".join(str(item.get(part) or "") for part in ("path", "kind", "label", "status", "source_url"))
+        if item.get("path"):
+            key = "|".join(str(item.get(part) or "") for part in ("path", "kind"))
+        else:
+            key = "|".join(str(item.get(part) or "") for part in ("kind", "label", "status", "source_url"))
         if key in seen_items:
             continue
         seen_items.add(key)

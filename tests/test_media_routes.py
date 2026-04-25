@@ -114,7 +114,7 @@ def test_attachment_api_returns_public_urls(client, monkeypatch, tmp_path):
     assert payload["links"] == ["https://example.com/more"]
 
 
-def test_public_attachment_entries_marks_tiny_message_screenshots_not_previewable(monkeypatch, tmp_path):
+def test_public_attachment_entries_skips_message_screenshots(monkeypatch, tmp_path):
     media_dir = tmp_path / "media"
     media_dir.mkdir()
     tiny = media_dir / "tiny.png"
@@ -127,10 +127,143 @@ def test_public_attachment_entries_marks_tiny_message_screenshots_not_previewabl
         source="whatsapp_web",
     )
 
-    item = public_attachment_entries("msg-tiny", manifest)[0]
-    assert item["width"] == 508
-    assert item["height"] == 20
-    assert item["preview_eligible"] is False
+    assert public_attachment_entries("msg-tiny", manifest) == []
+
+
+def test_public_attachment_entries_skips_whatsapp_ui_images_and_dedupes_paths(monkeypatch, tmp_path):
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    static_asset = media_dir / "static.webp"
+    real_photo = media_dir / "photo.jpg"
+    static_asset.write_bytes(b"RIFFxxxxWEBP")
+    real_photo.write_bytes(b"\xff\xd8\xff\xd9")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    manifest = build_attachment_manifest(
+        items=[
+            {
+                "kind": "image",
+                "status": "downloaded",
+                "label": "inline_image",
+                "capture_method": "inline_image",
+                "path": str(static_asset),
+                "filename": "static.webp",
+                "source_url": "https://static.whatsapp.net/rsrc.php/yp/r/OA5z0a81CZk.webp",
+            },
+            {
+                "kind": "image",
+                "status": "downloaded",
+                "label": "inline_image",
+                "capture_method": "inline_image",
+                "path": str(real_photo),
+                "filename": "photo.jpg",
+                "source_url": "blob:https://web.whatsapp.com/photo-1",
+            },
+            {
+                "kind": "image",
+                "status": "downloaded",
+                "label": "inline_image",
+                "capture_method": "inline_image",
+                "path": str(real_photo),
+                "filename": "photo.jpg",
+                "source_url": "blob:https://web.whatsapp.com/photo-2",
+            },
+        ],
+        source="whatsapp_web",
+    )
+
+    entries = public_attachment_entries("msg-photo", manifest)
+
+    assert len(entries) == 1
+    assert entries[0]["path"] == str(real_photo.resolve())
+    assert entries[0]["source_url"] == "blob:https://web.whatsapp.com/photo-1"
+
+
+def test_media_routes_do_not_expose_whatsapp_ui_images(client, monkeypatch, tmp_path):
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    static_asset = media_dir / "static.webp"
+    static_asset.write_bytes(b"RIFFxxxxWEBP")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    manifest = build_attachment_manifest(
+        items=[
+            {
+                "kind": "image",
+                "status": "downloaded",
+                "label": "inline_image",
+                "capture_method": "inline_image",
+                "path": str(static_asset),
+                "filename": "static.webp",
+                "source_url": "https://static.whatsapp.net/rsrc.php/yp/r/OA5z0a81CZk.webp",
+            }
+        ],
+        source="whatsapp_web",
+    )
+    with get_session() as session:
+        session.add(
+            RawMessage(
+                message_id="msg-static-ui",
+                chat_name="455 Tenants",
+                sender="Karen",
+                sender_hash="hash-static-ui",
+                ts_iso="2026-04-21T14:00:00Z",
+                ts_epoch=1776780000,
+                text="Static image should not be exposed",
+                attachments=manifest,
+                source="whatsapp_web",
+            )
+        )
+        session.commit()
+
+    payload = client.get("/api/messages/msg-static-ui/attachments", headers=auth_headers()).json()
+
+    assert payload["items"] == []
+    assert client.get("/media/whatsapp/msg-static-ui/0").status_code == 404
+
+
+def test_media_routes_do_not_expose_message_screenshots(client, monkeypatch, tmp_path):
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    bubble = media_dir / "bubble.png"
+    photo = media_dir / "photo.png"
+    bubble.write_bytes(b"\x89PNG\r\n\x1a\n")
+    photo.write_bytes(b"\x89PNG\r\n\x1a\n")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    manifest = build_attachment_manifest(
+        items=[
+            {"kind": "message_screenshot", "status": "captured", "path": str(bubble), "filename": "bubble.png"},
+            {"kind": "image", "status": "downloaded", "path": str(photo), "filename": "photo.png"},
+        ],
+        source="whatsapp_web",
+    )
+    with get_session() as session:
+        session.add(
+            RawMessage(
+                message_id="msg-no-bubble",
+                chat_name="455 Tenants",
+                sender="Karen",
+                sender_hash="hash-bubble",
+                ts_iso="2026-04-21T14:00:00Z",
+                ts_epoch=1776780000,
+                text="See attached photo",
+                attachments=manifest,
+                source="whatsapp_web",
+            )
+        )
+        session.commit()
+
+    payload = client.get("/api/messages/msg-no-bubble/attachments", headers=auth_headers()).json()
+    assert [item["kind"] for item in payload["items"]] == ["image"]
+    assert payload["items"][0]["attachment_index"] == 1
+    assert "/media/whatsapp/msg-no-bubble/1?v=" in payload["items"][0]["public_url"]
+
+    assert client.get("/media/whatsapp/msg-no-bubble/0").status_code == 404
+    assert client.get("/media/whatsapp/msg-no-bubble/1").status_code == 200
 
 
 def test_public_whatsapp_media_route_blocks_paths_outside_capture_root(client, monkeypatch, tmp_path):

@@ -11,7 +11,7 @@ from packages.db import FilingJob, Incident, MessageDecision, RawMessage, Servic
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
-from packages.whatsapp.media import attachment_context, attachment_preview_eligible, public_attachment_entries
+from packages.whatsapp.media import attachment_context, public_attachment_entries
 from packages.whatsapp.parser import is_media_placeholder_text
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -27,10 +27,77 @@ PUBLIC_WORKBOOK_TITLE = "455 Tenants Log"
 PUBLIC_FROZEN_ROWS = 1
 PUBLIC_THUMBNAIL_HEIGHT = 110
 PUBLIC_THUMBNAIL_WIDTH = 240
+LEGACY_PUBLIC_UPDATE_TABS = ("PublicUpdates",)
 PUBLIC_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)")
 PUBLIC_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
-PUBLIC_UNIT_LINE_RE = re.compile(r"^(?:apt\.?|apartment|unit)?\s*\d{1,3}[A-Z]?$", re.IGNORECASE)
+PUBLIC_UNIT_LINE_RE = re.compile(r"^(?:apt\.?|apartment|unit)?\s*\d{1,3}[A-Z]?(?:\s+here)?\.?$", re.IGNORECASE)
+PUBLIC_INLINE_UNIT_RE = re.compile(
+    r"(^|[.!?]\s+)(?:apt\.?|apartment|unit)\s*\d{1,3}[A-Z]?[.!?:,\-]?\s+"
+    r"|(^|[.!?]\s+)\d{1,3}[A-Z](?:\s+here)?[.!?:,\-]?\s+"
+    r"|(^|[.!?]\s+)\d{1,3}[.!?:,\-]\s+",
+    re.IGNORECASE,
+)
 PUBLIC_TIME_LINE_RE = re.compile(r"^\d{1,2}:\d{2}\s*(?:AM|PM)?$", re.IGNORECASE)
+PUBLIC_PERSON_ACTION_RE = re.compile(
+    r"(?:\s+(?:and|,)?\s*)?\b(?:has\s+)?(?:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
+    r"(?:it\s+)?(?!to\s+)[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b\.?",
+    re.IGNORECASE,
+)
+PUBLIC_REPORT_RECIPIENT_ACTION_RE = re.compile(
+    r"\b(?:has\s+)?(?:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
+    r"(?:it\s+)?to\s+(?P<person>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b\.?",
+    re.IGNORECASE,
+)
+PUBLIC_LEADING_PERSON_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?:said|says|reported|asked|texted|called|wrote)\b[:,]?\s*", re.IGNORECASE)
+PUBLIC_AS_PER_PERSON_RE = re.compile(r"(?:\s*[,;:]?\s*)\b(?:as per|according to)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b", re.IGNORECASE)
+PUBLIC_SUBJECT_PERSON_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?=(?:mans|said|says|reported|asked|texted|called|wrote)\b)", re.IGNORECASE)
+PUBLIC_DEFAULT_REDACTED_NAMES = (
+    "Emma",
+    "Greg",
+    "Hercules",
+    "Jack",
+    "Jacob",
+    "Karen",
+    "Meredith",
+    "Molly",
+    "Nic",
+    "Piotr",
+    "Tibor",
+    "Val",
+    "Wattle",
+    "Weinreb",
+    "Wojtek",
+    "Yvonne",
+)
+PUBLIC_DETAIL_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "again",
+    "are",
+    "at",
+    "has",
+    "have",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "reported",
+    "that",
+    "the",
+    "there",
+    "to",
+}
+PUBLIC_REPORT_RECIPIENT_ROLE_HINTS = (
+    "super",
+    "superintendent",
+    "doorman",
+    "concierge",
+    "building manager",
+    "porter",
+    "maintenance",
+)
 
 
 def _disabled() -> bool:
@@ -166,6 +233,32 @@ def _replace_tab_values(
         svc.spreadsheets().values().clear(
             spreadsheetId=sheet_id,
             range=f"{tab}!{_column_label(max_width + 1)}1:ZZ{row_count}",
+            body={},
+        ).execute()
+
+
+def _quoted_sheet_range(tab: str, a1_range: str) -> str:
+    escaped = tab.replace("'", "''")
+    return f"'{escaped}'!{a1_range}"
+
+
+def _clear_legacy_public_update_tabs(svc, public_sheet_id: str) -> None:
+    configured_public_sheet = _configured_public_sheet_id()
+    if not configured_public_sheet:
+        return
+    try:
+        internal_sheet_id = _sheet_id()
+    except RuntimeError:
+        return
+    if internal_sheet_id == public_sheet_id:
+        return
+    titles = _sheet_title_to_id_map(svc, internal_sheet_id)
+    for tab in LEGACY_PUBLIC_UPDATE_TABS:
+        if tab not in titles:
+            continue
+        svc.spreadsheets().values().clear(
+            spreadsheetId=internal_sheet_id,
+            range=_quoted_sheet_range(tab, "A:ZZ"),
             body={},
         ).execute()
 
@@ -709,11 +802,11 @@ def _attachment_cells(message_id: str, attachments: str | None) -> tuple[str, li
     shareable = public_attachment_entries(message_id, attachments)
     context = attachment_context(attachments)
     preview_item = next(
-        (item for item in shareable if item.get("kind") in {"image", "message_screenshot"}),
+        (item for item in shareable if item.get("kind") == "image"),
         shareable[0] if shareable else None,
     )
     preview = ""
-    if preview_item and preview_item.get("kind") in {"image", "message_screenshot"}:
+    if preview_item and preview_item.get("kind") == "image":
         preview = _image_formula(str(preview_item.get("public_url") or ""))
 
     media_links = [
@@ -873,7 +966,7 @@ def _public_focus_label(incident: Incident | None) -> str:
         return _PUBLIC_ASSET_LABELS[asset]
     title = _clean_text(getattr(incident, "title", ""))
     if title:
-        return title
+        return _public_sanitize_text(_public_strip_report_prefix(title)) or "Building update"
     category = _clean_text(getattr(incident, "category", ""))
     return category.replace("_", " ").title() if category else "Building update"
 
@@ -899,12 +992,127 @@ def _truncate_public_text(value: str, *, limit: int) -> str:
 
 def _public_redact_sensitive_text(value: str) -> str:
     clean = PUBLIC_EMAIL_RE.sub("[email removed]", _clean_text(value))
-    return PUBLIC_PHONE_RE.sub("[phone removed]", clean)
+    clean = PUBLIC_PHONE_RE.sub("[phone removed]", clean)
+    return PUBLIC_INLINE_UNIT_RE.sub(lambda match: next((group for group in match.groups() if group), ""), clean).strip()
+
+
+def _public_allowed_report_recipients() -> set[str]:
+    recipients = set(_split_names(os.environ.get("PUBLIC_ALLOWED_REPORT_RECIPIENTS", "Jack")))
+    return {name.strip().casefold() for name in recipients if name.strip()}
+
+
+def _public_is_allowed_report_recipient(name: str) -> bool:
+    clean = _clean_text(name)
+    if not clean:
+        return False
+    lowered = clean.casefold()
+    if lowered in _public_allowed_report_recipients():
+        return True
+    return any(role in lowered for role in PUBLIC_REPORT_RECIPIENT_ROLE_HINTS)
+
+
+def _public_is_report_recipient_context(clean: str, match_start: int) -> bool:
+    return bool(re.search(r"\bto\s*$", clean[:match_start].rstrip()))
+
+
+def _public_retain_allowed_report_recipient(match: re.Match[str]) -> str:
+    person = _clean_text(match.group("person") or "")
+    if _public_is_allowed_report_recipient(person):
+        return match.group(0).strip()
+    return ""
+
+
+def _public_remove_person_references(value: str) -> str:
+    clean = _clean_text(value)
+    clean = PUBLIC_LEADING_PERSON_RE.sub("", clean)
+    clean = PUBLIC_REPORT_RECIPIENT_ACTION_RE.sub(_public_retain_allowed_report_recipient, clean)
+    clean = PUBLIC_PERSON_ACTION_RE.sub("", clean)
+    clean = PUBLIC_AS_PER_PERSON_RE.sub("", clean)
+    clean = PUBLIC_SUBJECT_PERSON_RE.sub("Someone ", clean)
+    redacted_names = _split_names(os.environ.get("PUBLIC_REDACT_NAMES") or ",".join(PUBLIC_DEFAULT_REDACTED_NAMES))
+    for name in redacted_names:
+        name_pattern = re.compile(rf"\b{re.escape(name)}\b", re.IGNORECASE)
+
+        def _redact(match: re.Match[str]) -> str:
+            if _public_is_allowed_report_recipient(name) and _public_is_report_recipient_context(clean, match.start()):
+                return match.group(0)
+            return "someone"
+
+        clean = name_pattern.sub(_redact, clean)
+    clean = re.sub(r"\s+([.,;:!?])", r"\1", clean)
+    clean = re.sub(r"\s*;\s*([.;,])", r"\1", clean)
+    clean = re.sub(r"\s{2,}", " ", clean).strip(" ,;:-")
+    return clean
+
+
+def _public_sanitize_text(value: str) -> str:
+    return _public_redact_sensitive_text(_public_remove_person_references(value))
+
+
+def _public_similarity_tokens(value: str) -> set[str]:
+    clean = _clean_text(value).casefold()
+    clean = re.sub(r"\b(\d+)(?:st|nd|rd|th)\b", r"\1", clean)
+    clean = re.sub(r"\bflr\b|\bfloor\b", "floor", clean)
+    tokens = set(re.findall(r"[a-z0-9]+", clean))
+    return {token for token in tokens if token not in PUBLIC_DETAIL_STOP_WORDS}
+
+
+def _public_dedupe_parts(parts: list[str]) -> list[str]:
+    out: list[str] = []
+    token_sets: list[set[str]] = []
+    seen_exact: set[str] = set()
+    for raw_part in parts:
+        part = _public_sanitize_text(_public_strip_report_prefix(raw_part))
+        if not part:
+            continue
+        exact = re.sub(r"\W+", "", part).casefold()
+        if exact in seen_exact:
+            continue
+        tokens = _public_similarity_tokens(part)
+        duplicate = False
+        for existing_tokens in token_sets:
+            if not tokens or not existing_tokens:
+                continue
+            overlap = len(tokens & existing_tokens) / max(len(tokens | existing_tokens), 1)
+            if overlap >= 0.72:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        seen_exact.add(exact)
+        token_sets.append(tokens)
+        out.append(part)
+    return out
+
+
+def _public_is_summary_message_style(value: str) -> bool:
+    clean = value.casefold()
+    return any(token in clean for token in (" it's ", "it's ", "it’s", " no one", "has informed", "again.", "indicating"))
+
+
+def _public_summarize_issue_value(*, summary: str, title: str) -> str:
+    cleaned_summary = _public_strip_report_prefix(summary) if summary else ""
+    cleaned_title = _public_strip_report_prefix(title) if title else ""
+    if not cleaned_summary:
+        return _public_safe_summary_text(cleaned_title)
+
+    summary_words = len((cleaned_summary or "").split())
+    title_words = len((cleaned_title or "").split())
+    if "|" in cleaned_summary or _public_is_summary_message_style(cleaned_summary):
+        if cleaned_title:
+            return _public_safe_summary_text(cleaned_title)
+    if title_words and summary_words >= title_words + 8:
+        return _public_safe_summary_text(cleaned_title)
+    return _public_safe_summary_text(cleaned_summary)
 
 
 def _public_strip_report_prefix(value: str) -> str:
     clean = _clean_text(value)
     patterns = (
+        r"^(?:a\s+)?tenant\s+[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)?\s+reports\s+that\s+",
+        r"^(?:a\s+)?tenant\s+[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)?\s+reports\s+",
+        r"^(?:a\s+)?resident\s+[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)?\s+reports\s+that\s+",
+        r"^(?:a\s+)?resident\s+[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)?\s+reports\s+",
         r"^(?:a\s+)?tenant\s+reports\s+that\s+",
         r"^(?:a\s+)?tenant\s+reports\s+",
         r"^tenants\s+report\s+that\s+",
@@ -933,8 +1141,7 @@ def _public_safe_summary_text(value: str) -> str:
     )
     for pattern, replacement in replacements:
         clean = re.sub(pattern, replacement, clean, flags=re.IGNORECASE)
-    parts = [_public_strip_report_prefix(part) for part in clean.split(" | ")]
-    return _public_redact_sensitive_text(" | ".join(part for part in parts if part))
+    return " | ".join(_public_dedupe_parts(clean.split(" | ")))
 
 
 def _public_visible_context_text(value: str) -> str:
@@ -948,7 +1155,7 @@ def _public_visible_context_text(value: str) -> str:
         if PUBLIC_PHONE_RE.search(line) or PUBLIC_EMAIL_RE.search(line):
             if line == PUBLIC_PHONE_RE.sub("", line).strip() or line == PUBLIC_EMAIL_RE.sub("", line).strip():
                 continue
-            cleaned.append(_public_redact_sensitive_text(line))
+            cleaned.append(_public_sanitize_text(line))
             continue
         if next_line and (PUBLIC_PHONE_RE.search(next_line) or PUBLIC_EMAIL_RE.search(next_line)):
             continue
@@ -956,7 +1163,7 @@ def _public_visible_context_text(value: str) -> str:
             continue
         if PUBLIC_TIME_LINE_RE.match(line) and cleaned:
             continue
-        cleaned.append(_public_redact_sensitive_text(line))
+        cleaned.append(_public_sanitize_text(line))
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -972,7 +1179,10 @@ def _public_visible_context_text(value: str) -> str:
 def _public_detail_text(incident: Incident | None, focus_label: str) -> str:
     if incident is None:
         return ""
-    summary = _clean_text(getattr(incident, "summary", ""))
+    summary = _public_summarize_issue_value(
+        summary=_clean_text(getattr(incident, "summary", "")),
+        title=_clean_text(getattr(incident, "title", "")),
+    )
     title = _clean_text(getattr(incident, "title", ""))
     for candidate in (summary, title):
         if not candidate:
@@ -980,6 +1190,9 @@ def _public_detail_text(incident: Incident | None, focus_label: str) -> str:
         trimmed = _strip_leading_label(candidate, focus_label)
         if trimmed:
             return _truncate_public_text(_public_safe_summary_text(trimmed), limit=320)
+        truncated = _truncate_public_text(_public_safe_summary_text(candidate), limit=320)
+        if truncated:
+            return truncated
     return "Resident update logged."
 
 
@@ -1040,8 +1253,8 @@ def _public_case_note(case: ServiceRequestCase, incident: Incident | None) -> st
         return "Waiting for first NYC status lookup."
     resolution = _truncate_public_text(_clean_text(case.resolution_description), limit=220)
     if resolution:
-        return resolution
-    related_issue = _clean_text(getattr(incident, "title", "")) or _public_focus_label(incident)
+        return _public_sanitize_text(resolution)
+    related_issue = _public_sanitize_text(_clean_text(getattr(incident, "title", ""))) or _public_focus_label(incident)
     if related_issue:
         return _truncate_public_text(f"Filed for {related_issue}.", limit=220)
     return "311 follow-up is being tracked."
@@ -1074,8 +1287,6 @@ def _public_source_label(source: str | None) -> str:
 
 def _public_attachment_label(item: dict[str, object], *, default: str = "Open evidence") -> str:
     kind = _clean_text(str(item.get("kind") or "")).casefold()
-    if kind == "message_screenshot":
-        return "Open screenshot"
     if kind == "image":
         return "Open photo"
     if kind == "video":
@@ -1091,15 +1302,12 @@ def _public_attachment_preview(item: dict[str, object]) -> str:
     kind = _clean_text(str(item.get("kind") or "")).casefold()
     if kind != "image":
         return ""
-    if not attachment_preview_eligible(item):
-        return ""
     return _public_thumbnail_formula(str(item.get("public_url") or ""))
 
 
 def _public_type_label(kind: str | None) -> str:
     clean = _clean_text(str(kind or "")).casefold()
     labels = {
-        "message_screenshot": "Screenshot",
         "image": "Photo",
         "video": "Video",
         "audio": "Audio",
@@ -1291,9 +1499,9 @@ def _public_proof_cell(incident: Incident | None, raw_map: dict[str, RawMessage]
         shareable = public_attachment_entries(raw.message_id, raw.attachments)
         if not shareable:
             continue
-        item = next((entry for entry in shareable if entry.get("kind") in {"image", "message_screenshot"}), shareable[0])
+        item = next((entry for entry in shareable if entry.get("kind") == "image"), shareable[0])
         kind = _clean_text(str(item.get("kind") or ""))
-        label = "Open photo" if kind in {"image", "message_screenshot"} else "Open file"
+        label = "Open photo" if kind == "image" else "Open file"
         return _hyperlink_formula(str(item.get("public_url") or ""), label)
     return ""
 
@@ -1431,6 +1639,7 @@ def sync_public_updates_to_sheets():
             "header_rows": [4, 13, incidents_header_row, case_watch_header_row],
         },
     )
+    _clear_legacy_public_update_tabs(svc, sheet_id)
 
 
 def sync_incidents_to_sheets():

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import time
@@ -50,10 +52,6 @@ OPEN_MEDIA_SELECTORS = (
     "[data-icon='document']",
     "[data-testid*='media-viewer']",
 )
-BUBBLE_SCREENSHOT_PADDING_X = 18
-BUBBLE_SCREENSHOT_PADDING_Y = 12
-BUBBLE_SCREENSHOT_MIN_WIDTH = 360
-BUBBLE_SCREENSHOT_MIN_HEIGHT = 110
 
 
 def _log(message: str) -> None:
@@ -451,6 +449,25 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
               .map(el => (el.href || '').trim())
               .filter(Boolean);
             const bodyText = (node.innerText || '').trim();
+            const imageSourceLooksUserMedia = (src) => {{
+              const clean = String(src || '').trim().toLowerCase();
+              return clean.startsWith('blob:') || clean.startsWith('data:image/');
+            }};
+            const mediaSizeFor = (el) => {{
+              const rect = el.getBoundingClientRect();
+              return {{
+                width: Math.round(el.naturalWidth || el.width || rect.width || 0),
+                height: Math.round(el.naturalHeight || el.height || rect.height || 0),
+                area: Math.round((rect.width || el.naturalWidth || el.width || 0) * (rect.height || el.naturalHeight || el.height || 0)),
+              }};
+            }};
+            const imageElementLooksUserMedia = (el) => {{
+              const size = mediaSizeFor(el);
+              if (size.width < 96 || size.height < 96 || size.area < 9000) return false;
+              if (el.tagName === 'CANVAS') return true;
+              const src = el.currentSrc || el.src || '';
+              return imageSourceLooksUserMedia(src);
+            }};
             const hasCssBackgroundImage = Array.from(node.querySelectorAll('div, span')).some(el => {{
               const labels = [
                 el.getAttribute('aria-label'),
@@ -459,26 +476,29 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
                 el.getAttribute('data-icon'),
               ].join(' ');
               if (!/photo|image|picture|media/i.test(labels)) return false;
+              const size = mediaSizeFor(el);
+              if (size.width < 96 || size.height < 96 || size.area < 9000) return false;
               const inlineStyle = String(el.getAttribute('style') || '');
-              if (inlineStyle.includes('background-image')) return true;
+              const inlineMatch = inlineStyle.match(/background-image\\s*:\\s*url\\(["']?(.*?)["']?\\)/i);
+              if (inlineMatch && imageSourceLooksUserMedia(inlineMatch[1])) return true;
               try {{
                 const background = window.getComputedStyle(el).backgroundImage || '';
-                return background.startsWith('url(');
+                const match = background.match(/^url\\(["']?(.*?)["']?\\)$/);
+                return Boolean(match && imageSourceLooksUserMedia(match[1]));
               }} catch (_) {{
                 return false;
               }}
             }});
-            const hasImageMedia = Boolean(node.querySelector([
-              'img',
-              'canvas',
+            const hasInlineUserImage = Array.from(node.querySelectorAll('img[src], img[srcset], canvas')).some(imageElementLooksUserMedia);
+            const hasImageControl = Boolean(node.querySelector([
               '[aria-label*="Photo" i]',
               '[aria-label*="Image" i]',
               '[aria-label*="picture" i]',
               '[aria-label*="Open media" i]',
-              '[data-icon*="image" i]',
               '[data-testid*="image" i]',
-              '[data-testid*="media" i]',
-            ].join(','))) || hasCssBackgroundImage;
+              '[data-testid*="media-photo" i]',
+            ].join(',')));
+            const hasImageMedia = hasInlineUserImage || hasCssBackgroundImage || hasImageControl;
             const mediaKinds = [];
             if (hasImageMedia) mediaKinds.push('image');
             if (node.querySelector('video, [aria-label*="Video" i], [data-testid*="video" i]')) mediaKinds.push('video');
@@ -730,79 +750,15 @@ def _media_storage_dir(config: WhatsAppCaptureConfig, chat_name: str, ts_iso: st
     return path
 
 
-def _expanded_screenshot_clip(
-    box: dict[str, float],
-    *,
-    viewport_width: float,
-    viewport_height: float,
-    padding_x: float = BUBBLE_SCREENSHOT_PADDING_X,
-    padding_y: float = BUBBLE_SCREENSHOT_PADDING_Y,
-    min_width: float = BUBBLE_SCREENSHOT_MIN_WIDTH,
-    min_height: float = BUBBLE_SCREENSHOT_MIN_HEIGHT,
-) -> dict[str, float] | None:
-    if viewport_width <= 0 or viewport_height <= 0:
-        return None
-
-    left = float(box["x"]) - padding_x
-    top = float(box["y"]) - padding_y
-    right = float(box["x"]) + float(box["width"]) + padding_x
-    bottom = float(box["y"]) + float(box["height"]) + padding_y
-
-    width = max(right - left, min_width)
-    height = max(bottom - top, min_height)
-    center_x = float(box["x"]) + float(box["width"]) / 2
-    center_y = float(box["y"]) + float(box["height"]) / 2
-
-    left = center_x - width / 2
-    top = center_y - height / 2
-    right = left + width
-    bottom = top + height
-
-    if left < 0:
-        right -= left
-        left = 0
-    if top < 0:
-        bottom -= top
-        top = 0
-    if right > viewport_width:
-        left = max(0.0, left - (right - viewport_width))
-        right = viewport_width
-    if bottom > viewport_height:
-        top = max(0.0, top - (bottom - viewport_height))
-        bottom = viewport_height
-
-    if right <= left or bottom <= top:
-        return None
-    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
-
-
-def _save_bubble_screenshot(page: Page, message_locator: Locator, target_dir: Path, prefix: str) -> str | None:
-    path = target_dir / f"{prefix}_bubble.png"
-    try:
-        box = message_locator.bounding_box(timeout=1_000)
-        viewport = page.viewport_size or page.evaluate("() => ({width: window.innerWidth, height: window.innerHeight})") or {}
-        viewport_width = float(viewport.get("width") or 0)
-        viewport_height = float(viewport.get("height") or 0)
-        if not box:
-            return None
-        clip = _expanded_screenshot_clip(box, viewport_width=viewport_width, viewport_height=viewport_height)
-        if clip is None:
-            return None
-        page.screenshot(
-            path=str(path),
-            clip=clip,
-            timeout=5_000,
-        )
-        return str(path.resolve())
-    except Exception:
-        return None
-
-
 def _save_download(download: Download, target_dir: Path, prefix: str, kind: str) -> str:
     suggested = _clean(download.suggested_filename) or f"{prefix}_{kind}"
     target = target_dir / f"{prefix}_{suggested}"
     download.save_as(str(target))
     return str(target.resolve())
+
+
+def _download_succeeded(item: dict[str, Any] | None) -> bool:
+    return bool(item and item.get("status") == "downloaded" and item.get("path"))
 
 
 def _try_click_download(page: Page, locator: Locator, target_dir: Path, prefix: str, kind: str) -> dict[str, Any] | None:
@@ -824,29 +780,180 @@ def _try_click_download(page: Page, locator: Locator, target_dir: Path, prefix: 
         return make_attachment_item(kind=kind, label="download_error", status="download_error", error=str(exc)[:300])
 
 
+def _image_extension(content_type: str | None) -> str:
+    clean = _clean(content_type).split(";", 1)[0].casefold()
+    if clean == "image/jpeg":
+        return ".jpg"
+    if clean == "image/png":
+        return ".png"
+    if clean == "image/webp":
+        return ".webp"
+    ext = mimetypes.guess_extension(clean) if clean else None
+    return ext or ".png"
+
+
+def _try_save_inline_image(locator: Locator, target_dir: Path, prefix: str) -> dict[str, Any] | None:
+    try:
+        payload = locator.evaluate(
+            """
+            async (root) => {
+              const minSide = 96;
+              const minArea = 9000;
+              const dataUrlToParts = (dataUrl) => {
+                const match = String(dataUrl || '').match(/^data:([^;,]+)?;base64,(.*)$/);
+                if (!match) return null;
+                return {contentType: match[1] || 'image/png', data: match[2] || ''};
+              };
+              const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(blob);
+              });
+              const sourceLooksUserMedia = (src) => {
+                const clean = String(src || '').trim().toLowerCase();
+                return clean.startsWith('blob:') || clean.startsWith('data:image/');
+              };
+              const sizeFor = (el) => {
+                const rect = el.getBoundingClientRect();
+                return {
+                  width: Math.round(el.naturalWidth || el.videoWidth || el.width || rect.width || 0),
+                  height: Math.round(el.naturalHeight || el.videoHeight || el.height || rect.height || 0),
+                  area: Math.round((rect.width || el.naturalWidth || el.width || 0) * (rect.height || el.naturalHeight || el.height || 0)),
+                };
+              };
+              const candidates = [];
+              for (const img of Array.from(root.querySelectorAll('img[src], img[srcset]'))) {
+                const size = sizeFor(img);
+                if (size.width < minSide || size.height < minSide || size.area < minArea) continue;
+                const src = img.currentSrc || img.src || '';
+                if (!src) continue;
+                if (!sourceLooksUserMedia(src)) continue;
+                candidates.push({type: 'url', src, ...size});
+              }
+              for (const canvas of Array.from(root.querySelectorAll('canvas'))) {
+                const size = sizeFor(canvas);
+                if (size.width < minSide || size.height < minSide || size.area < minArea) continue;
+                candidates.push({type: 'canvas', canvas, ...size});
+              }
+              for (const el of Array.from(root.querySelectorAll('div, span'))) {
+                const size = sizeFor(el);
+                if (size.width < minSide || size.height < minSide || size.area < minArea) continue;
+                const style = window.getComputedStyle(el);
+                const match = String(style.backgroundImage || '').match(/^url\\(["']?(.*?)["']?\\)$/);
+                if (!match || !match[1]) continue;
+                if (!sourceLooksUserMedia(match[1])) continue;
+                candidates.push({type: 'url', src: match[1], ...size});
+              }
+              candidates.sort((a, b) => b.area - a.area);
+              for (const candidate of candidates) {
+                try {
+                  let parts = null;
+                  if (candidate.type === 'canvas') {
+                    parts = dataUrlToParts(candidate.canvas.toDataURL('image/png'));
+                  } else if (String(candidate.src || '').startsWith('data:')) {
+                    parts = dataUrlToParts(candidate.src);
+                  } else {
+                    const response = await fetch(candidate.src);
+                    const blob = await response.blob();
+                    if (!blob || blob.size <= 0) continue;
+                    parts = dataUrlToParts(await blobToDataUrl(blob));
+                    if (parts && blob.type) parts.contentType = blob.type;
+                  }
+                  if (!parts || !parts.data) continue;
+                  return {
+                    data_base64: parts.data,
+                    content_type: parts.contentType || 'image/png',
+                    width: candidate.width,
+                    height: candidate.height,
+                    source_url: String(candidate.src || ''),
+                  };
+                } catch (_) {}
+              }
+              return null;
+            }
+            """
+        )
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    data = _clean(str(payload.get("data_base64") or ""))
+    if not data:
+        return None
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    content_type = _clean(str(payload.get("content_type") or "")) or "image/png"
+    target = target_dir / f"{prefix}_inline_image{_image_extension(content_type)}"
+    try:
+        target.write_bytes(raw)
+    except Exception:
+        return None
+    extra: dict[str, Any] = {"capture_method": "inline_image"}
+    for field in ("width", "height"):
+        value = payload.get(field)
+        if isinstance(value, int) and value > 0:
+            extra[field] = value
+    return make_attachment_item(
+        kind="image",
+        label="inline_image",
+        status="downloaded",
+        path=str(target.resolve()),
+        content_type=content_type,
+        filename=target.name,
+        source_url=_clean(str(payload.get("source_url") or ""))[:300],
+        extra=extra,
+    )
+
+
 def _try_download_message_media(page: Page, message_locator: Locator, target_dir: Path, prefix: str, kind: str) -> dict[str, Any] | None:
+    fallback_item: dict[str, Any] | None = None
     direct = message_locator.locator(", ".join(DOWNLOAD_SELECTORS))
     item = _try_click_download(page, direct, target_dir, prefix, kind)
-    if item is not None:
+    if _download_succeeded(item):
         return item
+    if item is not None:
+        fallback_item = item
+
+    if kind == "image":
+        item = _try_save_inline_image(message_locator, target_dir, prefix)
+        if _download_succeeded(item):
+            return item
 
     opener = message_locator.locator(", ".join(OPEN_MEDIA_SELECTORS))
     if not _locator_exists(opener):
-        return None
+        return fallback_item
     try:
         opener.first.click(force=True)
         page.wait_for_timeout(600)
         viewer = page.locator(", ".join(DOWNLOAD_SELECTORS))
         item = _try_click_download(page, viewer, target_dir, prefix, kind)
+        if _download_succeeded(item):
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+            return item
+        if item is not None and fallback_item is None:
+            fallback_item = item
+        if kind == "image":
+            inline_viewer = page.locator("[role='dialog'], [data-testid*='media-viewer'], body")
+            item = _try_save_inline_image(inline_viewer, target_dir, prefix)
+            if _download_succeeded(item):
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(250)
+                return item
         page.keyboard.press("Escape")
         page.wait_for_timeout(250)
-        return item
+        return fallback_item
     except Exception as exc:
         try:
             page.keyboard.press("Escape")
         except Exception:
             pass
-        return make_attachment_item(kind=kind, label="viewer_error", status="download_error", error=str(exc)[:300])
+        return fallback_item or make_attachment_item(kind=kind, label="viewer_error", status="download_error", error=str(exc)[:300])
 
 
 def _attachment_manifest_for_candidate(page: Page, candidate: WhatsAppCaptureCandidate, config: WhatsAppCaptureConfig) -> str | None:
@@ -857,21 +964,10 @@ def _attachment_manifest_for_candidate(page: Page, candidate: WhatsAppCaptureCan
     links = [_clean(link) for link in (row.get("links") or []) if _clean(link)]
 
     media_items: list[dict[str, Any]] = []
-    target_dir = _media_storage_dir(config, candidate.chat_name, candidate.ts_iso)
-    prefix = f"{_timestamp_slug(candidate.ts_iso)}_{candidate.fingerprint[:8]}"
-    message_locator = _message_locator(page, row)
-    screenshot_path = _save_bubble_screenshot(page, message_locator, target_dir, prefix)
-    if screenshot_path:
-        media_items.append(
-            make_attachment_item(
-                kind="message_screenshot",
-                label="whatsapp_bubble",
-                status="captured",
-                path=screenshot_path,
-                filename=Path(screenshot_path).name,
-            )
-        )
     if row.get("media_kinds"):
+        target_dir = _media_storage_dir(config, candidate.chat_name, candidate.ts_iso)
+        prefix = f"{_timestamp_slug(candidate.ts_iso)}_{candidate.fingerprint[:8]}"
+        message_locator = _message_locator(page, row)
         for kind in [kind for kind in row.get("media_kinds") or [] if isinstance(kind, str) and kind]:
             item = _try_download_message_media(page, message_locator, target_dir, prefix, kind)
             if item is None:

@@ -80,6 +80,27 @@ class _SingleSheetService(_FakeService):
         return _SingleSheetSpreadsheets(calls)
 
 
+class _LegacyPublicTabService(_FakeService):
+    def spreadsheets(self):
+        calls = self.calls
+
+        class _LegacyPublicTabSpreadsheets(_FakeSpreadsheets):
+            def get(self, **kwargs):
+                return _FakeRequest(
+                    calls,
+                    "get",
+                    kwargs,
+                    response={
+                        "sheets": [
+                            {"properties": {"title": "Incidents", "sheetId": 1}},
+                            {"properties": {"title": "PublicUpdates", "sheetId": 8}},
+                        ]
+                    },
+                )
+
+        return _LegacyPublicTabSpreadsheets(calls)
+
+
 def test_replace_tab_values_writes_first_then_clears_stale_cells():
     service = _FakeService()
 
@@ -105,6 +126,18 @@ def test_ensure_tab_exists_can_reuse_single_default_sheet():
     assert request["properties"]["title"] == "Tenant Log"
 
 
+def test_clear_legacy_public_update_tabs_clears_stale_internal_public_tab(monkeypatch):
+    service = _LegacyPublicTabService()
+    monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "internal-sheet-123")
+    monkeypatch.setenv("GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID", "public-sheet-456")
+
+    sheets_sync._clear_legacy_public_update_tabs(service, "public-sheet-456")
+
+    clear_call = next(kwargs for kind, kwargs in service.calls if kind == "clear")
+    assert clear_call["spreadsheetId"] == "internal-sheet-123"
+    assert clear_call["range"] == "'PublicUpdates'!A:ZZ"
+
+
 def test_public_status_summary_uses_last_evidence_when_last_report_missing():
     summary = sheets_sync._public_status_summary(
         {"last_evidence": "2026-04-21 2:44 PM", "confidence": "Low"},
@@ -113,6 +146,92 @@ def test_public_status_summary_uses_last_evidence_when_last_report_missing():
 
     assert "2026-04-21 2:44 PM" in summary
     assert "311-12345678" in summary
+
+
+def test_public_detail_text_dedupes_internal_summary_and_removes_names():
+    incident = Incident(
+        title="Handrail broken on 10th floor stair A",
+        summary=(
+            "Tenant reports that the handrail in stair A on the 10th floor is broken again. | "
+            "Tenant reports the stair A handrail on the 10th floor is broken again and has informed Jack."
+        ),
+    )
+
+    detail = sheets_sync._public_detail_text(incident, sheets_sync._public_focus_label(incident))
+
+    assert detail == "Handrail broken on 10th floor stair A"
+    assert "|" not in detail
+    assert "Jack" not in detail
+
+
+def test_public_detail_text_prefers_title_for_message_like_summary():
+    incident = Incident(
+        title="North elevator outage",
+        summary="as working, but now the north elevator is service again.",
+    )
+    detail = sheets_sync._public_detail_text(incident, sheets_sync._public_focus_label(incident))
+
+    assert detail == "North elevator outage"
+
+
+def test_public_detail_text_cleans_redundant_trapped_outage_phrases():
+    incident = Incident(
+        title="Elevator outage persists",
+        summary="broken again with no one trapped inside, indicating persistent elevator outage issue.",
+    )
+    detail = sheets_sync._public_detail_text(incident, sheets_sync._public_focus_label(incident))
+
+    assert detail == "Elevator outage persists"
+
+
+def test_public_visible_context_text_removes_person_followup_phrases():
+    text = sheets_sync._public_visible_context_text("The stair A, 10th flr handrail is kaputt AGAIN. Reported to Jack.")
+
+    assert text == "The stair A, 10th flr handrail is kaputt AGAIN. Reported to Jack."
+    assert "Jack" in text
+
+
+def test_public_visible_context_text_removes_disallowed_report_recipient(monkeypatch):
+    monkeypatch.setenv("PUBLIC_ALLOWED_REPORT_RECIPIENTS", "")
+
+    text = sheets_sync._public_visible_context_text("The stair A, 10th flr handrail is kaputt AGAIN. Reported to Jack.")
+
+    assert text == "The stair A, 10th flr handrail is kaputt AGAIN."
+    assert "Jack" not in text
+
+
+def test_public_sanitizer_removes_standalone_person_names():
+    text = sheets_sync._public_safe_summary_text(
+        "Crowds form in the lobby and Jack mans elevator door like a bouncer. | "
+        "The laundry room is closed today as per Jack. | "
+        "For Meredith and Piotr, Greg called Wojtek/Val."
+    )
+
+    assert "Jack" not in text
+    assert "Meredith" not in text
+    assert "Piotr" not in text
+    assert "Greg" not in text
+    assert "Wojtek" not in text
+    assert "Val" not in text
+    assert "Someone mans elevator door" in text
+    assert "as per" not in text.casefold()
+
+
+def test_public_safe_summary_strips_named_tenant_report_prefix():
+    text = sheets_sync._public_safe_summary_text("Tenant Nic reports that the south elevator is out at 2:07 PM.")
+
+    assert text == "The south elevator is out at 2:07 PM."
+    assert "Nic" not in text
+
+
+def test_public_safe_summary_removes_unit_prefix_without_dropping_issue_counts():
+    unit_text = sheets_sync._public_safe_summary_text("14D. South lift out.")
+    unit_here_text = sheets_sync._public_safe_summary_text("14D here. I smell cigarette smoke.")
+    count_text = sheets_sync._public_safe_summary_text("2 lifts working. Handrail 10/F, stair A detaching from wall.")
+
+    assert unit_text == "South lift out."
+    assert unit_here_text == "I smell cigarette smoke."
+    assert count_text == "2 lifts working. Handrail 10/F, stair A detaching from wall."
 
 
 def test_public_case_sort_key_orders_active_cases_by_filing_recency():
@@ -614,7 +733,7 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
         assert removed_public_label not in flattened
 
 
-def test_sync_public_updates_links_but_does_not_preview_tiny_message_screenshots(client, monkeypatch, tmp_path):
+def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypatch, tmp_path):
     service = _FakeService()
     media_dir = tmp_path / "media"
     media_dir.mkdir()
@@ -640,7 +759,7 @@ def test_sync_public_updates_links_but_does_not_preview_tiny_message_screenshots
                 status="open",
                 last_ts_epoch=1776804420,
                 title="Tiny screenshot evidence",
-                summary="One-line message screenshot should remain linked, not previewed.",
+                summary="One-line message screenshot should not be exposed as tenant evidence.",
                 proof_refs="msg-tiny",
                 report_count=1,
                 witness_count=1,
@@ -666,8 +785,7 @@ def test_sync_public_updates_links_but_does_not_preview_tiny_message_screenshots
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
     row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Tiny screenshot evidence")
     assert row[5] == ""
-    assert row[6].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-tiny/0?v=')
-    assert row[6].endswith('","Open screenshot")')
+    assert row[6] == ""
 
 
 def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client, monkeypatch, tmp_path):

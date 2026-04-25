@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 from sqlalchemy import func
 from zoneinfo import ZoneInfo
 from packages.audit import compute_message_id
@@ -23,6 +24,28 @@ LLM_MODE = os.environ.get("LLM_MODE", "uncertain").lower().strip()
 BUILDING_TZ = ZoneInfo(os.environ.get("BUILDING_TIMEZONE", "America/New_York"))
 VALID_CATEGORIES = {"elevator", "heat_hot_water", "leaks_water_damage", "pests", "security_access", "other"}
 NONISSUE_GUARDRAIL_CONFIDENCE = int(os.environ.get("NONISSUE_GUARDRAIL_CONFIDENCE", "85"))
+SOURCE_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)")
+SOURCE_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+SOURCE_UNIT_LINE_RE = re.compile(r"^(?:apt\.?|apartment|unit)?\s*\d{1,3}[A-Z]?(?:\s+here)?\.?$", re.IGNORECASE)
+SOURCE_TIME_LINE_RE = re.compile(r"^\d{1,2}:\d{2}\s*(?:AM|PM)?$", re.IGNORECASE)
+SOURCE_CONTACT_LINE_RE = re.compile(r"^~?\s*[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,3}$")
+SOURCE_PERSON_ACTION_RE = re.compile(
+    r"(?:\s+(?:and|,)?\s*)?\b(?:has\s+)?"
+    r"(?:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
+    r"(?:it\s+)?(?:to\s+)?[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2}\b\.?",
+    re.IGNORECASE,
+)
+SOURCE_REPORT_PREFIX_RE = re.compile(
+    r"^(?:a\s+)?(?:tenant|resident|user|message)\s+(?:[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)?\s+)?"
+    r"(?:reports?|indicates?)\s+(?:that\s+)?",
+    re.IGNORECASE,
+)
+SOURCE_ISSUE_KEYWORD_RE = re.compile(
+    r"\b(elevator|elevators|lift|lifts|handrail|stair|stairs|heat|hot water|leak|mold|roach|mice|rat|"
+    r"door|lock|intercom|security|water|boiler|broken|kaputt|stuck|down|out|working|no longer|"
+    r"detaching|unsafe|fixed|restored|service|repaired|repair)\b",
+    re.IGNORECASE,
+)
 
 
 def _now_iso():
@@ -321,6 +344,116 @@ def _normalize_elevator_asset_from_text(text: str, choice: dict | None) -> dict 
     return normalized
 
 
+def _strip_source_report_prefix(value: str) -> str:
+    clean = _clean_source_text(value)
+    stripped = SOURCE_REPORT_PREFIX_RE.sub("", clean)
+    if stripped != clean and stripped:
+        return stripped[:1].upper() + stripped[1:]
+    return clean
+
+
+def _line_looks_like_contact(line: str, *, previous_line: str = "", next_line: str = "") -> bool:
+    clean = _clean_source_text(line)
+    if not clean:
+        return True
+    if SOURCE_PHONE_RE.fullmatch(clean) or SOURCE_EMAIL_RE.fullmatch(clean):
+        return True
+    if SOURCE_UNIT_LINE_RE.fullmatch(clean):
+        return True
+    if SOURCE_TIME_LINE_RE.fullmatch(clean):
+        return True
+    if next_line and (SOURCE_PHONE_RE.search(next_line) or SOURCE_EMAIL_RE.search(next_line)):
+        return True
+    if SOURCE_CONTACT_LINE_RE.fullmatch(clean) and not SOURCE_ISSUE_KEYWORD_RE.search(clean):
+        return True
+    return False
+
+
+def _clean_source_text(value: str | None) -> str:
+    clean = (value or "").replace("\u202f", " ").replace("\u200e", "").replace("\u200f", "")
+    clean = clean.replace("\u2018", "'").replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
+    clean = SOURCE_EMAIL_RE.sub("", clean)
+    clean = SOURCE_PHONE_RE.sub("", clean)
+    clean = re.sub(r"\b(?:image|video|audio|sticker|gif|document)\s+omitted\b", "", clean, flags=re.IGNORECASE)
+    clean = SOURCE_PERSON_ACTION_RE.sub("", clean)
+    clean = re.sub(r"\s+([.,;:!?])", r"\1", clean)
+    clean = re.sub(r"\s{2,}", " ", clean)
+    return clean.strip(" \t\r\n,;:-")
+
+
+def _capitalize_sentence_starts(value: str) -> str:
+    clean = value.strip()
+    if not clean:
+        return clean
+
+    def repl(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2).upper()}"
+
+    return re.sub(r"(^|[.!?]\s+)([a-z])", repl, clean)
+
+
+def _normalize_source_summary(value: str) -> str:
+    clean = _strip_source_report_prefix(value)
+    clean = re.sub(r"\s*[:;]-?\)\s*", " ", clean)
+    clean = re.sub(r"\s*[:;]-?\(\s*", " ", clean)
+    clean = re.sub(r"!{2,}", ".", clean)
+    clean = re.sub(r"\?{2,}", "?", clean)
+    clean = re.sub(r"\.\s+again\.", " again.", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\.\s+for the millionth time\.", " for the millionth time.", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\s+([.,;:!?])", r"\1", clean)
+    clean = re.sub(r"\s{2,}", " ", clean).strip(" ,;:-")
+    clean = _capitalize_sentence_starts(clean)
+    if clean and clean[-1] not in ".!?":
+        clean += "."
+    return clean
+
+
+def _source_summary_from_text(text: str | None) -> str:
+    raw_lines = [
+        _clean_source_text(line)
+        for line in str(text or "").splitlines()
+        if _clean_source_text(line)
+    ]
+    lines: list[str] = []
+    for idx, line in enumerate(raw_lines):
+        previous_line = raw_lines[idx - 1] if idx > 0 else ""
+        next_line = raw_lines[idx + 1] if idx + 1 < len(raw_lines) else ""
+        if _line_looks_like_contact(line, previous_line=previous_line, next_line=next_line):
+            continue
+        lines.append(line)
+
+    if not lines:
+        return ""
+
+    joined_parts: list[str] = []
+    for line in lines:
+        if joined_parts and joined_parts[-1] and joined_parts[-1][-1] not in ".!?":
+            joined_parts[-1] = joined_parts[-1] + "."
+        joined_parts.append(line)
+    return _truncate_source_summary(_normalize_source_summary(" ".join(joined_parts)))
+
+
+def _truncate_source_summary(value: str, *, limit: int = 320) -> str:
+    clean = value.strip()
+    if len(clean) <= limit:
+        return clean
+    truncated = clean[: limit - 1].rstrip()
+    sentence_end = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"))
+    if sentence_end >= 80:
+        return truncated[: sentence_end + 1].strip()
+    return truncated.rstrip(" ,;:-") + "..."
+
+
+def _fact_safe_summary(text: str | None, choice: dict | None, rules: dict | None) -> str:
+    source_summary = _source_summary_from_text(text)
+    if source_summary:
+        return source_summary
+    rule_summary = _normalize_source_summary((rules or {}).get("summary") or "")
+    if rule_summary:
+        return _truncate_source_summary(rule_summary)
+    return _truncate_source_summary(_normalize_source_summary((choice or {}).get("summary") or ""))
+
+
 def _should_use_llm(text: str, rules: dict) -> bool:
     mode = (LLM_MODE or "uncertain").lower().strip()
     if mode in {"", "off", "false", "0"}:
@@ -517,6 +650,8 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
     incident = None
 
     if chosen and chosen.get("is_issue") and chosen.get("signal_type") == "report":
+        chosen = dict(chosen)
+        chosen["summary"] = _fact_safe_summary(rm.text or "", chosen, rules)
         cat = chosen.get("category") or "other"
         asset = chosen.get("asset")
         event_type = chosen.get("event_type") or "new_issue"

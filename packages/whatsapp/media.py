@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import struct
 from typing import Any
 
@@ -10,7 +11,10 @@ from packages.whatsapp.attachments import attachment_items, parse_attachment_man
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MEDIA_DIR = Path(".local/whatsapp_media")
 STAGED_RUNTIME_ROOT = Path.home() / ".local" / "share" / "tenant-issue-os" / "runtime"
-PRIMARY_MEDIA_KINDS = {"image", "video", "audio", "voice", "document", "file"}
+WHATSAPP_UI_IMAGE_URL_RE = re.compile(
+    r"^(?:https?:)?//(?:static\.whatsapp\.net|pps\.whatsapp\.net|web\.whatsapp\.com)/(?:rsrc|.*profile)",
+    re.IGNORECASE,
+)
 
 
 def _clean(value: str | None) -> str:
@@ -113,24 +117,31 @@ def media_dimensions(path: str | Path | None) -> tuple[int, int] | None:
     return None
 
 
-def attachment_preview_eligible(item: dict[str, Any], *, min_screenshot_height: int = 80) -> bool:
+def attachment_preview_eligible(item: dict[str, Any]) -> bool:
+    return attachment_public_image_eligible(item)
+
+
+def attachment_public_image_eligible(item: dict[str, Any]) -> bool:
     kind = _clean(str(item.get("kind") or "")).casefold()
-    if kind == "image":
-        return True
-    if kind != "message_screenshot":
+    if kind != "image":
         return False
-    height = item.get("height")
-    if isinstance(height, int):
-        return height >= min_screenshot_height
+    status = _clean(str(item.get("status") or "")).casefold()
+    if status in {"metadata_only", "placeholder", "download_error"}:
+        return False
+    label = _clean(str(item.get("label") or "")).casefold()
+    if label in {"metadata_only", "download_error"}:
+        return False
+    source_url = _clean(str(item.get("source_url") or ""))
+    if not source_url:
+        return True
+    lowered = source_url.casefold()
+    if lowered.startswith(("blob:", "data:image/")):
+        return True
+    if WHATSAPP_UI_IMAGE_URL_RE.search(source_url):
+        return False
+    if _clean(str(item.get("capture_method") or "")).casefold() == "inline_image":
+        return False
     return True
-
-
-def _has_primary_media_without_file(items: list[dict[str, Any]]) -> bool:
-    for item in items:
-        kind = _clean(str(item.get("kind") or "")).casefold()
-        if kind in PRIMARY_MEDIA_KINDS and resolve_allowed_media_path(item.get("path")) is None:
-            return True
-    return False
 
 
 def _public_entry_sort_key(item: dict[str, Any]) -> tuple[int, int]:
@@ -139,8 +150,6 @@ def _public_entry_sort_key(item: dict[str, Any]) -> tuple[int, int]:
         return (0, int(item.get("attachment_index") or 0))
     if kind in {"video", "audio", "voice", "document", "file"}:
         return (1, int(item.get("attachment_index") or 0))
-    if kind == "message_screenshot":
-        return (2, int(item.get("attachment_index") or 0))
     return (3, int(item.get("attachment_index") or 0))
 
 
@@ -152,10 +161,12 @@ def public_attachment_entries(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     items = attachment_items(raw_attachments)
-    has_primary_media_without_file = _has_primary_media_without_file(items)
+    seen_paths: set[str] = set()
     for index, item in enumerate(items):
         kind = _clean(str(item.get("kind") or "")).casefold()
-        if kind == "message_screenshot" and has_primary_media_without_file:
+        if kind == "message_screenshot":
+            continue
+        if kind == "image" and not attachment_public_image_eligible(item):
             continue
         path = resolve_allowed_media_path(item.get("path"))
         version = None
@@ -169,6 +180,10 @@ def public_attachment_entries(
             url = public_attachment_url(message_id, index, base_url=base_url, version=version)
         if path is None or not url:
             continue
+        path_key = str(path)
+        if path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
         row = dict(item)
         row["attachment_index"] = index
         row["path"] = str(path)

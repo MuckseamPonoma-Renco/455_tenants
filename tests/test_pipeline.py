@@ -513,6 +513,128 @@ def test_llm_assist_can_promote_issue_and_logs_decision(client, monkeypatch):
         assert decision.is_issue is True
 
 
+def test_issue_summary_uses_source_text_instead_of_llm_inference(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': None,
+            'event_type': 'still_out',
+            'severity': 4,
+            'confidence': 95,
+            'title': 'Elevator outage',
+            'summary': 'Elevator is broken again with no one trapped inside, indicating persistent elevator outage issue.',
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': "no one is in the elevator. it's just broken. again. for the millionth time.",
+        'sender': 'Karen',
+        'ts_epoch': 1776802000,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        decision = session.query(MessageDecision).one()
+        final = json.loads(decision.final_json or '{}')
+
+        assert incident.summary == "No one is in the elevator. It's just broken again for the millionth time."
+        assert final['summary'] == incident.summary
+        assert 'trapped' not in incident.summary
+        assert 'indicating' not in incident.summary
+        assert 'persistent' not in incident.summary
+
+
+def test_issue_summary_strips_contact_lines_and_person_followup(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_north',
+            'event_type': 'outage',
+            'severity': 4,
+            'confidence': 92,
+            'title': 'North elevator is no longer working',
+            'summary': 'Previously reported as working, but now the north elevator is reported to be out of service again.',
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Karen KWA\n+1 (917) 257-4844\n14D\nNorth lift working!!!\nNo longer :(',
+        'sender': 'Karen',
+        'ts_epoch': 1776802100,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+
+        assert incident.summary == 'North lift working. No longer.'
+        assert 'Karen' not in incident.summary
+        assert '917' not in incident.summary
+        assert '14D' not in incident.summary
+        assert 'Previously reported' not in incident.summary
+        assert 'out of service' not in incident.summary
+
+
+def test_followup_duplicate_summary_collapses_after_person_phrase_removed(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'security_access',
+            'asset': None,
+            'event_type': 'still_out',
+            'severity': 3,
+            'confidence': 90,
+            'title': 'Handrail broken on 10th floor stair A',
+            'summary': 'Tenant reports the stair A handrail on the 10th floor is broken again and has informed Jack.',
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'The stair A, 10th flr handrail is kaputt AGAIN.',
+        'sender': 'Karen',
+        'ts_epoch': 1776802200,
+    })
+    second = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'The stair A, 10th flr handrail is kaputt AGAIN. Reported to Jack.',
+        'sender': 'Karen',
+        'ts_epoch': 1776802300,
+    })
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+
+        assert incident.summary == 'The stair A, 10th flr handrail is kaputt AGAIN.'
+        assert 'Jack' not in incident.summary
+        assert '|' not in incident.summary
+
+
 def test_guardrail_blocks_unsupported_issue_when_llm_confidently_says_non_issue(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'assist')
 

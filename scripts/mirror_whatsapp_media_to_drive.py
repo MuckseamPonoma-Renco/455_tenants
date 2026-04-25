@@ -22,10 +22,10 @@ load_local_env_file()
 from packages.db import RawMessage, get_session
 from packages.sheets.sync import _creds_path
 from packages.whatsapp.attachments import attachment_items, build_attachment_manifest, parse_attachment_manifest
-from packages.whatsapp.media import resolve_allowed_media_path
+from packages.whatsapp.media import attachment_public_image_eligible, resolve_allowed_media_path
 
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-PUBLIC_IMAGE_KINDS = {"image", "message_screenshot"}
+PUBLIC_IMAGE_KINDS = {"image"}
 
 
 def _drive_service():
@@ -133,6 +133,9 @@ def mirror_media(*, dry_run: bool, limit: int | None = None, refresh: bool = Fal
                     break
                 kind = _clean(item.get("kind")).casefold()
                 if kind not in PUBLIC_IMAGE_KINDS:
+                    skipped += 1
+                    continue
+                if not attachment_public_image_eligible(item):
                     skipped += 1
                     continue
                 path = resolve_allowed_media_path(item.get("path"))
