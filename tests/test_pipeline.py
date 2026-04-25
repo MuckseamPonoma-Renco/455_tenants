@@ -592,6 +592,50 @@ def test_issue_summary_strips_contact_lines_and_person_followup(client, monkeypa
         assert 'out of service' not in incident.summary
 
 
+def test_ambiguous_only_lift_fragment_gets_clear_summary_and_review(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_south',
+            'event_type': 'status_update',
+            'severity': 3,
+            'confidence': 88,
+            'title': 'South elevator status update',
+            'summary': 'South elevator status update.',
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'I think south lift only now.',
+        'sender': 'Karen',
+        'ts_epoch': 1776802150,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        decision = session.query(MessageDecision).one()
+        final = json.loads(decision.final_json or '{}')
+
+        assert incident.summary == (
+            'Status update mentions only the south lift now; '
+            'unclear whether the south lift is working or affected.'
+        )
+        assert incident.needs_review is True
+        assert final['summary'] == incident.summary
+        assert final['needs_review'] is True
+        assert 'I think' not in incident.summary
+        assert 'Karen' not in incident.summary
+
+
 def test_followup_duplicate_summary_collapses_after_person_phrase_removed(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
 

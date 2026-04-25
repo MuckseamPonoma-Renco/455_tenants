@@ -35,6 +35,16 @@ SOURCE_PERSON_ACTION_RE = re.compile(
     r"(?:it\s+)?(?:to\s+)?[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2}\b\.?",
     re.IGNORECASE,
 )
+SOURCE_LEADING_PERSON_RE = re.compile(
+    r"^[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,2}\s+"
+    r"(?:said|says|reported|asked|texted|called|wrote)\b[:,]?\s*",
+    re.IGNORECASE,
+)
+SOURCE_AS_PER_PERSON_RE = re.compile(
+    r"(?:\s*[,;:]?\s*)\b(?:as per|according to)\s+"
+    r"[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,2}\b",
+    re.IGNORECASE,
+)
 SOURCE_REPORT_PREFIX_RE = re.compile(
     r"^(?:a\s+)?(?:tenant|resident|user|message)\s+(?:[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)?\s+)?"
     r"(?:reports?|indicates?)\s+(?:that\s+)?",
@@ -45,6 +55,42 @@ SOURCE_ISSUE_KEYWORD_RE = re.compile(
     r"door|lock|intercom|security|water|boiler|broken|kaputt|stuck|down|out|working|no longer|"
     r"detaching|unsafe|fixed|restored|service|repaired|repair)\b",
     re.IGNORECASE,
+)
+SOURCE_FIRST_PERSON_HEDGE_RE = re.compile(
+    r"^(?:i\s+(?:think|guess|believe)|maybe|possibly|seems?\s+like|looks?\s+like|apparently)\b[:,]?\s*",
+    re.IGNORECASE,
+)
+SOURCE_ELEVATOR_ONLY_FRAGMENT_RE = re.compile(
+    r"\b(?:(?P<asset_before>north|south)\s+(?:lift|elevator)s?\s+(?:is\s+)?"
+    r"(?:the\s+)?only(?:\s+(?:one|lift|elevator))?"
+    r"|only\s+(?:the\s+)?(?P<asset_after>north|south)\s+(?:lift|elevator)s?)\b",
+    re.IGNORECASE,
+)
+SOURCE_ELEVATOR_WORKING_RE = re.compile(
+    r"\b(working|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))\b",
+    re.IGNORECASE,
+)
+SOURCE_ELEVATOR_AFFECTED_RE = re.compile(
+    r"\b(out|down|broken|stuck|not\s+working|out\s+of\s+service|shutdown|shut\s*off)\b",
+    re.IGNORECASE,
+)
+SOURCE_DEFAULT_REDACTED_NAMES = (
+    "Emma",
+    "Greg",
+    "Hercules",
+    "Jack",
+    "Jacob",
+    "Karen",
+    "Meredith",
+    "Molly",
+    "Nic",
+    "Piotr",
+    "Tibor",
+    "Val",
+    "Wattle",
+    "Weinreb",
+    "Wojtek",
+    "Yvonne",
 )
 
 
@@ -375,7 +421,16 @@ def _clean_source_text(value: str | None) -> str:
     clean = SOURCE_EMAIL_RE.sub("", clean)
     clean = SOURCE_PHONE_RE.sub("", clean)
     clean = re.sub(r"\b(?:image|video|audio|sticker|gif|document)\s+omitted\b", "", clean, flags=re.IGNORECASE)
+    clean = SOURCE_LEADING_PERSON_RE.sub("", clean)
     clean = SOURCE_PERSON_ACTION_RE.sub("", clean)
+    clean = SOURCE_AS_PER_PERSON_RE.sub("", clean)
+    redacted_names = (
+        os.environ.get("SOURCE_REDACT_NAMES")
+        or os.environ.get("PUBLIC_REDACT_NAMES")
+        or ",".join(SOURCE_DEFAULT_REDACTED_NAMES)
+    )
+    for name in [item.strip() for item in redacted_names.split(",") if item.strip()]:
+        clean = re.sub(rf"\b{re.escape(name)}\b", "Someone", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\s+([.,;:!?])", r"\1", clean)
     clean = re.sub(r"\s{2,}", " ", clean)
     return clean.strip(" \t\r\n,;:-")
@@ -433,6 +488,41 @@ def _source_summary_from_text(text: str | None) -> str:
     return _truncate_source_summary(_normalize_source_summary(" ".join(joined_parts)))
 
 
+def _source_elevator_only_fragment_summary(text: str | None, source_summary: str, choice: dict | None) -> str:
+    if not isinstance(choice, dict) or choice.get("category") != "elevator":
+        return ""
+    clean = _clean_source_text(text)
+    if not clean:
+        return ""
+    match = SOURCE_ELEVATOR_ONLY_FRAGMENT_RE.search(clean)
+    if not match:
+        return ""
+    asset = (match.group("asset_before") or match.group("asset_after") or "").casefold()
+    if not asset:
+        asset_value = str(choice.get("asset") or "")
+        asset = "north" if asset_value == "elevator_north" else "south" if asset_value == "elevator_south" else ""
+    label = f"{asset} lift" if asset else "elevator"
+    lowered = clean.casefold()
+    if SOURCE_ELEVATOR_WORKING_RE.search(clean):
+        return _normalize_source_summary(f"Only the {label} is reported working now.")
+    if SOURCE_ELEVATOR_AFFECTED_RE.search(clean):
+        return _normalize_source_summary(f"Only the {label} is reported affected now.")
+    if SOURCE_FIRST_PERSON_HEDGE_RE.search(clean) or len(source_summary.split()) <= 7 or "only" in lowered:
+        return _normalize_source_summary(
+            f"Status update mentions only the {label} now; unclear whether the {label} is working or affected."
+        )
+    return ""
+
+
+def _source_summary_needs_review(text: str | None, choice: dict | None) -> bool:
+    if not isinstance(choice, dict) or choice.get("category") != "elevator":
+        return False
+    clean = _clean_source_text(text)
+    if not SOURCE_ELEVATOR_ONLY_FRAGMENT_RE.search(clean):
+        return False
+    return not (SOURCE_ELEVATOR_WORKING_RE.search(clean) or SOURCE_ELEVATOR_AFFECTED_RE.search(clean))
+
+
 def _truncate_source_summary(value: str, *, limit: int = 320) -> str:
     clean = value.strip()
     if len(clean) <= limit:
@@ -446,6 +536,9 @@ def _truncate_source_summary(value: str, *, limit: int = 320) -> str:
 
 def _fact_safe_summary(text: str | None, choice: dict | None, rules: dict | None) -> str:
     source_summary = _source_summary_from_text(text)
+    elevator_fragment_summary = _source_elevator_only_fragment_summary(text, source_summary, choice)
+    if elevator_fragment_summary:
+        return _truncate_source_summary(elevator_fragment_summary)
     if source_summary:
         return source_summary
     rule_summary = _normalize_source_summary((rules or {}).get("summary") or "")
@@ -659,7 +752,8 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
         confidence = int(chosen.get("confidence", 70))
         title = (chosen.get("title") or "Issue")[:240]
         summary = (chosen.get("summary") or "")[:2000]
-        needs_review = bool(chosen.get("needs_review", False))
+        needs_review = bool(chosen.get("needs_review", False) or _source_summary_needs_review(rm.text or "", chosen))
+        chosen["needs_review"] = needs_review
         close_incident = bool(chosen.get("close_incident")) or event_type == "restore"
 
         if cat == "elevator":

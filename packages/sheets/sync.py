@@ -50,6 +50,20 @@ PUBLIC_REPORT_RECIPIENT_ACTION_RE = re.compile(
 PUBLIC_LEADING_PERSON_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?:said|says|reported|asked|texted|called|wrote)\b[:,]?\s*")
 PUBLIC_AS_PER_PERSON_RE = re.compile(r"(?:\s*[,;:]?\s*)\b(?:as per|according to)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b")
 PUBLIC_SUBJECT_PERSON_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?=(?:mans|said|says|reported|asked|texted|called|wrote)\b)")
+PUBLIC_ELEVATOR_ONLY_FRAGMENT_RE = re.compile(
+    r"\b(?:(?P<asset_before>north|south)\s+(?:lift|elevator)s?\s+(?:is\s+)?"
+    r"(?:the\s+)?only(?:\s+(?:one|lift|elevator))?"
+    r"|only\s+(?:the\s+)?(?P<asset_after>north|south)\s+(?:lift|elevator)s?)\b",
+    re.IGNORECASE,
+)
+PUBLIC_ELEVATOR_WORKING_RE = re.compile(
+    r"\b(working|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))\b",
+    re.IGNORECASE,
+)
+PUBLIC_ELEVATOR_AFFECTED_RE = re.compile(
+    r"\b(out|down|broken|stuck|not\s+working|out\s+of\s+service|shutdown|shut\s*off)\b",
+    re.IGNORECASE,
+)
 PUBLIC_DEFAULT_REDACTED_NAMES = (
     "Emma",
     "Greg",
@@ -1094,12 +1108,30 @@ def _public_similarity_tokens(value: str) -> set[str]:
     return {token for token in tokens if token not in PUBLIC_DETAIL_STOP_WORDS}
 
 
+def _public_normalize_status_fragment(value: str) -> str:
+    clean = _clean_text(value)
+    lowered = clean.casefold()
+    if "unclear whether" in lowered or "working or affected" in lowered:
+        return clean
+    match = PUBLIC_ELEVATOR_ONLY_FRAGMENT_RE.search(clean)
+    if not match:
+        return clean
+    asset = (match.group("asset_before") or match.group("asset_after") or "").casefold()
+    label = f"{asset} lift" if asset else "elevator"
+    if PUBLIC_ELEVATOR_WORKING_RE.search(clean):
+        return f"Only the {label} is reported working now."
+    if PUBLIC_ELEVATOR_AFFECTED_RE.search(clean):
+        return f"Only the {label} is reported affected now."
+    return f"Status update mentions only the {label} now; unclear whether the {label} is working or affected."
+
+
 def _public_dedupe_parts(parts: list[str]) -> list[str]:
     out: list[str] = []
     token_sets: list[set[str]] = []
     seen_exact: set[str] = set()
     for raw_part in parts:
         part = _public_sanitize_text(_public_strip_report_prefix(raw_part))
+        part = _public_normalize_status_fragment(part)
         if not part:
             continue
         exact = re.sub(r"\W+", "", part).casefold()

@@ -184,6 +184,20 @@ def test_public_detail_text_cleans_redundant_trapped_outage_phrases():
     assert detail == "Elevator outage persists"
 
 
+def test_public_detail_text_rewrites_ambiguous_only_lift_fragment():
+    incident = Incident(
+        title="South elevator status update",
+        summary="I think south lift only now.",
+    )
+    detail = sheets_sync._public_detail_text(incident, sheets_sync._public_focus_label(incident))
+
+    assert detail == (
+        "Status update mentions only the south lift now; "
+        "unclear whether the south lift is working or affected."
+    )
+    assert "I think" not in detail
+
+
 def test_public_visible_context_text_removes_person_followup_phrases():
     text = sheets_sync._public_visible_context_text("The stair A, 10th flr handrail is kaputt AGAIN. Reported to Jack.")
 
