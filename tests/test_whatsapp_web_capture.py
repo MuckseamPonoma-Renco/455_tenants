@@ -9,6 +9,7 @@ from packages.whatsapp.web_capture import (
     _try_download_message_media,
     parse_whatsapp_message_meta,
 )
+from packages.whatsapp.parser import parse_export_text
 
 
 def auth_headers():
@@ -29,6 +30,14 @@ def test_parse_whatsapp_message_meta_day_first_format():
     assert sender == "Karen"
     assert ts_epoch == parse_ts_to_epoch("4/17/2026 18:21")
     assert ts_iso == "2026-04-17T22:21:00Z"
+
+
+def test_parse_export_text_removes_attached_token_but_keeps_filename():
+    parsed = parse_export_text("[4/21/26, 2:07:03 PM] Nic: South lift out <attached: 00001961-PHOTO.jpg>\n")
+
+    assert len(parsed) == 1
+    assert parsed[0].text == "South lift out"
+    assert parsed[0].attachments == "00001961-PHOTO.jpg"
 
 
 def test_attachment_manifest_for_candidate_uses_real_media_not_bubble_screenshot(monkeypatch, tmp_path):
@@ -162,6 +171,30 @@ def test_ingest_whatsapp_web_stores_attachment_manifest(client):
         assert parsed["message_context"]["reply_text"] == "old elevator photo"
         assert parsed["links"] == ["https://example.com"]
         assert attachment_items(row.attachments)[0]["kind"] == "image"
+
+
+def test_ingest_whatsapp_web_strips_quoted_reply_from_message_text(client):
+    quoted = "Maureen VanTrease\n+1 (917) 693-7436\nI am getting tired of walking down 12 flights."
+    manifest = build_attachment_manifest(
+        message_context={"reply_text": f"{quoted}\n{quoted}"},
+        source="whatsapp_web",
+    )
+    response = client.post(
+        "/ingest/whatsapp_web",
+        headers=auth_headers(),
+        json={
+            "chat_name": "455 Tenants Test",
+            "text": f"{quoted}\nYeap, I do it every morning!!!",
+            "sender": "Nic",
+            "ts_epoch": 1771000500,
+            "attachments": manifest,
+        },
+    )
+
+    assert response.status_code == 200
+    with get_session() as session:
+        row = session.query(RawMessage).one()
+        assert row.text == "Yeap, I do it every morning!!!"
 
 
 def test_ingest_whatsapp_web_dedupes_against_tasker_capture(client):

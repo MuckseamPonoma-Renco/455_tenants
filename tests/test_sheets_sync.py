@@ -200,6 +200,44 @@ def test_public_visible_context_text_removes_disallowed_report_recipient(monkeyp
     assert "Jack" not in text
 
 
+def test_public_evidence_rows_use_message_text_not_quoted_reply(tmp_path, monkeypatch):
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    photo = media_dir / "photo.jpg"
+    photo.write_bytes(b"\xff\xd8\xff\xd9")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+
+    quoted = "Karen KWA\n+1 (917) 257-4844\nNorth lift working!!!"
+    manifest = build_attachment_manifest(
+        items=[{"kind": "image", "status": "downloaded", "path": str(photo), "filename": "photo.jpg"}],
+        message_context={"reply_text": f"{quoted}\n{quoted}"},
+        source="whatsapp_web",
+    )
+    incident = Incident(
+        incident_id="inc-reply",
+        category="elevator",
+        title="North lift reported no longer working",
+        proof_refs="msg-reply",
+    )
+    raw = RawMessage(
+        message_id="msg-reply",
+        chat_name="455 Tenants",
+        sender="Darby",
+        sender_hash="hash",
+        ts_iso="2026-04-20T20:56:00Z",
+        ts_epoch=1776718560,
+        text="No longer :(",
+        attachments=manifest,
+        source="whatsapp_web",
+    )
+
+    rows = sheets_sync._public_evidence_rows([incident], {"msg-reply": raw}, {"inc-reply": []})
+
+    assert "No longer" in rows[0][6]
+    assert "North lift working" not in rows[0][6]
+
+
 def test_public_sanitizer_removes_standalone_person_names():
     text = sheets_sync._public_safe_summary_text(
         "Crowds form in the lobby and Jack mans elevator door like a bouncer. | "
@@ -487,9 +525,9 @@ def test_sync_decisions_to_sheets_exposes_media_preview_and_links(client, monkey
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
     header = values[0]
     row = values[1]
-    assert row[header.index("media_preview")].startswith('=IMAGE("https://tenant.example/media/whatsapp/media-row/0?v=')
-    assert row[header.index("media_1")].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/media-row/0?v=')
-    assert row[header.index("media_1")].endswith('","evidence.png")')
+    assert row[header.index("media_preview")].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/media-row/0?v=')
+    assert ',IMAGE("https://tenant.example/media/whatsapp/media-row/0?v=' in row[header.index("media_preview")]
+    assert row[header.index("media_1")].startswith("https://tenant.example/media/whatsapp/media-row/0?v=")
     assert row[header.index("reply_context")] == "north elevator photo"
     assert row[header.index("link_1")] == '=HYPERLINK("https://example.com/more","Link 1")'
     layout_call = next(kwargs for kind, kwargs in service.calls if kind == "batchUpdate")
@@ -697,10 +735,10 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert public_issue_row[2] == "Elevator"
     assert public_issue_row[3] == 1
     assert public_issue_row[4] == "311-12345678 (submitted)"
-    assert public_issue_row[5].startswith('=IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=')
-    assert public_issue_row[5].endswith('",4,110,240)')
-    assert public_issue_row[6].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-public/0?v=')
-    assert public_issue_row[6].endswith('","Open photo")')
+    assert public_issue_row[5].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-public/0?v=')
+    assert ',IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=' in public_issue_row[5]
+    assert public_issue_row[5].endswith('",4,110,240))')
+    assert public_issue_row[6].startswith("https://tenant.example/media/whatsapp/msg-public/0?v=")
     old_issue_row = next(row for row in incident_rows if len(row) >= 10 and row[1] == "Lobby door did not close")
     assert old_issue_row[2] == "Security / access"
 
@@ -845,8 +883,7 @@ def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
     row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Photo evidence")
     assert "/media/whatsapp/msg-photo/1?v=" in row[5]
-    assert row[6].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-photo/1?v=')
-    assert row[6].endswith('","Open photo")')
+    assert row[6].startswith("https://tenant.example/media/whatsapp/msg-photo/1?v=")
     assert "msg-photo/0" not in row[5]
     assert "msg-photo/0" not in row[6]
 

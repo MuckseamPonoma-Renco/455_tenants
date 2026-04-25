@@ -786,16 +786,36 @@ def _hyperlink_formula(url: str | None, label: str | None) -> str:
     return f'=HYPERLINK("{_formula_escape(url)}","{rendered_label}")'
 
 
+def _media_url_cell(url: str | None) -> str:
+    return _clean_text(url)
+
+
 def _image_formula(url: str | None) -> str:
     if not url:
         return ""
-    return f'=IMAGE("{_formula_escape(url)}")'
+    escaped_url = _formula_escape(url)
+    return f'=HYPERLINK("{escaped_url}",IMAGE("{escaped_url}"))'
+
+
+def _dedupe_repeated_text_lines(value: str | None) -> str:
+    lines = [_clean_text(line) for line in str(value or "").splitlines() if _clean_text(line)]
+    if not lines:
+        return ""
+    if len(lines) % 2 == 0:
+        half = len(lines) // 2
+        if lines[:half] == lines[half:]:
+            return "\n".join(lines[:half])
+    return "\n".join(lines)
 
 
 def _public_thumbnail_formula(url: str | None) -> str:
     if not url:
         return ""
-    return f'=IMAGE("{_formula_escape(url)}",4,{PUBLIC_THUMBNAIL_HEIGHT},{PUBLIC_THUMBNAIL_WIDTH})'
+    escaped_url = _formula_escape(url)
+    return (
+        f'=HYPERLINK("{escaped_url}",'
+        f'IMAGE("{escaped_url}",4,{PUBLIC_THUMBNAIL_HEIGHT},{PUBLIC_THUMBNAIL_WIDTH}))'
+    )
 
 
 def _attachment_cells(message_id: str, attachments: str | None) -> tuple[str, list[str], str, list[str]]:
@@ -809,17 +829,11 @@ def _attachment_cells(message_id: str, attachments: str | None) -> tuple[str, li
     if preview_item and preview_item.get("kind") == "image":
         preview = _image_formula(str(preview_item.get("public_url") or ""))
 
-    media_links = [
-        _hyperlink_formula(
-            str(item.get("public_url") or ""),
-            str(item.get("filename") or item.get("label") or item.get("kind") or f"Media {idx + 1}"),
-        )
-        for idx, item in enumerate(shareable[:SHEET_MEDIA_LINK_LIMIT])
-    ]
+    media_links = [_media_url_cell(str(item.get("public_url") or "")) for item in shareable[:SHEET_MEDIA_LINK_LIMIT]]
     while len(media_links) < SHEET_MEDIA_LINK_LIMIT:
         media_links.append("")
 
-    reply_text = str((context.get("message_context") or {}).get("reply_text") or "")[:250]
+    reply_text = _dedupe_repeated_text_lines((context.get("message_context") or {}).get("reply_text"))[:250]
     external_links = [
         _hyperlink_formula(url, f"Link {idx + 1}")
         for idx, url in enumerate((context.get("links") or [])[:SHEET_EXTERNAL_LINK_LIMIT])
@@ -1330,8 +1344,7 @@ def _public_evidence_cells(incident: Incident, raw_map: dict[str, RawMessage]) -
             continue
         for item in public_attachment_entries(raw.message_id, raw.attachments):
             url = str(item.get("public_url") or "")
-            label = _public_attachment_label(item)
-            open_cell = _hyperlink_formula(url, label)
+            open_cell = _media_url_cell(url)
             preview = _public_attachment_preview(item)
             if preview:
                 return preview, open_cell
@@ -1399,7 +1412,7 @@ def _public_evidence_rows(
                 continue
             context = attachment_context(raw.attachments)
             context_text = _public_visible_context_text(
-                _clean_text(str((context.get("message_context") or {}).get("reply_text") or "")) or raw.text
+                raw.text or _clean_text(str((context.get("message_context") or {}).get("reply_text") or ""))
             )
             external_link = ""
             links = context.get("links") or []
@@ -1415,12 +1428,11 @@ def _public_evidence_rows(
                         continue
                     seen.add(key)
                     kind = _public_type_label(str(item.get("kind") or "media"))
-                    label = _public_attachment_label(item)
                     rows.append([
                         message_time,
                         focus_label,
                         _public_attachment_preview(item),
-                        _hyperlink_formula(str(item.get("public_url") or ""), label),
+                        _media_url_cell(str(item.get("public_url") or "")),
                         kind,
                         _public_source_label(raw.source),
                         _truncate_public_text(context_text, limit=260),
@@ -1500,9 +1512,7 @@ def _public_proof_cell(incident: Incident | None, raw_map: dict[str, RawMessage]
         if not shareable:
             continue
         item = next((entry for entry in shareable if entry.get("kind") == "image"), shareable[0])
-        kind = _clean_text(str(item.get("kind") or ""))
-        label = "Open photo" if kind == "image" else "Open file"
-        return _hyperlink_formula(str(item.get("public_url") or ""), label)
+        return _media_url_cell(str(item.get("public_url") or ""))
     return ""
 
 

@@ -22,7 +22,7 @@ BRACKET_RE = re.compile(
     r"(?:[\s\u202f]*(?P<ampm>AM|PM))?\]\s*(?P<body>.*)$"
 )
 ATTACH_RE = re.compile(r"<attached:\s*([^>]+)>", re.IGNORECASE)
-MEDIA_OMITTED_RE = re.compile(r"^(?P<kind>image|video|audio|sticker|gif)\s+omitted$", re.IGNORECASE)
+MEDIA_OMITTED_RE = re.compile(r"^(?P<kind>image|video|audio|sticker|gif|document|file)\s+omitted$", re.IGNORECASE)
 
 def _norm(s: str) -> str:
     s = (s or "").replace("\u202f", " ").replace("\u200e", "").replace("\u200f", "")
@@ -72,6 +72,22 @@ def parse_export_text(text: str, chat_name: str = "Tenants WhatsApp") -> List[Pa
 
             atts = ATTACH_RE.findall(msg_text)
             attachments = ",".join([_norm(a) for a in atts]) if atts else None
+            if atts:
+                msg_text = _norm(ATTACH_RE.sub("", msg_text))
+                if not msg_text:
+                    first = _norm(atts[0]).casefold()
+                    if "video" in first:
+                        msg_text = "video omitted"
+                    elif "audio" in first:
+                        msg_text = "audio omitted"
+                    elif "sticker" in first:
+                        msg_text = "sticker omitted"
+                    elif "gif" in first:
+                        msg_text = "gif omitted"
+                    elif first.endswith((".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt")):
+                        msg_text = "document omitted"
+                    else:
+                        msg_text = "image omitted"
             omitted_kind = omitted_media_kind(msg_text)
             if omitted_kind and not attachments:
                 attachments = f"omitted:{omitted_kind}"

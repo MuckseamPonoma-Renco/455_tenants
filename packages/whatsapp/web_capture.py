@@ -17,7 +17,7 @@ from playwright.sync_api import BrowserContext, Download, Error as PlaywrightErr
 
 from packages.audit import append_audit_event
 from packages.timeutil import NY, epoch_to_iso, parse_ts_to_epoch
-from packages.whatsapp.attachments import build_attachment_manifest, make_attachment_item
+from packages.whatsapp.attachments import build_attachment_manifest, make_attachment_item, strip_reply_context_from_text
 from packages.whatsapp.status import default_status_path, write_capture_status
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com/"
@@ -541,6 +541,10 @@ def _candidate_from_row(chat_name: str, row: dict[str, Any]) -> WhatsAppCaptureC
     pre_plain_text = _clean(str(row.get("pre_plain_text") or ""))
     sender, ts_iso, ts_epoch = parse_whatsapp_message_meta(pre_plain_text)
     text = _clean(str(row.get("caption") or "")) or _clean(str(row.get("text") or ""))
+    reply_text = _clean(str(row.get("reply_text") or ""))
+    if reply_text:
+        reply_manifest = build_attachment_manifest(message_context={"reply_text": reply_text}, source="whatsapp_web")
+        text = strip_reply_context_from_text(text, reply_manifest)
     if not text and (row.get("media_kinds") or []):
         text = _media_placeholder_text(row)
     if not text:

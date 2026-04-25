@@ -16,7 +16,7 @@ from packages.tasker_capture import (
     tasker_duplicate_window_seconds,
 )
 from packages.timeutil import epoch_to_iso, parse_ts_to_epoch
-from packages.whatsapp.attachments import build_attachment_manifest, parse_attachment_manifest
+from packages.whatsapp.attachments import merge_attachment_manifests, strip_reply_context_from_text
 from packages.whatsapp.parser import parse_export_text
 
 router = APIRouter()
@@ -46,8 +46,9 @@ def _prepare_tasker_row(payload: CapturePayload) -> tuple[dict[str, object], tup
     normalized = normalize_tasker_capture(payload.chat_name, payload.sender, payload.text)
     stored_chat_name = normalized.chat_name or payload.chat_name or ''
     stored_sender = normalized.sender or payload.sender or ''
-    stored_text = normalized.text or payload.text
+    stored_text = strip_reply_context_from_text(normalized.text or payload.text, payload.attachments)
     mid = compute_message_id(stored_chat_name, stored_sender, resolved_ts or '', stored_text)
+    signature = (stored_chat_name, stored_sender, stored_text)
     return {
         'message_id': mid,
         'chat_name': stored_chat_name,
@@ -57,7 +58,7 @@ def _prepare_tasker_row(payload: CapturePayload) -> tuple[dict[str, object], tup
         'ts_epoch': resolved_epoch,
         'text': stored_text,
         'attachments': payload.attachments,
-    }, normalized.signature
+    }, signature
 
 
 def _batch_recent_duplicate(signature: tuple[str, str, str], ts_epoch: int | None, recent_rows: list[tuple[tuple[str, str, str], int | None, str]]) -> str | None:
@@ -74,45 +75,10 @@ def _batch_recent_duplicate(signature: tuple[str, str, str], ts_epoch: int | Non
     return None
 
 
-def _merge_attachment_manifest(existing: str | None, incoming: str | None) -> str | None:
-    if not incoming:
-        return existing
-    if not existing:
-        return incoming
-    old = parse_attachment_manifest(existing)
-    new = parse_attachment_manifest(incoming)
-    merged_items: list[dict[str, object]] = []
-    seen_items: set[str] = set()
-    for item in list(old.get("items") or []) + list(new.get("items") or []):
-        if not isinstance(item, dict):
-            continue
-        if item.get("path"):
-            key = "|".join(str(item.get(part) or "") for part in ("path", "kind"))
-        else:
-            key = "|".join(str(item.get(part) or "") for part in ("kind", "label", "status", "source_url"))
-        if key in seen_items:
-            continue
-        seen_items.add(key)
-        merged_items.append(item)
-    merged_links: list[str] = []
-    seen_links: set[str] = set()
-    for link in list(old.get("links") or []) + list(new.get("links") or []):
-        if not isinstance(link, str) or not link.strip() or link in seen_links:
-            continue
-        seen_links.add(link)
-        merged_links.append(link)
-    context: dict[str, object] = {}
-    if isinstance(old.get("message_context"), dict):
-        context.update(old["message_context"])
-    if isinstance(new.get("message_context"), dict):
-        context.update(new["message_context"])
-    return build_attachment_manifest(items=merged_items, links=merged_links, message_context=context, source=str(new.get("source") or old.get("source") or "unknown"))
-
-
 def _merge_duplicate_capture_attachments(existing: RawMessage | None, incoming_attachments: str | None) -> None:
     if existing is None or not incoming_attachments:
         return
-    merged = _merge_attachment_manifest(existing.attachments, incoming_attachments)
+    merged = merge_attachment_manifests(existing.attachments, incoming_attachments)
     if merged and merged != existing.attachments:
         existing.attachments = merged
 

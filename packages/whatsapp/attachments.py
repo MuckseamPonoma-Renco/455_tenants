@@ -103,3 +103,93 @@ def attachment_items(raw: str | None) -> list[dict[str, Any]]:
     items = parsed.get("items")
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
+
+def merge_attachment_manifests(existing: str | None, incoming: str | None) -> str | None:
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+
+    old = parse_attachment_manifest(existing)
+    new = parse_attachment_manifest(incoming)
+    merged_items: list[dict[str, object]] = []
+    seen_items: set[str] = set()
+    for item in list(old.get("items") or []) + list(new.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("path"):
+            key = "|".join(str(item.get(part) or "") for part in ("path", "kind"))
+        else:
+            key = "|".join(str(item.get(part) or "") for part in ("kind", "label", "status", "source_url", "filename"))
+        if key in seen_items:
+            continue
+        seen_items.add(key)
+        merged_items.append(item)
+
+    merged_links: list[str] = []
+    seen_links: set[str] = set()
+    for link in list(old.get("links") or []) + list(new.get("links") or []):
+        if not isinstance(link, str):
+            continue
+        clean = _clean(link)
+        if not clean or clean in seen_links:
+            continue
+        seen_links.add(clean)
+        merged_links.append(clean)
+
+    context: dict[str, object] = {}
+    if isinstance(old.get("message_context"), dict):
+        context.update(old["message_context"])
+    if isinstance(new.get("message_context"), dict):
+        context.update(new["message_context"])
+
+    return build_attachment_manifest(
+        items=merged_items,
+        links=merged_links,
+        message_context=context,
+        source=str(new.get("source") or old.get("source") or "unknown"),
+    )
+
+
+def _dedupe_repeated_lines(value: str | None) -> str:
+    lines = [_clean(line) for line in _clean(value).splitlines() if _clean(line)]
+    if not lines:
+        return ""
+    count = len(lines)
+    if count % 2 == 0:
+        half = count // 2
+        if lines[:half] == lines[half:]:
+            return "\n".join(lines[:half])
+    return "\n".join(lines)
+
+
+def strip_reply_context_from_text(text: str | None, attachments: str | None) -> str:
+    clean_text = _clean(text)
+    if not clean_text or not attachments:
+        return clean_text
+
+    parsed = parse_attachment_manifest(attachments)
+    context = parsed.get("message_context") if isinstance(parsed.get("message_context"), dict) else {}
+    reply_text = _clean(str((context or {}).get("reply_text") or ""))
+    if not reply_text:
+        return clean_text
+
+    candidates: list[str] = []
+    for candidate in (reply_text, _dedupe_repeated_lines(reply_text)):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    reply_lines = [_clean(line) for line in reply_text.splitlines() if _clean(line)]
+    for end in range(len(reply_lines) - 1, 0, -1):
+        candidate = "\n".join(reply_lines[:end])
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in sorted(candidates, key=len, reverse=True):
+        if clean_text == candidate:
+            return clean_text
+        if clean_text.startswith(candidate + "\n"):
+            stripped = _clean(clean_text[len(candidate) :])
+            if stripped:
+                return stripped
+    return clean_text
