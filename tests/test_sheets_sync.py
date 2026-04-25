@@ -272,6 +272,28 @@ def test_public_safe_summary_removes_unit_prefix_without_dropping_issue_counts()
     assert count_text == "2 lifts working. Handrail 10/F, stair A detaching from wall."
 
 
+def test_public_safe_summary_keeps_issue_phrases_that_look_like_reporter_names():
+    assert sheets_sync._public_safe_summary_text("Possible elevator outage reported") == "Possible elevator outage reported"
+    assert sheets_sync._public_safe_summary_text("South lift irregular floor skipping reported") == "South lift irregular floor skipping reported"
+    assert sheets_sync._public_safe_summary_text("Someone stuck in elevator reported") == "Someone stuck in elevator reported"
+
+
+def test_public_detail_text_falls_back_when_title_redaction_would_be_empty():
+    incident = Incident(
+        incident_id="inc-public-summary",
+        category="elevator",
+        asset=None,
+        status="closed",
+        title="Possible elevator outage reported",
+        summary="Possibly no lifts. | Someone is stuck for sure. | Flr 6, Wojtek/Val calling for help.",
+    )
+
+    detail = sheets_sync._public_detail_text(incident, sheets_sync._public_focus_label(incident))
+
+    assert detail
+    assert "Possible elevator outage" in detail or "Possibly no lifts" in detail
+
+
 def test_public_case_sort_key_orders_active_cases_by_filing_recency():
     older_active = ServiceRequestCase(
         service_request_number="311-older",
@@ -717,28 +739,26 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert "internal workflow" not in values[1][0]
     assert values[2][0] == "At a glance"
     assert values[3] == ["Item", "Count / detail", "What this means", "", "", "", "", "", "", ""]
-    metrics = {row[0]: row[1] for row in values if row and row[0] in {"Incidents", "311 filings", "Evidence items", "Most common issue type", "Latest update"}}
+    metrics = {row[0]: row[1] for row in values if row and row[0] in {"Incidents", "311 filings", "Most common issue type", "Latest update"}}
     assert metrics == {
         "Incidents": 2,
         "311 filings": 1,
-        "Evidence items": 2,
         "Most common issue type": "Elevator",
         "Latest update": "South elevator",
     }
-    assert values[11][0] == "Category snapshot"
-    assert values[12] == ["Category", "Incidents", "Evidence items", "311 filings", "Latest update", "Latest issue", "", "", "", ""]
+    assert values[10][0] == "Category snapshot"
+    assert values[11] == ["Category", "Incidents", "311 filings", "Latest update", "Latest issue", "", "", "", "", ""]
 
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
-    assert values[all_incidents_row + 1] == ["Updated", "Issue", "Category", "Evidence items", "311 follow-up", "Preview", "Open evidence", "Summary", "", ""]
+    assert values[all_incidents_row + 1] == ["Updated", "Issue", "Category", "311 follow-up", "Preview", "Open evidence", "Summary", "", "", ""]
     incident_rows = values[all_incidents_row + 2:]
     public_issue_row = next(row for row in incident_rows if len(row) >= 10 and row[1] == "South elevator")
     assert public_issue_row[2] == "Elevator"
-    assert public_issue_row[3] == 1
-    assert public_issue_row[4] == "311-12345678 (submitted)"
-    assert public_issue_row[5].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-public/0?v=')
-    assert ',IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=' in public_issue_row[5]
-    assert public_issue_row[5].endswith('",4,110,240))')
-    assert public_issue_row[6].startswith("https://tenant.example/media/whatsapp/msg-public/0?v=")
+    assert public_issue_row[3] == "311-12345678 (submitted)"
+    assert public_issue_row[4].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-public/0?v=')
+    assert ',IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=' in public_issue_row[4]
+    assert public_issue_row[4].endswith('",4,110,240))')
+    assert public_issue_row[5].startswith("https://tenant.example/media/whatsapp/msg-public/0?v=")
     old_issue_row = next(row for row in incident_rows if len(row) >= 10 and row[1] == "Lobby door did not close")
     assert old_issue_row[2] == "Security / access"
 
@@ -754,6 +774,7 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     flattened = " ".join(str(cell) for row in values for cell in row if cell)
     assert "Private test issue" not in flattened
     assert "Evidence log" not in flattened
+    assert "Evidence items" not in flattened
     layout_call = [
         kwargs for kind, kwargs in service.calls
         if kind == "batchUpdate"
@@ -769,6 +790,113 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert frozen_request["updateSheetProperties"]["properties"]["gridProperties"]["frozenRowCount"] == 1
     for removed_public_label in ["Smart Log", "Plain English note", "Open issues", "Resolved", "Witnesses", "Reports", "tenant-facing", "internal workflow"]:
         assert removed_public_label not in flattened
+
+
+def test_sync_public_updates_collapses_duplicate_public_incidents_and_keeps_311_case(client, monkeypatch, tmp_path):
+    service = _FakeService()
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    photo = media_dir / "alarm-photo.png"
+    photo.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + (900).to_bytes(4, "big") + (700).to_bytes(4, "big"))
+
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
+
+    duplicate_text = "Someone just rang the alarm on the lift. Don't know which one."
+    manifest = build_attachment_manifest(
+        items=[{"kind": "image", "status": "downloaded", "path": str(photo), "filename": "alarm-photo.png"}],
+        source="whatsapp_web",
+    )
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-alarm-old",
+                category="elevator",
+                asset=None,
+                severity=3,
+                status="closed",
+                start_ts="2026-04-09T23:19:27Z",
+                start_ts_epoch=1775776767,
+                last_ts_epoch=1775779569,
+                title="Alarm rung on unknown elevator",
+                summary=duplicate_text,
+                proof_refs="msg-alarm-old",
+                report_count=1,
+                witness_count=1,
+                confidence=80,
+                updated_at="2026-04-10T00:06:09Z",
+            ),
+            Incident(
+                incident_id="inc-alarm-case",
+                category="elevator",
+                asset=None,
+                severity=3,
+                status="closed",
+                start_ts="2026-04-10T13:15:37Z",
+                start_ts_epoch=1775826937,
+                last_ts_epoch=1775826937,
+                title="Alarm rang on an unknown elevator",
+                summary=duplicate_text,
+                proof_refs="msg-alarm-case",
+                report_count=1,
+                witness_count=1,
+                confidence=85,
+                updated_at="2026-04-10T13:15:37Z",
+            ),
+            RawMessage(
+                message_id="msg-alarm-old",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-alarm",
+                ts_iso="2026-04-09T23:19:27Z",
+                ts_epoch=1775776767,
+                text=duplicate_text,
+                attachments=manifest,
+                source="whatsapp_web",
+            ),
+            RawMessage(
+                message_id="msg-alarm-case",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-alarm",
+                ts_iso="2026-04-10T13:15:37Z",
+                ts_epoch=1775826937,
+                text=duplicate_text,
+                attachments=None,
+                source="tasker",
+            ),
+            ServiceRequestCase(
+                service_request_number="311-27091967",
+                incident_id="inc-alarm-case",
+                source="portal_playwright",
+                complaint_type="Elevator or Escalator Complaint",
+                status="In Progress",
+                submitted_at="2026-04-10T13:22:00Z",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(
+        kwargs["body"]["values"]
+        for kind, kwargs in service.calls
+        if kind == "update" and kwargs["range"] == f"{sheets_sync._public_updates_tab()}!A1"
+    )
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    incident_rows = [row for row in values[all_incidents_row + 2:] if row and row[0]]
+    alarm_rows = [row for row in incident_rows if len(row) >= 7 and row[6] == duplicate_text]
+
+    assert len(alarm_rows) == 1
+    assert alarm_rows[0][1] == "Alarm rang on an unknown elevator"
+    assert alarm_rows[0][3] == "311-27091967 (In Progress)"
+    assert "/media/whatsapp/msg-alarm-old/0?v=" in alarm_rows[0][4]
+    assert alarm_rows[0][5].startswith("https://tenant.example/media/whatsapp/msg-alarm-old/0?v=")
+    metrics = {row[0]: row[1] for row in values if row and row[0] in {"Incidents", "311 filings"}}
+    assert metrics == {"Incidents": 1, "311 filings": 1}
 
 
 def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypatch, tmp_path):
@@ -822,8 +950,8 @@ def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypat
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
     row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Tiny screenshot evidence")
+    assert row[4] == ""
     assert row[5] == ""
-    assert row[6] == ""
 
 
 def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client, monkeypatch, tmp_path):
@@ -882,10 +1010,10 @@ def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
     row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Photo evidence")
-    assert "/media/whatsapp/msg-photo/1?v=" in row[5]
-    assert row[6].startswith("https://tenant.example/media/whatsapp/msg-photo/1?v=")
+    assert "/media/whatsapp/msg-photo/1?v=" in row[4]
+    assert row[5].startswith("https://tenant.example/media/whatsapp/msg-photo/1?v=")
+    assert "msg-photo/0" not in row[4]
     assert "msg-photo/0" not in row[5]
-    assert "msg-photo/0" not in row[6]
 
 
 def test_sync_public_updates_does_not_link_bubble_when_media_was_not_captured(client, monkeypatch, tmp_path):
@@ -942,8 +1070,8 @@ def test_sync_public_updates_does_not_link_bubble_when_media_was_not_captured(cl
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
     row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Missing media evidence")
+    assert row[4] == ""
     assert row[5] == ""
-    assert row[6] == ""
 
 
 def test_sync_dashboard_to_sheets_hides_public_share_url_without_dedicated_public_workbook(client, monkeypatch):

@@ -22,6 +22,7 @@ SHEET_MEDIA_LINK_LIMIT = 3
 SHEET_EXTERNAL_LINK_LIMIT = 2
 PUBLIC_CURRENT_ISSUE_MAX_AGE_HOURS = 72
 PUBLIC_RECENT_ISSUE_MAX_AGE_HOURS = 168
+PUBLIC_DUPLICATE_WINDOW_SECONDS = int(os.environ.get("PUBLIC_DUPLICATE_WINDOW_SECONDS", "86400"))
 PUBLIC_LAYOUT_COLUMNS = 10
 PUBLIC_WORKBOOK_TITLE = "455 Tenants Log"
 PUBLIC_FROZEN_ROWS = 1
@@ -48,9 +49,9 @@ PUBLIC_REPORT_RECIPIENT_ACTION_RE = re.compile(
     r"(?:it\s+)?to\s+(?P<person>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b\.?",
     re.IGNORECASE,
 )
-PUBLIC_LEADING_PERSON_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?:said|says|reported|asked|texted|called|wrote)\b[:,]?\s*", re.IGNORECASE)
-PUBLIC_AS_PER_PERSON_RE = re.compile(r"(?:\s*[,;:]?\s*)\b(?:as per|according to)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b", re.IGNORECASE)
-PUBLIC_SUBJECT_PERSON_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?=(?:mans|said|says|reported|asked|texted|called|wrote)\b)", re.IGNORECASE)
+PUBLIC_LEADING_PERSON_RE = re.compile(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?:said|says|reported|asked|texted|called|wrote)\b[:,]?\s*")
+PUBLIC_AS_PER_PERSON_RE = re.compile(r"(?:\s*[,;:]?\s*)\b(?:as per|according to)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b")
+PUBLIC_SUBJECT_PERSON_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s+(?=(?:mans|said|says|reported|asked|texted|called|wrote)\b)")
 PUBLIC_DEFAULT_REDACTED_NAMES = (
     "Emma",
     "Greg",
@@ -311,6 +312,30 @@ def _set_spreadsheet_title(svc, sheet_id: str, title: str) -> None:
                     "updateSpreadsheetProperties": {
                         "properties": {"title": title},
                         "fields": "title",
+                    }
+                }
+            ]
+        },
+    ).execute()
+
+
+def _unmerge_tab_range(svc, sheet_id: str, tab: str, *, row_count: int, column_count: int) -> None:
+    sheet_gid = _sheet_title_to_id_map(svc, sheet_id).get(tab)
+    if sheet_gid is None:
+        return
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={
+            "requests": [
+                {
+                    "unmergeCells": {
+                        "range": {
+                            "sheetId": sheet_gid,
+                            "startRowIndex": 0,
+                            "endRowIndex": max(row_count, 80),
+                            "startColumnIndex": 0,
+                            "endColumnIndex": max(column_count, PUBLIC_LAYOUT_COLUMNS),
+                        }
                     }
                 }
             ]
@@ -1114,9 +1139,13 @@ def _public_summarize_issue_value(*, summary: str, title: str) -> str:
     title_words = len((cleaned_title or "").split())
     if "|" in cleaned_summary or _public_is_summary_message_style(cleaned_summary):
         if cleaned_title:
-            return _public_safe_summary_text(cleaned_title)
+            title_summary = _public_safe_summary_text(cleaned_title)
+            if title_summary:
+                return title_summary
     if title_words and summary_words >= title_words + 8:
-        return _public_safe_summary_text(cleaned_title)
+        title_summary = _public_safe_summary_text(cleaned_title)
+        if title_summary:
+            return title_summary
     return _public_safe_summary_text(cleaned_summary)
 
 
@@ -1203,11 +1232,111 @@ def _public_detail_text(incident: Incident | None, focus_label: str) -> str:
             continue
         trimmed = _strip_leading_label(candidate, focus_label)
         if trimmed:
-            return _truncate_public_text(_public_safe_summary_text(trimmed), limit=320)
+            truncated = _truncate_public_text(_public_safe_summary_text(trimmed), limit=320)
+            if truncated:
+                return truncated
         truncated = _truncate_public_text(_public_safe_summary_text(candidate), limit=320)
         if truncated:
             return truncated
     return "Resident update logged."
+
+
+def _public_duplicate_key(incident: Incident) -> tuple[str, str] | None:
+    focus_label = _public_focus_label(incident)
+    detail = _public_detail_text(incident, focus_label)
+    normalized_detail = re.sub(r"\W+", " ", detail.casefold()).strip()
+    if len(normalized_detail) < 8:
+        return None
+    return (_public_category_label(incident.category), normalized_detail)
+
+
+def _public_canonical_incident(cluster: list[Incident], case_map: dict[str, list[ServiceRequestCase]]) -> Incident:
+    def sort_key(incident: Incident) -> tuple[int, tuple[int, int, int, str], int, str]:
+        cases = case_map.get(incident.incident_id, [])
+        latest_case = _latest_case_for_incident(cases)
+        return (
+            1 if cases else 0,
+            _public_case_sort_key(latest_case) if latest_case else (0, 0, 0, ""),
+            _incident_last_epoch(incident),
+            incident.incident_id,
+        )
+
+    return max(cluster, key=sort_key)
+
+
+def _public_merged_proof_refs(cluster: list[Incident], canonical: Incident) -> str:
+    refs: list[str] = []
+    seen: set[str] = set()
+    ordered = [canonical] + [incident for incident in cluster if incident is not canonical]
+    for incident in ordered:
+        for ref in [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            refs.append(ref)
+    return ",".join(refs)
+
+
+def _public_collapse_duplicate_incidents(
+    incidents: list[Incident],
+    case_map: dict[str, list[ServiceRequestCase]],
+) -> tuple[list[Incident], dict[str, list[ServiceRequestCase]]]:
+    if len(incidents) < 2:
+        return incidents, case_map
+
+    grouped: dict[tuple[str, str], list[Incident]] = {}
+    passthrough: list[Incident] = []
+    for incident in incidents:
+        key = _public_duplicate_key(incident)
+        if key is None:
+            passthrough.append(incident)
+            continue
+        grouped.setdefault(key, []).append(incident)
+
+    collapsed: list[Incident] = list(passthrough)
+    collapsed_case_map: dict[str, list[ServiceRequestCase]] = {key: list(value) for key, value in case_map.items()}
+
+    for rows in grouped.values():
+        rows.sort(key=lambda row: _incident_last_epoch(row))
+        cluster: list[Incident] = []
+
+        def flush_cluster() -> None:
+            if not cluster:
+                return
+            if len(cluster) == 1:
+                collapsed.append(cluster[0])
+                return
+            canonical = _public_canonical_incident(cluster, collapsed_case_map)
+            seen_cases: set[str] = set()
+            merged_cases: list[ServiceRequestCase] = []
+            for row in cluster:
+                for case in collapsed_case_map.get(row.incident_id, []):
+                    case_key = case.service_request_number or str(id(case))
+                    if case_key in seen_cases:
+                        continue
+                    seen_cases.add(case_key)
+                    merged_cases.append(case)
+            collapsed_case_map[canonical.incident_id] = sorted(merged_cases, key=_public_case_sort_key, reverse=True)
+            canonical.proof_refs = _public_merged_proof_refs(cluster, canonical)
+            collapsed.append(canonical)
+
+        for incident in rows:
+            if not cluster:
+                cluster = [incident]
+                continue
+            previous_epoch = _incident_last_epoch(cluster[-1])
+            current_epoch = _incident_last_epoch(incident)
+            if current_epoch - previous_epoch <= PUBLIC_DUPLICATE_WINDOW_SECONDS:
+                cluster.append(incident)
+            else:
+                flush_cluster()
+                cluster = [incident]
+        flush_cluster()
+
+    collapsed.sort(key=_public_incident_sort_key, reverse=True)
+    collapsed_ids = {row.incident_id for row in collapsed}
+    collapsed_case_map = {key: value for key, value in collapsed_case_map.items() if key in collapsed_ids}
+    return collapsed, collapsed_case_map
 
 
 def _public_status_label(incident: Incident | None, cases: list[ServiceRequestCase]) -> str:
@@ -1458,7 +1587,6 @@ def _public_evidence_rows(
 
 def _public_category_rows(
     incidents: list[Incident],
-    raw_map: dict[str, RawMessage],
     case_map: dict[str, list[ServiceRequestCase]],
 ) -> list[list[object]]:
     stats: dict[str, dict[str, object]] = {}
@@ -1468,14 +1596,12 @@ def _public_category_rows(
             label,
             {
                 "total": 0,
-                "evidence": 0,
                 "cases": 0,
                 "latest_epoch": 0,
                 "latest_issue": "",
             },
         )
         row["total"] = int(row["total"]) + 1
-        row["evidence"] = int(row["evidence"]) + _public_incident_evidence_count(incident, raw_map)
         row["cases"] = int(row["cases"]) + len(case_map.get(incident.incident_id, []))
         latest_epoch = _incident_last_epoch(incident)
         if latest_epoch >= int(row["latest_epoch"]):
@@ -1491,7 +1617,6 @@ def _public_category_rows(
         out.append([
             label,
             int(row["total"]),
-            int(row["evidence"]),
             int(row["cases"]),
             _fmt_ts(int(row["latest_epoch"])) if int(row["latest_epoch"]) else "",
             row["latest_issue"],
@@ -1550,11 +1675,10 @@ def sync_public_updates_to_sheets():
 
     public_incidents.sort(key=_public_incident_sort_key, reverse=True)
 
-    public_incident_ids = {row.incident_id for row in public_incidents}
-    public_cases = [case for case in all_cases if case.incident_id in public_incident_ids]
+    public_incidents, case_map = _public_collapse_duplicate_incidents(public_incidents, case_map)
+    public_cases = [case for cases in case_map.values() for case in cases]
     public_cases.sort(key=_public_case_sort_key, reverse=True)
-    evidence_rows = _public_evidence_rows(public_incidents, raw_map, case_map)
-    category_rows = _public_category_rows(public_incidents, raw_map, case_map)
+    category_rows = _public_category_rows(public_incidents, case_map)
     refresh_label = _fmt_ts(now_epoch)
     top_category = category_rows[0][0] if category_rows else ""
     latest_issue = _public_focus_label(public_incidents[0]) if public_incidents else ""
@@ -1566,13 +1690,12 @@ def sync_public_updates_to_sheets():
         ["Item", "Count / detail", "What this means", "", "", "", "", "", "", ""],
         ["Last refresh", refresh_label, "Updated automatically from resident messages and 311 records.", "", "", "", "", "", "", ""],
         ["Incidents", len(public_incidents), "Issues logged from the tenant chat and connected evidence.", "", "", "", "", "", "", ""],
-        ["Evidence items", len(evidence_rows), "Messages, photos, screenshots, and links connected to incidents.", "", "", "", "", "", "", ""],
         ["311 filings", len(public_cases), "311 service requests connected to logged incidents.", "", "", "", "", "", "", ""],
         ["Most common issue type", top_category, "Category with the most logged incidents.", "", "", "", "", "", "", ""],
         ["Latest update", latest_issue, "Newest update in the log.", "", "", "", "", "", "", ""],
         ["", "", "", "", "", "", "", "", "", ""],
         ["Category snapshot", "", "", "", "", "", "", "", "", ""],
-        ["Category", "Incidents", "Evidence items", "311 filings", "Latest update", "Latest issue", "", "", "", ""],
+        ["Category", "Incidents", "311 filings", "Latest update", "Latest issue", "", "", "", "", ""],
     ]
 
     if category_rows:
@@ -1584,7 +1707,7 @@ def sync_public_updates_to_sheets():
     incidents_title_row = len(values) + 1
     values.append(["All incidents", "", "", "", "", "", "", "", "", ""])
     incidents_header_row = len(values) + 1
-    values.append(["Updated", "Issue", "Category", "Evidence items", "311 follow-up", "Preview", "Open evidence", "Summary", "", ""])
+    values.append(["Updated", "Issue", "Category", "311 follow-up", "Preview", "Open evidence", "Summary", "", "", ""])
 
     if public_incidents:
         for incident in public_incidents:
@@ -1595,7 +1718,6 @@ def sync_public_updates_to_sheets():
                 _public_ts(incident.last_ts_epoch, fallback=incident.updated_at) or "",
                 focus_label,
                 _public_category_label(incident.category),
-                _public_incident_evidence_count(incident, raw_map),
                 _public_case_badge(cases),
                 preview_cell,
                 open_cell,
@@ -1631,6 +1753,7 @@ def sync_public_updates_to_sheets():
     else:
         values.append(["", "No 311 cases yet", "", "", "", "", "Verified 311 case activity will appear here automatically when a filing exists.", "", "", ""])
 
+    _unmerge_tab_range(svc, sheet_id, tab, row_count=len(values), column_count=PUBLIC_LAYOUT_COLUMNS)
     _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
     _apply_tab_layout(
         svc,
@@ -1644,9 +1767,9 @@ def sync_public_updates_to_sheets():
             "title_row": 1,
             "subtitle_row": 2,
             "stats_row": 5,
-            "stats_row_count": 6,
-            "section_rows": [3, 12, incidents_title_row, case_watch_title_row],
-            "header_rows": [4, 13, incidents_header_row, case_watch_header_row],
+            "stats_row_count": 5,
+            "section_rows": [3, 11, incidents_title_row, case_watch_title_row],
+            "header_rows": [4, 12, incidents_header_row, case_watch_header_row],
         },
     )
     _clear_legacy_public_update_tabs(svc, sheet_id)
