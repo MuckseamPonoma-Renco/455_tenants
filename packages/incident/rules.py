@@ -6,12 +6,17 @@ ELEVATOR_ASSET_SOUTH = re.compile(r"\bsouth\b", re.I)
 ELEVATOR_ASSET_BOTH = re.compile(r"\b(both|two elevators|2 lifts|2 elevators)\b", re.I)
 
 OUT = re.compile(
-    r"(out\s+of\s+service|not\s+working|broken|stuck|down|shutdown|shut\s*off|still\s+down|still\s+not\s+working|again\s+down|out\s+again|again\s+out|dead|down\s+to\s+1\s+elevator|one\s+elevator\s+again|only\s+1\s+elevator|misbehaving|not\s+arrived|not\s+to\s+cool overnight|both\s+elevators\s+are\s+out|both\s+lifts\s+are\s+out)",
+    r"(out\s+of\s+service|out\s+of\s+order|not\s+working|broken|stuck|"
+    r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
+    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|still\s+)?down|"
+    r"shutdown|shut\s*off|still\s+down|still\s+not\s+working|again\s+down|out\s+again|again\s+out|dead|"
+    r"down\s+to\s+1\s+elevator|one\s+elevator\s+again|only\s+1\s+elevator|misbehaving|not\s+arrived|"
+    r"not\s+to\s+cool overnight|both\s+elevators\s+are\s+out|both\s+lifts\s+are\s+out)",
     re.I,
 )
 CONTINUING = re.compile(r"\b(still|again)\b", re.I)
 BACK = re.compile(
-    r"(back\s+(up|on|in\s+service)|working\s+now|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|2\s+lifts\s+working|both\s+elevators\s+currently\s+functioning|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
+    r"(back\s+(up|on|in\s+service)|working\s+now|working\s+normal(?:ly)?|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|2\s+lifts\s+working|both\s+elevators\s+currently\s+functioning|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
     re.I,
 )
 
@@ -19,12 +24,63 @@ HEAT = re.compile(r"\bheat\b|hot\s+water|no\s+hot\s+water|cold\s+water|boiler", 
 LEAK = re.compile(r"leak|flood|water\s+damage|ceiling\s+collapsed|mold", re.I)
 PESTS = re.compile(r"\b(?:roach(?:es)?|mice|mouse|rats?|bed\s*bugs?|bugs)\b", re.I)
 SEC = re.compile(r"lock|door|intercom|camera|security|stair|fire\s+door|handrail", re.I)
+APARTMENT_ENTRY = re.compile(
+    r"\b(?:apartment|apt|unit)\b[^.!?\n]{0,80}\b(?:entry|enter|entered|access|advise\s+super|without\s+(?:me|anyone)\s+(?:home|there))\b"
+    r"|\b(?:entry|enter|entered|access)\b[^.!?\n]{0,80}\b(?:apartment|apt|unit)\b",
+    re.I,
+)
 QUESTION_ONLY = re.compile(r"\?$")
+DISCUSSION_QUESTION = re.compile(
+    r"\b(?:is|are|does|do|did|has|have|can|could|should|would|when|where|who|what|why|how)\b[^.!?]{0,140}\?",
+    re.I,
+)
+RECORDKEEPING_DISCUSSION = re.compile(
+    r"\b(?:form|record|records|court|listing|list|listed|log|logging)\b.*\b(?:hours?|breakages?|called|arrive|come|fixed|repair)\b"
+    r"|\b(?:hours?|breakages?|called|arrive|come|fixed|repair)\b.*\b(?:form|record|records|court|listing|list|listed|log|logging)\b",
+    re.I,
+)
+
+ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+working|stuck|shutdown|shut\s*off)"
+ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
+
+
+def _side_has_status(text: str, side: str, status_pattern: str) -> bool:
+    side_asset = rf"\b{side}\b(?:\s+(?:elevator|lift))?"
+    status = rf"\b{status_pattern}\b"
+    return bool(
+        re.search(rf"{side_asset}[^.!?\n]{{0,80}}{status}", text, re.I)
+        or re.search(rf"{status}[^.!?\n]{{0,80}}{side_asset}", text, re.I)
+        or re.search(rf"\bnot\s+(?:the\s+)?{side}\s+(?:elevator|lift)\b", text, re.I)
+    )
+
+
+def _asset_status(text: str, side: str) -> tuple[bool, bool]:
+    segments = [
+        segment
+        for segment in re.split(r"[.;!?\n,]+|\bbut\b|\bwhile\b", text, flags=re.I)
+        if segment.strip()
+    ] or [text]
+    return (
+        any(_side_has_status(segment, side, ASSET_AFFECTED_RE) for segment in segments),
+        any(_side_has_status(segment, side, ASSET_WORKING_RE) for segment in segments),
+    )
 
 
 def _asset(text: str):
     if ELEVATOR_ASSET_BOTH.search(text):
         return "elevator_both"
+    north_affected, north_working = _asset_status(text, "north")
+    south_affected, south_working = _asset_status(text, "south")
+    if north_affected and south_affected:
+        return "elevator_both"
+    if north_affected and not south_affected:
+        return "elevator_north"
+    if south_affected and not north_affected:
+        return "elevator_south"
+    if north_working and south_affected:
+        return "elevator_south"
+    if south_working and north_affected:
+        return "elevator_north"
     if ELEVATOR_ASSET_NORTH.search(text):
         return "elevator_north"
     if ELEVATOR_ASSET_SOUTH.search(text):
@@ -57,6 +113,9 @@ def text_explicitly_supports_category(text: str, category: str | None) -> bool:
 def classify_rules(text: str) -> dict:
     t = (text or "").strip()
     if not t:
+        return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
+
+    if DISCUSSION_QUESTION.search(t) and RECORDKEEPING_DISCUSSION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
     if QUESTION_ONLY.search(t) and not OUT.search(t) and not BACK.search(t):
@@ -131,6 +190,17 @@ def classify_rules(text: str) -> dict:
             "severity": 3,
             "title": "Pest issue",
             "summary": "Tenant reports pests.",
+            "kind": "issue",
+        }
+
+    if APARTMENT_ENTRY.search(t):
+        return {
+            "is_issue": True,
+            "category": "security_access",
+            "asset": None,
+            "severity": 3,
+            "title": "Apartment entry / access concern",
+            "summary": "Tenant reports a concern about apartment entry or access.",
             "kind": "issue",
         }
 

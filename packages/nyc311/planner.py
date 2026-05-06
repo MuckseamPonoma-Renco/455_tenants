@@ -1,10 +1,29 @@
 from __future__ import annotations
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
 from packages.db import FilingJob, Incident, ServiceRequestCase
 from packages.incident.reconcile import close_superseded_open_elevator_incidents
 from packages.nyc311.drafts import build_filing_draft
+
+
+ELEVATOR_ACTIONABLE_COMPLAINT_RE = re.compile(
+    r"\b("
+    r"out\s+of\s+(?:service|order)|not\s+working|broken|stuck|dead|"
+    r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
+    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|still\s+)?out|"
+    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|still\s+)?down|"
+    r"shutdown|shut\s*off|trapped|entrapment|"
+    r"alarm|"
+    r"stopping\s+on\s+(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
+    r"skip(?:s|ped|ping)?\s+(?:a\s+)?floor|irregular\s+floor|"
+    r"doors?\s+stuck|one\s+(?:working\s+)?(?:elevator|lift)|"
+    r"down\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
+    r"reduced\s+service|malfunction(?:ing)?"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -39,6 +58,10 @@ def incident_is_auto_eligible(inc: Incident) -> bool:
         return False
     if _env_bool("AUTO_FILE_ELEVATOR_ONLY", True) and inc.category != "elevator":
         return False
+    if inc.category == "elevator":
+        complaint_text = f"{inc.title or ''} {inc.summary or ''}"
+        if not ELEVATOR_ACTIONABLE_COMPLAINT_RE.search(complaint_text):
+            return False
     if inc.status == "closed":
         return False
 

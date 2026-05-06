@@ -56,6 +56,12 @@ SOURCE_ISSUE_KEYWORD_RE = re.compile(
     r"detaching|unsafe|fixed|restored|service|repaired|repair)\b",
     re.IGNORECASE,
 )
+SOURCE_COMMON_OTHER_ISSUE_RE = re.compile(
+    r"\b(stair|stairs|stairwell|hall|hallway|lobby|laundry|basement|roof|common|building|"
+    r"handrail|spill|smoke|garbage|trash|odor|hazard|unsafe|detaching|broken|blocked|closed|"
+    r"dirty|flood|leak|water|vent|louvers?|paper towel|drain|sprinkler)\b",
+    re.IGNORECASE,
+)
 SOURCE_FIRST_PERSON_HEDGE_RE = re.compile(
     r"^(?:i\s+(?:think|guess|believe)|maybe|possibly|seems?\s+like|looks?\s+like|apparently)\b[:,]?\s*",
     re.IGNORECASE,
@@ -315,7 +321,53 @@ def _create_incident(session, cat: str, asset: str | None, rm: RawMessage, title
     return inc
 
 
-def _update_incident(session, inc: Incident, rm: RawMessage, summary: str, severity: int, confidence: int, needs_review: bool):
+def _elevator_title_is_status_only(title: str | None) -> bool:
+    clean = _clean_source_text(title).casefold()
+    if not clean:
+        return False
+    return any(
+        token in clean
+        for token in (
+            "mechanic",
+            "repair",
+            "status update",
+            "functioning",
+            "working",
+            "back to one",
+        )
+    )
+
+
+def _maybe_promote_elevator_incident_identity(inc: Incident, *, title: str | None, asset: str | None, event_type: str | None) -> None:
+    if inc.category != "elevator":
+        return
+    if asset == "elevator_both" and inc.asset != "elevator_both":
+        inc.asset = "elevator_both"
+        if title and event_type in {"outage", "still_out"}:
+            inc.title = title[:240]
+        return
+    if not inc.asset and asset in {"elevator_north", "elevator_south"} and event_type in {"outage", "still_out"}:
+        inc.asset = asset
+        if title and _elevator_title_is_status_only(inc.title):
+            inc.title = title[:240]
+        return
+    if title and event_type in {"outage", "still_out"} and _elevator_title_is_status_only(inc.title):
+        inc.title = title[:240]
+
+
+def _update_incident(
+    session,
+    inc: Incident,
+    rm: RawMessage,
+    summary: str,
+    severity: int,
+    confidence: int,
+    needs_review: bool,
+    *,
+    title: str | None = None,
+    asset: str | None = None,
+    event_type: str | None = None,
+):
     _attach_proof(inc, rm.message_id)
     if rm.ts_epoch is not None:
         if inc.start_ts_epoch is None or int(rm.ts_epoch) < int(inc.start_ts_epoch):
@@ -328,6 +380,7 @@ def _update_incident(session, inc: Incident, rm: RawMessage, summary: str, sever
     inc.severity = max(int(inc.severity or 2), severity)
     inc.report_count = int(inc.report_count or 0) + 1
     inc.confidence = max(int(inc.confidence or 0), confidence)
+    _maybe_promote_elevator_incident_identity(inc, title=title, asset=asset, event_type=event_type)
     if summary and summary not in (inc.summary or ""):
         inc.summary = (inc.summary + " | " + summary)[:2000]
     _upsert_witness(session, inc.incident_id, rm.sender_hash)
@@ -583,6 +636,18 @@ def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[d
         return preferred, "hybrid_disagreement"
 
     if rule_choice and llm_choice and not llm_choice.get("is_issue"):
+        if (
+            int(llm_choice.get("confidence", 0) or 0) >= NONISSUE_GUARDRAIL_CONFIDENCE
+            and str(llm_choice.get("signal_type") or "").casefold() == "discussion"
+        ):
+            blocked = dict(llm_choice)
+            blocked["is_issue"] = False
+            blocked["category"] = "other"
+            blocked["asset"] = None
+            blocked["event_type"] = "non_issue"
+            blocked["close_incident"] = False
+            blocked["needs_review"] = True
+            return blocked, "guardrail_non_issue"
         chosen = dict(rule_choice)
         chosen["needs_review"] = True
         return chosen, "rules_with_llm_disagreement"
@@ -615,7 +680,72 @@ def _supports_chosen_category_from_text(text: str, choice: dict | None) -> bool:
     category = choice.get("category") or "other"
     if category == "elevator":
         return True
+    if category == "other":
+        return bool(SOURCE_COMMON_OTHER_ISSUE_RE.search(_clean_source_text(text)))
     return text_explicitly_supports_category(text, category)
+
+
+def _unsupported_other_issue_guardrail(text: str, rule_choice: dict | None, chosen: dict | None) -> tuple[dict | None, str | None]:
+    if not isinstance(chosen, dict) or not chosen.get("is_issue"):
+        return None, None
+    if rule_choice:
+        return None, None
+    if chosen.get("category") != "other":
+        return None, None
+    if _supports_chosen_category_from_text(text, chosen):
+        return None, None
+
+    blocked = {
+        "is_issue": False,
+        "signal_type": chosen.get("signal_type") or "discussion",
+        "category": "other",
+        "asset": None,
+        "event_type": "non_issue",
+        "severity": int(chosen.get("severity", 1) or 1),
+        "confidence": int(chosen.get("confidence", 0) or 0),
+        "title": chosen.get("title") or "",
+        "summary": (chosen.get("summary") or "Blocked unsupported other-building issue classification.")[:2000],
+        "close_incident": False,
+        "needs_review": True,
+    }
+    return blocked, "guardrail_unsupported_other"
+
+
+def _incident_similarity_tokens(value: str | None) -> set[str]:
+    clean = _clean_source_text(value).casefold()
+    tokens = set(re.findall(r"[a-z0-9]+", clean))
+    stop = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "at",
+        "from",
+        "in",
+        "is",
+        "it",
+        "my",
+        "of",
+        "on",
+        "or",
+        "reported",
+        "the",
+        "to",
+        "was",
+        "with",
+    }
+    return {token for token in tokens if len(token) > 2 and token not in stop}
+
+
+def _can_merge_non_elevator_incident(candidate: Incident, *, category: str, title: str, summary: str) -> bool:
+    if category != "other":
+        return True
+    existing = _incident_similarity_tokens(f"{candidate.title} {candidate.summary}")
+    incoming = _incident_similarity_tokens(f"{title} {summary}")
+    if not existing or not incoming:
+        return False
+    overlap = len(existing & incoming) / max(len(existing | incoming), 1)
+    return overlap >= 0.25
 
 
 def _non_issue_guardrail(text: str, rule_choice: dict | None, llm_choice: dict | None, chosen: dict | None) -> tuple[dict | None, str | None]:
@@ -703,6 +833,9 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
     chosen = _normalize_choice(chosen)
+    guarded_choice, guarded_source = _unsupported_other_issue_guardrail(rm.text or "", rule_choice, chosen)
+    if guarded_choice is not None:
+        return guarded_choice, rules, llm_choice, guarded_source or "guardrail_unsupported_other"
     guarded_choice, guarded_source = _non_issue_guardrail(rm.text or "", rule_choice, llm_choice, chosen)
     if guarded_choice is not None:
         return guarded_choice, rules, llm_choice, guarded_source or "guardrail_non_issue"
@@ -771,7 +904,18 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                     incident.end_ts = rm.ts_iso
                     incident.end_ts_epoch = rm.ts_epoch
                 else:
-                    _update_incident(session, candidate, rm, summary, 2, confidence, needs_review)
+                    _update_incident(
+                        session,
+                        candidate,
+                        rm,
+                        summary,
+                        2,
+                        confidence,
+                        needs_review,
+                        title=title,
+                        asset=asset,
+                        event_type=event_type,
+                    )
                     candidate.status = "closed"
                     candidate.end_ts = rm.ts_iso
                     candidate.end_ts_epoch = rm.ts_epoch
@@ -800,7 +944,18 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                     if delta > _elevator_merge_window_seconds(asset, continuation_event):
                         break
                 if last_open:
-                    _update_incident(session, last_open, rm, summary, severity, confidence, needs_review)
+                    _update_incident(
+                        session,
+                        last_open,
+                        rm,
+                        summary,
+                        severity,
+                        confidence,
+                        needs_review,
+                        title=title,
+                        asset=asset,
+                        event_type=event_type,
+                    )
                     incident = last_open
                 else:
                     if continuation_event:
@@ -813,6 +968,8 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
             for candidate in rows:
                 if asset and candidate.asset and candidate.asset != asset:
                     continue
+                if not _can_merge_non_elevator_incident(candidate, category=cat, title=title, summary=summary):
+                    continue
                 if rm.ts_epoch is None or candidate.last_ts_epoch is None:
                     best = candidate
                     break
@@ -823,7 +980,18 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                 if delta > OTHER_WINDOW_SECONDS:
                     break
             if best:
-                _update_incident(session, best, rm, summary, severity, confidence, needs_review)
+                _update_incident(
+                    session,
+                    best,
+                    rm,
+                    summary,
+                    severity,
+                    confidence,
+                    needs_review,
+                    title=title,
+                    asset=asset,
+                    event_type=event_type,
+                )
                 incident = best
             else:
                 incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", confidence, needs_review)

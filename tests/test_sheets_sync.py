@@ -768,17 +768,17 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert values[10][0] == "Category snapshot"
     assert values[11] == ["Category", "Incidents", "311 filings", "Latest update", "Latest issue", "", "", "", "", ""]
 
-    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
     assert values[all_incidents_row + 1] == ["Updated", "Issue", "Category", "311 follow-up", "Preview", "Open evidence", "Summary", "", "", ""]
     incident_rows = values[all_incidents_row + 2:]
-    public_issue_row = next(row for row in incident_rows if len(row) >= 10 and row[1] == "South elevator")
+    public_issue_row = next(row for row in incident_rows if len(row) >= 7 and row[1] == "South elevator")
     assert public_issue_row[2] == "Elevator"
     assert public_issue_row[3] == "311-12345678 (submitted)"
     assert public_issue_row[4].startswith('=HYPERLINK("https://tenant.example/media/whatsapp/msg-public/0?v=')
     assert ',IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=' in public_issue_row[4]
     assert public_issue_row[4].endswith('",4,110,240))')
     assert public_issue_row[5].startswith("https://tenant.example/media/whatsapp/msg-public/0?v=")
-    old_issue_row = next(row for row in incident_rows if len(row) >= 10 and row[1] == "Lobby door did not close")
+    old_issue_row = next(row for row in incident_rows if len(row) >= 7 and row[1] == "Lobby door did not close")
     assert old_issue_row[2] == "Security / access"
 
     case_watch_row = next(idx for idx, row in enumerate(values) if row[0] == "311 case watch")
@@ -905,7 +905,7 @@ def test_sync_public_updates_collapses_duplicate_public_incidents_and_keeps_311_
         for kind, kwargs in service.calls
         if kind == "update" and kwargs["range"] == f"{sheets_sync._public_updates_tab()}!A1"
     )
-    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
     incident_rows = [row for row in values[all_incidents_row + 2:] if row and row[0]]
     alarm_rows = [row for row in incident_rows if len(row) >= 7 and row[6] == duplicate_text]
 
@@ -916,6 +916,332 @@ def test_sync_public_updates_collapses_duplicate_public_incidents_and_keeps_311_
     assert alarm_rows[0][5].startswith("https://tenant.example/media/whatsapp/msg-alarm-old/0?v=")
     metrics = {row[0]: row[1] for row in values if row and row[0] in {"Incidents", "311 filings"}}
     assert metrics == {"Incidents": 1, "311 filings": 1}
+
+
+def test_sync_public_updates_collapses_same_minute_status_rows(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-same-minute",
+                category="elevator",
+                asset="elevator_south",
+                severity=4,
+                status="open",
+                start_ts="2026-05-05T14:13:00Z",
+                start_ts_epoch=1777990380,
+                last_ts_epoch=1777990380,
+                title="South elevator still out",
+                summary="South lift dead. Elevator mechanic is here.",
+                proof_refs="msg-out,msg-repair",
+                report_count=2,
+                witness_count=1,
+                confidence=90,
+            ),
+            RawMessage(
+                message_id="msg-out",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-out",
+                ts_iso="2026-05-05T14:13:00Z",
+                ts_epoch=1777990380,
+                text="South lift dead",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            RawMessage(
+                message_id="msg-repair",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-repair",
+                ts_iso="2026-05-05T14:13:00Z",
+                ts_epoch=1777990380,
+                text="Elevator mechanic is here",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            ServiceRequestCase(
+                service_request_number="311-27374123",
+                incident_id="inc-same-minute",
+                source="portal_playwright",
+                complaint_type="Elevator or Escalator Complaint",
+                status="In Progress",
+                submitted_at="2026-05-05T14:16:00Z",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    log_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
+    rows = [row for row in values[log_row + 2:] if row and row[0] == "2026-05-05 10:13 AM"]
+
+    assert len(rows) == 1
+    assert "South elevator" in rows[0][1]
+    assert "Elevator repair visit" in rows[0][1]
+    assert rows[0][2] == "Elevator"
+    assert rows[0][3] == "311-27374123 (In Progress)"
+    assert "South lift dead." in rows[0][6]
+    assert "Elevator mechanic was reported on site." in rows[0][6]
+
+
+def test_sync_public_updates_filters_stale_bad_decisions_and_preserves_real_updates(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-form",
+                category="other",
+                asset=None,
+                severity=2,
+                status="open",
+                start_ts="2026-05-05T22:22:00Z",
+                start_ts_epoch=1778019720,
+                last_ts_epoch=1778019720,
+                title="Partial functionality issue reported",
+                summary="Two pages only work sometimes.",
+                proof_refs="msg-form",
+                report_count=1,
+                witness_count=1,
+                confidence=80,
+            ),
+            RawMessage(
+                message_id="msg-form",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-form",
+                ts_iso="2026-05-05T22:22:00Z",
+                ts_epoch=1778019720,
+                text="It's three pages but two of them only work sometimes",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            Incident(
+                incident_id="inc-records",
+                category="elevator",
+                asset=None,
+                severity=2,
+                status="open",
+                start_ts="2026-05-05T13:14:00Z",
+                start_ts_epoch=1777986840,
+                last_ts_epoch=1777986840,
+                title="Common form records question",
+                summary="Question about repair-hour records.",
+                proof_refs="msg-records",
+                report_count=1,
+                witness_count=1,
+                confidence=80,
+            ),
+            RawMessage(
+                message_id="msg-records",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-records",
+                ts_iso="2026-05-05T13:14:00Z",
+                ts_epoch=1777986840,
+                text="Is the common form listing the exact hours of breakages, when repair people are called and when they come for court records?",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            Incident(
+                incident_id="inc-discussion",
+                category="elevator",
+                asset="elevator_both",
+                severity=2,
+                status="open",
+                start_ts="2026-05-05T20:38:00Z",
+                start_ts_epoch=1778013480,
+                last_ts_epoch=1778013480,
+                title="Both elevators",
+                summary="Replacement construction discussion.",
+                proof_refs="msg-discussion",
+                report_count=1,
+                witness_count=1,
+                confidence=80,
+            ),
+            RawMessage(
+                message_id="msg-discussion",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-discussion",
+                ts_iso="2026-05-05T20:38:00Z",
+                ts_epoch=1778013480,
+                text="I understand that construction takes time, but the replacement schedule is cold comfort if they just fixed elevators that are broken.",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            Incident(
+                incident_id="inc-north",
+                category="elevator",
+                asset="elevator_north",
+                severity=4,
+                status="open",
+                start_ts="2026-05-05T11:25:00Z",
+                start_ts_epoch=1777976700,
+                last_ts_epoch=1777976700,
+                title="North elevator outage",
+                summary="South lift working, north lift not working.",
+                proof_refs="msg-north",
+                report_count=1,
+                witness_count=1,
+                confidence=90,
+            ),
+            RawMessage(
+                message_id="msg-north",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-north",
+                ts_iso="2026-05-05T11:25:00Z",
+                ts_epoch=1777976700,
+                text="South lift working, but not the north lift!",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            ServiceRequestCase(
+                service_request_number="311-27372033",
+                incident_id="inc-north",
+                source="portal_playwright",
+                complaint_type="Elevator or Escalator Complaint",
+                status="In Progress",
+                submitted_at="2026-05-05T11:30:00Z",
+            ),
+            Incident(
+                incident_id="inc-dead",
+                category="elevator",
+                asset="elevator_both",
+                severity=5,
+                status="open",
+                start_ts="2026-05-05T12:59:00Z",
+                start_ts_epoch=1777982340,
+                last_ts_epoch=1777982340,
+                title="Both elevators outage",
+                summary="Both elevators dead and mechanics expected.",
+                proof_refs="msg-dead",
+                report_count=1,
+                witness_count=1,
+                confidence=90,
+            ),
+            RawMessage(
+                message_id="msg-dead",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-dead",
+                ts_iso="2026-05-05T12:59:00Z",
+                ts_epoch=1777982340,
+                text='Both elevators are dead. Jacek says mechanics are "hopefully" coming',
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            ServiceRequestCase(
+                service_request_number="311-27372034",
+                incident_id="inc-dead",
+                source="portal_playwright",
+                complaint_type="Elevator or Escalator Complaint",
+                status="In Progress",
+                submitted_at="2026-05-05T13:01:00Z",
+            ),
+            Incident(
+                incident_id="inc-working",
+                category="elevator",
+                asset="elevator_both",
+                severity=2,
+                status="closed",
+                start_ts="2026-04-30T21:21:00Z",
+                start_ts_epoch=1777584060,
+                last_ts_epoch=1777584060,
+                title="Elevator restored",
+                summary="Both lifts appear to be working normally.",
+                proof_refs="msg-working",
+                report_count=1,
+                witness_count=1,
+                confidence=85,
+            ),
+            RawMessage(
+                message_id="msg-working",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-working",
+                ts_iso="2026-04-30T21:21:00Z",
+                ts_epoch=1777584060,
+                text="Both lifts appear to be working normal, like not going down floor by floor.",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            ServiceRequestCase(
+                service_request_number="311-27336265",
+                incident_id="inc-working",
+                source="portal_playwright",
+                complaint_type="Elevator or Escalator Complaint",
+                status="In Progress",
+                submitted_at="2026-04-30T21:30:00Z",
+            ),
+            Incident(
+                incident_id="inc-entry-leak",
+                category="leaks_water_damage",
+                asset=None,
+                severity=4,
+                status="open",
+                start_ts="2026-04-28T22:57:00Z",
+                start_ts_epoch=1777417020,
+                last_ts_epoch=1777417020,
+                title="Leak under sink and unauthorized entry reported",
+                summary="Raw first-person apartment entry and leak report.",
+                proof_refs="msg-entry-leak",
+                report_count=1,
+                witness_count=1,
+                confidence=85,
+            ),
+            RawMessage(
+                message_id="msg-entry-leak",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-entry-leak",
+                ts_iso="2026-04-28T22:57:00Z",
+                ts_epoch=1777417020,
+                text="someone was in my apartment while i wasn't here. i have a leak under my sink.",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    log_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
+    rows = [row for row in values[log_row + 2:] if row and row[0]]
+    joined = "\n".join(" | ".join(str(cell) for cell in row[:7]) for row in rows)
+
+    assert "Partial functionality issue reported" not in joined
+    assert "Common form records question" not in joined
+    assert "Replacement construction discussion" not in joined
+
+    north_row = next(row for row in rows if row[1] == "North elevator")
+    assert north_row[3] == "311-27372033 (In Progress)"
+
+    dead_row = next(row for row in rows if row[1] == "Both elevators")
+    assert dead_row[3] == "311-27372034 (In Progress)"
+    assert "repair people were expected" in dead_row[6]
+    assert "Jacek" not in dead_row[6]
+
+    working_row = next(row for row in rows if row[1] == "Both elevators working normally")
+    assert working_row[3] == ""
+    assert "without floor-by-floor service" in working_row[6]
+
+    entry_leak_row = next(row for row in rows if row[1] == "Under-sink leak and apartment entry concern")
+    assert entry_leak_row[2] == "Leaks / water damage / Security / access"
+    assert entry_leak_row[6] == "Resident reported an under-sink leak and possible apartment entry while no one was home."
 
 
 def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypatch, tmp_path):
@@ -967,10 +1293,11 @@ def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypat
     sheets_sync.sync_public_updates_to_sheets()
 
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
-    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
-    row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Tiny screenshot evidence")
-    assert row[4] == ""
-    assert row[5] == ""
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
+    incident_rows = [row for row in values[all_incidents_row + 2:] if row and row[0]]
+    joined = "\n".join(" | ".join(str(cell) for cell in row) for row in incident_rows)
+    assert "Tiny screenshot evidence" not in joined
+    assert "msg-tiny/0" not in joined
 
 
 def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client, monkeypatch, tmp_path):
@@ -1027,7 +1354,7 @@ def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client
     sheets_sync.sync_public_updates_to_sheets()
 
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
-    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
     row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Photo evidence")
     assert "/media/whatsapp/msg-photo/1?v=" in row[4]
     assert row[5].startswith("https://tenant.example/media/whatsapp/msg-photo/1?v=")
@@ -1087,10 +1414,11 @@ def test_sync_public_updates_does_not_link_bubble_when_media_was_not_captured(cl
     sheets_sync.sync_public_updates_to_sheets()
 
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
-    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "All incidents")
-    row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Missing media evidence")
-    assert row[4] == ""
-    assert row[5] == ""
+    all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
+    incident_rows = [row for row in values[all_incidents_row + 2:] if row and row[0]]
+    joined = "\n".join(" | ".join(str(cell) for cell in row) for row in incident_rows)
+    assert "Missing media evidence" not in joined
+    assert "msg-missing-media/0" not in joined
 
 
 def test_sync_dashboard_to_sheets_hides_public_share_url_without_dedicated_public_workbook(client, monkeypatch):

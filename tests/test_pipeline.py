@@ -2,6 +2,7 @@ import json
 
 from pathlib import Path
 from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.incident.rules import classify_rules, explicit_elevator_asset
 from packages.nyc311.legal_export import export_legal_bundle
 from packages.nyc311.tracker import find_sr_numbers, normalize_sr_number
 from packages.timeutil import parse_ts_to_epoch
@@ -729,6 +730,159 @@ def test_guardrail_blocks_unsupported_issue_when_llm_confidently_says_non_issue(
         assert decision.category == 'other'
         assert decision.needs_review is True
         assert session.query(Incident).count() == 0
+
+
+def test_rules_do_not_turn_recordkeeping_question_into_restore():
+    text = (
+        "Is the common form listing the exact hours of breakages, when the elevator repair people are called, "
+        "when they come, and when the elevators are fixed? Obviously it would be inexact, but it would be good "
+        "to have the records for court."
+    )
+
+    decision = classify_rules(text)
+
+    assert decision["is_issue"] is False
+    assert decision["kind"] == "nonissue"
+
+
+def test_elevator_asset_uses_affected_lift_not_first_lift_named():
+    assert explicit_elevator_asset("At time of this message, north elevator is functioning, South still out of order") == "elevator_south"
+    assert explicit_elevator_asset("South lift working, but not the north lift!") == "elevator_north"
+    decision = classify_rules("South lift working, but not the north lift!")
+    assert decision["is_issue"] is True
+    assert decision["category"] == "elevator"
+    assert decision["asset"] == "elevator_north"
+
+
+def test_unsupported_other_issue_from_llm_is_blocked(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'other',
+            'asset': None,
+            'event_type': 'new_issue',
+            'severity': 2,
+            'confidence': 80,
+            'title': 'Partial functionality issue reported',
+            'summary': 'Two pages only work sometimes.',
+            'refers_to_open_incident': False,
+            'close_incident': False,
+            'needs_review': True,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': "It's three pages but two of them only work sometimes",
+        'sender': 'Karen',
+        'ts_epoch': 1778019900,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        decision = session.query(MessageDecision).one()
+        assert decision.is_issue is False
+        assert decision.chosen_source == 'guardrail_unsupported_other'
+        assert session.query(Incident).count() == 0
+
+
+def test_repair_status_only_elevator_update_does_not_queue_311(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': None,
+            'event_type': 'status_update',
+            'severity': 2,
+            'confidence': 85,
+            'title': 'Elevator mechanic on site',
+            'summary': 'Elevator mechanic is on site.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Elevator mechanic is here',
+        'sender': 'Karen',
+        'ts_epoch': 1777914420,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        decision = session.query(MessageDecision).one()
+        assert incident.category == 'elevator'
+        assert decision.auto_file_candidate is False
+        assert session.query(FilingJob).count() == 0
+
+
+def test_unrelated_other_rows_do_not_merge(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(message_text, *args, **kwargs):
+        if 'FDNY' in message_text:
+            return {
+                'is_issue': True,
+                'signal_type': 'report',
+                'category': 'other',
+                'asset': None,
+                'event_type': 'status_update',
+                'severity': 2,
+                'confidence': 80,
+                'title': 'FDNY vehicle parked at building',
+                'summary': 'FDNY is parked at the building.',
+                'refers_to_open_incident': True,
+                'close_incident': False,
+                'needs_review': False,
+            }
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'other',
+            'asset': None,
+            'event_type': 'new_issue',
+            'severity': 2,
+            'confidence': 85,
+            'title': 'Liquid spill on stair A',
+            'summary': 'Liquid spill on stair A 12th to 14th floors.',
+            'refers_to_open_incident': False,
+            'close_incident': False,
+            'needs_review': True,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'FDNY parking too',
+        'sender': 'Karen',
+        'ts_epoch': 1777502040,
+    })
+    second = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Liquid spill on stair A 12th to 14th flrs, possibly from beer tins seen earlier today',
+        'sender': 'Karen',
+        'ts_epoch': 1777502520,
+    })
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    with get_session() as session:
+        incidents = session.query(Incident).all()
+        assert len(incidents) == 1
+        assert incidents[0].title == 'Liquid spill on stair A'
+        assert 'FDNY' not in incidents[0].summary
 
 
 def test_review_model_resolves_ambiguous_elevator_follow_up(client, monkeypatch):

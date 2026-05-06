@@ -18,7 +18,7 @@ Use this when you want the Mac mini itself to watch WhatsApp Web in Chrome and s
 Add these to `.env`:
 
 ```bash
-WHATSAPP_CAPTURE_CHAT_NAMES=455 Ocean Parkway Tenants,455 Test Chat
+WHATSAPP_CAPTURE_CHAT_NAMES="455 Tenants"
 WHATSAPP_CAPTURE_POLL_SECONDS=30
 WHATSAPP_CAPTURE_MESSAGE_LIMIT=30
 WHATSAPP_CAPTURE_SCROLL_PAGES=8
@@ -75,14 +75,50 @@ Once the chat names are set in `.env`:
 
 ```bash
 ./scripts/install_mac_launch_agents.sh
-./scripts/start_mac_services.sh whatsapp_capture
+./scripts/check_mac_services.sh --repair
 ./scripts/check_mac_services.sh
 ```
 
-The optional `whatsapp_capture` LaunchAgent is only installed when `WHATSAPP_CAPTURE_CHAT_NAMES` is configured.
+The optional `whatsapp_capture` LaunchAgent is only installed when `WHATSAPP_CAPTURE_CHAT_NAMES` is configured. The installer stages a launchd-safe runtime copy under `~/.local/share/tenant-issue-os/runtime`, so re-run `./scripts/install_mac_launch_agents.sh` after repo code changes or `.env` changes.
+
+## Normal Mac runbook
+
+Once the Mac is logged into this user account, the LaunchAgents should start automatically and keep running while the screen is locked or off. Use this to verify and repair them:
+
+```bash
+cd /Users/max/Desktop/scripts/455-tenants-finalized-v6/455-tenants-finalized
+./scripts/check_mac_services.sh --repair
+./scripts/check_mac_services.sh --json
+```
+
+The JSON health output should show:
+
+- `local_health.status_code` is `200`
+- `public_health.status_code` is `200`
+- `sheets_disabled` is `false`
+- `whatsapp_capture.state` is `ready`
+- `whatsapp_capture.login_required` is `false`
+- `whatsapp_capture.chat_names` includes `455 Tenants`
+
+Only use the manual starter when the LaunchAgents are not installed yet or you are intentionally starting a fallback process:
+
+```bash
+./scripts/start_mac_services.sh
+./scripts/check_mac_services.sh
+```
+
+If WhatsApp reports `login_required=true`, run the watcher headfully and scan the QR code from the logged-in phone:
+
+```bash
+./scripts/run_whatsapp_capture.sh --headful
+```
 
 ## Notes and limits
 
+- Keep the Mac awake and logged into the user session when you need live WhatsApp capture. The screen can be off or locked, but do not log out if you need continuous capture.
+- Current target power shape: computer sleep off, display sleep on. Check it with `pmset -g custom`; on AC power, `sleep` should be `0` and `displaysleep` can be a low value like `5` or `10`.
+- If you have admin access and want the display to turn off sooner while the Mac stays awake, run `sudo pmset -c sleep 0 displaysleep 5 disksleep 10 powernap 1 womp 1 autorestart 1`.
+- After a full reboot, the per-user LaunchAgents start after the user session logs in. WhatsApp Web capture cannot reliably run at the macOS login screen because it depends on Chrome and the saved WhatsApp Web session.
 - This watcher reads what WhatsApp Web currently exposes in the browser; it is not a historical backfill tool.
 - For older history, keep using `POST /ingest/export` with a WhatsApp export ZIP/TXT.
 - The old Android Tasker route is now legacy-only. Leave it off unless you need a temporary migration bridge.
