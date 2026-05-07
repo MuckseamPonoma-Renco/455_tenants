@@ -3,17 +3,24 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
-from packages.db import FilingJob, Incident, ServiceRequestCase
+from sqlalchemy.orm import object_session
+from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.incident.reconcile import close_superseded_open_elevator_incidents
 from packages.nyc311.drafts import build_filing_draft
+
+
+ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
 
 
 ELEVATOR_ACTIONABLE_COMPLAINT_RE = re.compile(
     r"\b("
     r"out\s+of\s+(?:service|order)|not\s+working|broken|stuck|dead|"
+    r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
-    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|still\s+)?out|"
-    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|still\s+)?down|"
+    r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
+    r"only\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)?\s*(?:is\s+)?(?:working|functioning|operational|running|in\s+service)|"
+    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?out|"
+    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?down|"
     r"shutdown|shut\s*off|trapped|entrapment|"
     r"alarm|"
     r"stopping\s+on\s+(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
@@ -53,15 +60,62 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
+def _proof_message_text(inc: Incident) -> str:
+    refs = [ref.strip() for ref in (inc.proof_refs or "").split(",") if ref.strip()]
+    if not refs:
+        return ""
+    try:
+        with get_session() as session:
+            rows = session.scalars(select(RawMessage).where(RawMessage.message_id.in_(refs))).all()
+    except Exception:
+        return ""
+    return " ".join(" ".join((row.text or "").split()) for row in rows if row.text)
+
+
+def _elevator_complaint_text(inc: Incident) -> str:
+    return " ".join(
+        part
+        for part in (
+            inc.title or "",
+            inc.summary or "",
+            _proof_message_text(inc),
+        )
+        if part
+    )
+
+
+def _classifier_says_actionable_elevator(inc: Incident) -> bool | None:
+    session = object_session(inc)
+    if session is None:
+        return None
+    refs = [ref.strip() for ref in (inc.proof_refs or "").split(",") if ref.strip()]
+    query = select(MessageDecision).where(
+        MessageDecision.is_issue.is_(True),
+        MessageDecision.category == "elevator",
+        or_(
+            MessageDecision.incident_id == inc.incident_id,
+            MessageDecision.message_id.in_(refs or [""]),
+        ),
+    )
+    decisions = list(session.scalars(query).all())
+    if not decisions:
+        return None
+    return any((row.event_type or "new_issue") in ACTIONABLE_ELEVATOR_EVENTS for row in decisions)
+
+
 def incident_is_auto_eligible(inc: Incident) -> bool:
     if not _env_bool("AUTO_FILE_ENABLED", True):
         return False
     if _env_bool("AUTO_FILE_ELEVATOR_ONLY", True) and inc.category != "elevator":
         return False
     if inc.category == "elevator":
-        complaint_text = f"{inc.title or ''} {inc.summary or ''}"
-        if not ELEVATOR_ACTIONABLE_COMPLAINT_RE.search(complaint_text):
+        classified_actionable = _classifier_says_actionable_elevator(inc)
+        if classified_actionable is False:
             return False
+        if classified_actionable is None:
+            complaint_text = _elevator_complaint_text(inc)
+            if not ELEVATOR_ACTIONABLE_COMPLAINT_RE.search(complaint_text):
+                return False
     if inc.status == "closed":
         return False
 
@@ -91,7 +145,12 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
     if not incident_is_auto_eligible(inc):
         return None
 
-    existing_job = session.scalar(select(FilingJob).where(FilingJob.dedupe_key == _dedupe_key(inc)))
+    dedupe_key = _dedupe_key(inc)
+    for row in session.new:
+        if isinstance(row, FilingJob) and row.dedupe_key == dedupe_key:
+            return row
+
+    existing_job = session.scalar(select(FilingJob).where(FilingJob.dedupe_key == dedupe_key))
     if existing_job:
         return existing_job
 
@@ -104,7 +163,7 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         return None
 
     job = FilingJob(
-        dedupe_key=_dedupe_key(inc),
+        dedupe_key=dedupe_key,
         incident_id=inc.incident_id,
         job_type="nyc311_file",
         state="pending",

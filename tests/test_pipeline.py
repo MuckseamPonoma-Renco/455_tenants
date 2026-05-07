@@ -754,6 +754,91 @@ def test_elevator_asset_uses_affected_lift_not_first_lift_named():
     assert decision["asset"] == "elevator_north"
 
 
+def test_elevator_rules_handle_no_side_elevator_and_floor_service_restore():
+    outage_cases = [
+        ("No north elevator", "elevator_north", "outage"),
+        ("No south lift", "elevator_south", "outage"),
+        ("The north one is down again", "elevator_north", "still_out"),
+        ("south side is out", "elevator_south", "outage"),
+        ("Only south lift working", "elevator_north", "outage"),
+        ("Only the north elevator is working", "elevator_south", "outage"),
+    ]
+
+    for text, asset, event_type in outage_cases:
+        decision = classify_rules(text)
+        assert decision["is_issue"] is True, text
+        assert decision["category"] == "elevator", text
+        assert decision["asset"] == asset, text
+        assert decision["event_type"] == event_type, text
+
+    south_normal = classify_rules("At least the South one is not stopping every floor")
+    assert south_normal["is_issue"] is True
+    assert south_normal["category"] == "elevator"
+    assert south_normal["asset"] == "elevator_south"
+    assert south_normal["kind"] == "restore"
+
+
+def test_no_side_elevator_ingest_queues_311_job(client):
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Only south lift working',
+        'sender': 'Karen',
+        'ts_epoch': 1778065860,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        job = session.query(FilingJob).one()
+        decision = session.query(MessageDecision).one()
+
+        assert incident.category == 'elevator'
+        assert incident.asset == 'elevator_north'
+        assert decision.is_issue is True
+        assert job.incident_id == incident.incident_id
+        assert job.state == 'pending'
+
+
+def test_311_auto_file_uses_classifier_decision_not_second_regex(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_north',
+            'event_type': 'outage',
+            'severity': 4,
+            'confidence': 90,
+            'title': 'North elevator unavailable',
+            'summary': 'Classifier identified this as a north elevator outage.',
+            'refers_to_open_incident': False,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'The north vertical transport is unavailable again',
+        'sender': 'Karen',
+        'ts_epoch': 1778066000,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        decision = session.query(MessageDecision).one()
+        incident = session.query(Incident).one()
+        job = session.query(FilingJob).one()
+
+        assert decision.event_type == 'outage'
+        assert decision.auto_file_candidate is True
+        assert incident.asset == 'elevator_north'
+        assert job.incident_id == incident.incident_id
+
+
 def test_unsupported_other_issue_from_llm_is_blocked(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
 

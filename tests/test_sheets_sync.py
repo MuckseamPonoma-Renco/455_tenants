@@ -297,6 +297,88 @@ def test_public_safe_summary_keeps_issue_phrases_that_look_like_reporter_names()
     assert "Jack" not in sheets_sync._public_safe_summary_text("Tenant has reported Jack about the elevator noise.")
 
 
+def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
+    north_incident = Incident(
+        incident_id="inc-north",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator outage",
+        summary="No north elevator.",
+        proof_refs="msg-north",
+    )
+    north_raw = RawMessage(
+        message_id="msg-north",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-north",
+        ts_iso="2026-05-06T11:11:00Z",
+        ts_epoch=1778065860,
+        text="No north elevator",
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(north_incident, north_raw) is True
+    assert sheets_sync._public_event_issue_label(north_incident, north_raw) == "North elevator"
+
+    north_only_working_raw = RawMessage(
+        message_id="msg-only-south",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-only-south",
+        ts_iso="2026-05-06T11:12:00Z",
+        ts_epoch=1778065920,
+        text="Only south lift working",
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(north_incident, north_only_working_raw) is True
+    assert sheets_sync._public_event_issue_label(north_incident, north_only_working_raw) == "North elevator"
+
+    reply_text = (
+        "Molly\n+1 (347) 581-0269\n"
+        "Was the north lift ever operational today? It was out when we left at 7, "
+        "and out when we just came home, but I don’t know what happened in between."
+    )
+    reply_raw = RawMessage(
+        message_id="msg-reply-context",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-reply",
+        ts_iso="2026-05-06T21:36:00Z",
+        ts_epoch=1778103360,
+        text="Not to my knowledge. I got back around 1pm and still out from when I left",
+        attachments=build_attachment_manifest(items=[], message_context={"reply_text": reply_text}, source="whatsapp_web"),
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(north_incident, reply_raw) is True
+    assert sheets_sync._public_is_actionable_311_update(north_incident, reply_raw) is True
+    assert sheets_sync._public_event_issue_label(north_incident, reply_raw) == "North elevator"
+    assert "+1" not in sheets_sync._public_event_summary(north_incident, reply_raw)
+
+    south_incident = Incident(
+        incident_id="inc-south",
+        category="elevator",
+        asset="elevator_south",
+        title="South elevator working normally",
+        summary="At least the South one is not stopping every floor.",
+        proof_refs="msg-south",
+    )
+    south_raw = RawMessage(
+        message_id="msg-south",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-south",
+        ts_iso="2026-05-06T11:30:00Z",
+        ts_epoch=1778067000,
+        text="At least the South one is not stopping every floor",
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(south_incident, south_raw) is True
+    assert sheets_sync._public_event_issue_label(south_incident, south_raw) == "South elevator working normally"
+    assert "without floor-by-floor service" in sheets_sync._public_event_summary(south_incident, south_raw)
+
+
 def test_public_detail_text_falls_back_when_title_redaction_would_be_empty():
     incident = Incident(
         incident_id="inc-public-summary",

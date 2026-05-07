@@ -65,6 +65,7 @@ PUBLIC_ELEVATOR_AFFECTED_RE = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_WORD_RE = re.compile(r"\b(?:elevators?|lifts?)\b", re.IGNORECASE)
+PUBLIC_ELEVATOR_SIDE_REFERENCE_RE = re.compile(r"\b(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\b", re.IGNORECASE)
 PUBLIC_FORM_PROCESS_DISCUSSION_RE = re.compile(
     r"\b(?:form|page|pages|link|sheet|spreadsheet)\b[^.!?\n]{0,120}\b(?:work|works|worked|working|problem|issue|functionality|submit|getting\s+it\s+here)\b"
     r"|\b(?:problem|issue)\b[^.!?\n]{0,80}\b(?:form|page|pages|link|sheet|spreadsheet)\b",
@@ -107,12 +108,15 @@ PUBLIC_UNDER_SINK_LEAK_RE = re.compile(r"\b(?:leak|leaking)\b[^.!?\n]{0,80}\b(?:
 PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"\b("
     r"zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|"
+    r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
     r"out\s+of\s+(?:service|order)|not\s+working|broken|stuck|dead|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
-    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|still\s+)?(?:out|down)|"
+    r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
+    r"only\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)?\s*(?:is\s+)?(?:working|functioning|operational|running|in\s+service)|"
+    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down)|"
     r"shutdown|shut\s*off|trapped|entrapment|"
     r"alarm|"
-    r"stopping\s+on\s+(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
+    r"stopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
     r"skip(?:s|ped|ping)?\s+(?:a\s+)?floor|irregular\s+floor|"
     r"doors?\s+stuck|one\s+(?:working\s+)?(?:elevator|lift)|"
     r"down\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
@@ -124,8 +128,17 @@ PUBLIC_ELEVATOR_WORKING_STATUS_RE = re.compile(
     r"\b(?:working\s+(?:normal(?:ly)?|now|rn)|working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))\b",
     re.IGNORECASE,
 )
+PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE = re.compile(
+    r"\bonly\s+(?:the\s+)?(?P<side>north|south|left|right)\s+"
+    r"(?:elevator|lift|one|side)?\s*(?:is\s+)?"
+    r"(?:working|functioning|operational|running|in\s+service)\b",
+    re.IGNORECASE,
+)
 PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE = re.compile(
-    r"\b(?:not|no\s+longer|without)\b[^.!?\n]{0,80}\b(?:floor[- ]by[- ]floor|stopping\s+on\s+(?:each|every|all)\s+floor|going\s+down\s+floor\s+by\s+floor)\b",
+    r"\b(?:not|no\s+longer|without)\b[^.!?\n]{0,80}\b(?:"
+    r"floor[- ]by[- ]floor|going\s+down\s+floor\s+by\s+floor|"
+    r"stopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor"
+    r")\b",
     re.IGNORECASE,
 )
 PUBLIC_GENERIC_RESOLVED_FRAGMENT_RE = re.compile(
@@ -919,6 +932,23 @@ def _dedupe_repeated_text_lines(value: str | None) -> str:
     return "\n".join(lines)
 
 
+def _raw_reply_context_text(raw: RawMessage | None) -> str:
+    if raw is None:
+        return ""
+    context = attachment_context(getattr(raw, "attachments", None))
+    return _dedupe_repeated_text_lines((context.get("message_context") or {}).get("reply_text"))
+
+
+def _public_update_detection_text(raw: RawMessage | None) -> str:
+    if raw is None:
+        return ""
+    text = _clean_text(getattr(raw, "text", ""))
+    reply_text = _raw_reply_context_text(raw)
+    if reply_text and reply_text not in text:
+        return _clean_text(f"{text}\n{reply_text}")
+    return text
+
+
 def _public_thumbnail_formula(url: str | None) -> str:
     if not url:
         return ""
@@ -1620,12 +1650,20 @@ def _public_elevator_asset_from_text(text: str, fallback_asset: str | None) -> s
     clean = _clean_text(text).casefold()
     if re.search(r"\b(?:both|zero|no|two|2)\s+(?:elevators?|lifts?)\b", clean):
         return "elevator_both"
+    only_working = PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE.search(clean)
+    if only_working:
+        side = only_working.group("side").casefold()
+        if side == "north":
+            return "elevator_south"
+        if side == "south":
+            return "elevator_north"
     segments = [segment.strip() for segment in re.split(r"[.;!?\n,]+|\bbut\b|\bwhile\b", clean) if segment.strip()] or [clean]
 
     def side_has(side: str, status: str) -> bool:
         return any(
-            re.search(rf"\b{side}\b(?:\s+(?:elevator|lift))?[^.!?\n]{{0,80}}\b{status}\b", segment, re.IGNORECASE)
-            or re.search(rf"\b{status}\b[^.!?\n]{{0,80}}\b{side}\b(?:\s+(?:elevator|lift))?", segment, re.IGNORECASE)
+            re.search(rf"\b(?:the\s+)?{side}\b(?:\s+(?:elevator|lift|one|side))?[^.!?\n]{{0,80}}\b{status}\b", segment, re.IGNORECASE)
+            or re.search(rf"\b{status}\b[^.!?\n]{{0,80}}\b(?:the\s+)?{side}\b(?:\s+(?:elevator|lift|one|side))?", segment, re.IGNORECASE)
+            or re.search(rf"\bno\s+(?:the\s+)?{side}\s+(?:elevator|lift|one|side)\b", segment, re.IGNORECASE)
             or re.search(rf"\bnot\s+(?:the\s+)?{side}\s+(?:elevator|lift)\b", segment, re.IGNORECASE)
             for segment in segments
         )
@@ -1657,12 +1695,14 @@ def _public_elevator_text_is_working_status(text: str) -> bool:
     clean = _clean_text(text)
     if not clean:
         return False
+    if PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE.search(clean):
+        return False
     if PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(clean):
         return True
     if re.search(r"\b(?:working\s+normal(?:ly)?|working\s+rn|working\s+now)\b", clean, re.IGNORECASE):
         return True
     if PUBLIC_ELEVATOR_WORKING_STATUS_RE.search(clean) and not re.search(
-        r"\b(?:not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|dead|out\s+of\s+(?:service|order)|not\s+working|stuck|trapped|entrapment|alarm)\b",
+        r"\b(?:not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|dead|out|down|out\s+of\s+(?:service|order)|not\s+working|stuck|trapped|entrapment|alarm)\b",
         clean,
         re.IGNORECASE,
     ):
@@ -1679,7 +1719,7 @@ def _public_elevator_text_is_actionable(text: str) -> bool:
     if _public_elevator_text_is_working_status(clean):
         return False
     if PUBLIC_ELEVATOR_REPLACEMENT_DISCUSSION_RE.search(clean) and not re.search(
-        r"\b(?:zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|both\s+(?:elevators?|lifts?)\s+(?:are\s+)?(?:out|down|dead)|out\s+of\s+(?:service|order)|not\s+working|stuck|trapped|entrapment|floor[- ]by[- ]floor|stopping\s+on\s+(?:each|every|all)\s+floor|down\s+to\s+one|only\s+one)\b",
+        r"\b(?:zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|both\s+(?:elevators?|lifts?)\s+(?:are\s+)?(?:out|down|dead)|out\s+of\s+(?:service|order)|not\s+working|stuck|trapped|entrapment|floor[- ]by[- ]floor|stopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor|down\s+to\s+one|only\s+one)\b",
         clean,
         re.IGNORECASE,
     ):
@@ -1714,12 +1754,13 @@ def _public_should_include_update(incident: Incident, raw: RawMessage | None) ->
     if _public_has_apartment_entry_concern(text):
         return True
     if incident.category == "elevator":
-        if not PUBLIC_ELEVATOR_WORD_RE.search(text):
+        detection_text = _public_update_detection_text(raw)
+        if not PUBLIC_ELEVATOR_WORD_RE.search(detection_text) and not PUBLIC_ELEVATOR_SIDE_REFERENCE_RE.search(detection_text):
             return False
         return bool(
-            _public_elevator_text_is_actionable(text)
-            or _public_elevator_text_is_working_status(text)
-            or _public_repair_event_label(text)
+            _public_elevator_text_is_actionable(detection_text)
+            or _public_elevator_text_is_working_status(detection_text)
+            or _public_repair_event_label(detection_text)
         )
     if incident.category == "other":
         return bool(_public_other_update_issue_label(text))
@@ -1745,7 +1786,7 @@ def _public_incident_has_includeable_update(
 def _public_is_actionable_311_update(incident: Incident, raw: RawMessage | None) -> bool:
     if incident.category != "elevator" or raw is None:
         return bool(incident.category != "elevator")
-    text = _clean_text(raw.text)
+    text = _public_update_detection_text(raw)
     return _public_elevator_text_is_actionable(text)
 
 
@@ -1756,24 +1797,39 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
             return "Under-sink leak and apartment entry concern"
         return "Apartment entry / access concern"
     if incident.category == "elevator":
-        asset = _public_elevator_asset_from_text(text, incident.asset)
-        working_status = _public_elevator_text_is_working_status(text)
-        actionable = _public_elevator_text_is_actionable(text)
+        detection_text = _public_update_detection_text(raw)
+        asset = _public_elevator_asset_from_text(detection_text, incident.asset)
+        working_status = _public_elevator_text_is_working_status(detection_text)
+        actionable = _public_elevator_text_is_actionable(detection_text)
+        normal_floor_service = bool(
+            re.search(r"\bnormal(?:ly)?\b", detection_text, re.IGNORECASE)
+            or PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(detection_text)
+        )
         if working_status:
             if asset == "elevator_both":
-                if re.search(r"\bnormal(?:ly)?\b", text, re.IGNORECASE) or PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(text):
+                if normal_floor_service:
                     return "Both elevators working normally"
                 return "Both elevators working"
             if asset == "elevator_north":
+                if normal_floor_service:
+                    return "North elevator working normally"
                 return "North elevator working"
             if asset == "elevator_south":
+                if normal_floor_service:
+                    return "South elevator working normally"
                 return "South elevator working"
             return "Elevator working update"
         if actionable:
-            lowered = text.casefold()
+            lowered = detection_text.casefold()
             if "alarm" in lowered:
                 return _public_issue_label(incident) or "Elevator alarm"
-            if "floor-by-floor" in lowered or "floor by floor" in lowered or "skipping" in lowered or "irregular floor" in lowered:
+            if (
+                "floor-by-floor" in lowered
+                or "floor by floor" in lowered
+                or "skipping" in lowered
+                or "irregular floor" in lowered
+                or re.search(r"\bstopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor\b", lowered)
+            ):
                 return "Elevator floor-service issue"
             if re.search(r"\b(?:one|1)\s+(?:working\s+)?(?:elevator|lift)\b|\bback\s+to\s+one\b|\bdown\s+to\s+one\b", lowered):
                 return "Elevator service reduced"
@@ -1784,7 +1840,7 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
             if asset == "elevator_south":
                 return "South elevator"
             return "Elevator outage"
-        repair_label = _public_repair_event_label(text)
+        repair_label = _public_repair_event_label(detection_text)
         if repair_label == "Mechanic on site":
             return "Elevator repair visit"
         if repair_label == "Repair people called/expected":
@@ -1816,21 +1872,30 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             return "Resident reported a response about apartment entry; the super would be advised."
         return "Resident reported an apartment entry or access concern."
     if incident.category == "elevator":
-        asset = _public_elevator_asset_from_text(text, incident.asset)
-        if _public_elevator_text_is_working_status(text):
-            if asset == "elevator_both" and (re.search(r"\bnormal(?:ly)?\b", text, re.IGNORECASE) or PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(text)):
+        detection_text = _public_update_detection_text(raw)
+        asset = _public_elevator_asset_from_text(detection_text, incident.asset)
+        if _public_elevator_text_is_working_status(detection_text):
+            normal_floor_service = bool(
+                re.search(r"\bnormal(?:ly)?\b", detection_text, re.IGNORECASE)
+                or PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(detection_text)
+            )
+            if asset == "elevator_both" and normal_floor_service:
                 return "Both elevators were reported working normally, without floor-by-floor service."
             if asset == "elevator_both":
                 return "Both elevators were reported working."
+            if asset == "elevator_north" and normal_floor_service:
+                return "North elevator was reported working normally, without floor-by-floor service."
             if asset == "elevator_north":
                 return "North elevator was reported working."
+            if asset == "elevator_south" and normal_floor_service:
+                return "South elevator was reported working normally, without floor-by-floor service."
             if asset == "elevator_south":
                 return "South elevator was reported working."
-        if _public_elevator_text_is_actionable(text) and PUBLIC_REPAIR_CALLED_RE.search(text):
+        if _public_elevator_text_is_actionable(detection_text) and PUBLIC_REPAIR_CALLED_RE.search(detection_text):
             if asset == "elevator_both":
                 return "Both elevators were reported out, and repair people were expected."
             return "Elevator outage was reported, and repair people were expected."
-        repair_label = _public_repair_event_label(text)
+        repair_label = _public_repair_event_label(detection_text)
         if repair_label == "Mechanic on site":
             return "Elevator mechanic was reported on site."
         if repair_label == "Repair people called/expected":

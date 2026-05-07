@@ -855,8 +855,10 @@ def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | No
     row.rules_json = json.dumps(rules or {}, ensure_ascii=False)
     row.llm_json = json.dumps(llm_choice or {}, ensure_ascii=False)
     row.final_json = json.dumps(chosen or {}, ensure_ascii=False)
-    row.auto_file_candidate = bool(incident_id and session.get(Incident, incident_id) and incident_is_auto_eligible(session.get(Incident, incident_id)))
-    session.merge(row)
+    persisted = session.merge(row)
+    session.flush()
+    incident = session.get(Incident, incident_id) if incident_id else None
+    persisted.auto_file_candidate = bool(incident and incident_is_auto_eligible(incident))
 
 
 def classify_and_upsert_incident(session, rm: RawMessage) -> str:
@@ -958,7 +960,11 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                     )
                     incident = last_open
                 else:
-                    if continuation_event:
+                    actionable_status_update = bool(
+                        event_type == "status_update"
+                        and SOURCE_ELEVATOR_AFFECTED_RE.search(f"{rm.text or ''} {title or ''} {summary or ''}")
+                    )
+                    if continuation_event and (event_type != "status_update" or actionable_status_update):
                         event_type = "new_issue"
                         chosen["event_type"] = "new_issue"
                     incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", max(confidence, 80), needs_review)
@@ -997,7 +1003,7 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                 incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", confidence, needs_review)
 
     attach_manual_cases_from_text(session, text=rm.text or "", incident=incident, raw_message=rm)
+    _record_decision(session, rm, rules, llm_choice, chosen, chosen_source, incident.incident_id if incident else None)
     if incident:
         ensure_filing_job_for_incident(session, incident)
-    _record_decision(session, rm, rules, llm_choice, chosen, chosen_source, incident.incident_id if incident else None)
     return incident.incident_id if incident else ""

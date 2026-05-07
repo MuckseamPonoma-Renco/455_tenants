@@ -1,14 +1,30 @@
 import re
 
 ELEVATOR = re.compile(r"\b(elevator|elevators|lift|lifts)\b", re.I)
+ELEVATOR_SIDE_REFERENCE = re.compile(r"\b(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\b", re.I)
 ELEVATOR_ASSET_NORTH = re.compile(r"\bnorth\b", re.I)
 ELEVATOR_ASSET_SOUTH = re.compile(r"\bsouth\b", re.I)
 ELEVATOR_ASSET_BOTH = re.compile(r"\b(both|two elevators|2 lifts|2 elevators)\b", re.I)
+ONLY_SIDE_WORKING = re.compile(
+    r"\bonly\s+(?:the\s+)?(?P<side>north|south|left|right)\s+"
+    r"(?:elevator|lift|one|side)?\s*(?:is\s+)?"
+    r"(?:working|functioning|operational|running|in\s+service)\b",
+    re.I,
+)
+FLOOR_SERVICE_NORMAL = re.compile(
+    r"\b(?:not|no\s+longer|without)\b[^.!?\n]{0,80}\b(?:"
+    r"floor[- ]by[- ]floor|going\s+down\s+floor\s+by\s+floor|"
+    r"stopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor"
+    r")\b",
+    re.I,
+)
 
 OUT = re.compile(
     r"(out\s+of\s+service|out\s+of\s+order|not\s+working|broken|stuck|"
+    r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
-    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|still\s+)?down|"
+    r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
+    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down)|"
     r"shutdown|shut\s*off|still\s+down|still\s+not\s+working|again\s+down|out\s+again|again\s+out|dead|"
     r"down\s+to\s+1\s+elevator|one\s+elevator\s+again|only\s+1\s+elevator|misbehaving|not\s+arrived|"
     r"not\s+to\s+cool overnight|both\s+elevators\s+are\s+out|both\s+lifts\s+are\s+out)",
@@ -45,11 +61,12 @@ ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|res
 
 
 def _side_has_status(text: str, side: str, status_pattern: str) -> bool:
-    side_asset = rf"\b{side}\b(?:\s+(?:elevator|lift))?"
+    side_asset = rf"\b(?:the\s+)?{side}\b(?:\s+(?:elevator|lift|one|side))?"
     status = rf"\b{status_pattern}\b"
     return bool(
         re.search(rf"{side_asset}[^.!?\n]{{0,80}}{status}", text, re.I)
         or re.search(rf"{status}[^.!?\n]{{0,80}}{side_asset}", text, re.I)
+        or re.search(rf"\bno\s+(?:the\s+)?{side}\s+(?:elevator|lift|one|side)\b", text, re.I)
         or re.search(rf"\bnot\s+(?:the\s+)?{side}\s+(?:elevator|lift)\b", text, re.I)
     )
 
@@ -69,6 +86,13 @@ def _asset_status(text: str, side: str) -> tuple[bool, bool]:
 def _asset(text: str):
     if ELEVATOR_ASSET_BOTH.search(text):
         return "elevator_both"
+    only_working = ONLY_SIDE_WORKING.search(text)
+    if only_working:
+        side = only_working.group("side").casefold()
+        if side == "north":
+            return "elevator_south"
+        if side == "south":
+            return "elevator_north"
     north_affected, north_working = _asset_status(text, "north")
     south_affected, south_working = _asset_status(text, "south")
     if north_affected and south_affected:
@@ -90,6 +114,10 @@ def _asset(text: str):
 
 def explicit_elevator_asset(text: str):
     return _asset(text or "")
+
+
+def _has_elevator_reference(text: str) -> bool:
+    return bool(ELEVATOR.search(text) or ELEVATOR_SIDE_REFERENCE.search(text))
 
 
 def text_explicitly_supports_category(text: str, category: str | None) -> bool:
@@ -121,7 +149,7 @@ def classify_rules(text: str) -> dict:
     if QUESTION_ONLY.search(t) and not OUT.search(t) and not BACK.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
-    if ELEVATOR.search(t) and BACK.search(t):
+    if _has_elevator_reference(t) and (BACK.search(t) or FLOOR_SERVICE_NORMAL.search(t)) and not ONLY_SIDE_WORKING.search(t):
         asset = _asset(t)
         return {
             "is_issue": True,
@@ -134,7 +162,7 @@ def classify_rules(text: str) -> dict:
             "kind": "restore",
         }
 
-    if ELEVATOR.search(t) and OUT.search(t):
+    if _has_elevator_reference(t) and (OUT.search(t) or ONLY_SIDE_WORKING.search(t)):
         asset = _asset(t)
         sev = 5 if asset == "elevator_both" else 4
         return {
