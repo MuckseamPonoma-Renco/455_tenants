@@ -1863,6 +1863,27 @@ def _public_event_category_label(incident: Incident, raw: RawMessage | None) -> 
     return _public_category_label(incident.category)
 
 
+def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
+    lowered = _clean_text(text).casefold()
+    if "alarm" in lowered:
+        return "Elevator alarm was reported."
+    if re.search(r"\bfloor[- ]by[- ]floor\b|\bstopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor\b|\bskipping\b|\birregular\s+floor\b", lowered):
+        return "Elevator floor-service issue was reported."
+    if re.search(r"\btrapped\b|\bentrapment\b", lowered):
+        return "A person was reported trapped in an elevator."
+    still = bool(re.search(r"\bstill\b|\bagain\b|\bcontinued?\b|\bremains?\b", lowered))
+    state = "still out" if still else "out"
+    if "down" in lowered and "out" not in lowered:
+        state = "still down" if still else "down"
+    if asset == "elevator_both":
+        return f"Both elevators were reported as {state}."
+    if asset == "elevator_north":
+        return f"North elevator was reported as {state}."
+    if asset == "elevator_south":
+        return f"South elevator was reported as {state}."
+    return f"Elevator outage was reported as {state}."
+
+
 def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
     text = _clean_text(getattr(raw, "text", ""))
     if _public_has_apartment_entry_concern(text):
@@ -1902,6 +1923,8 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             return "Elevator repair people were reported called or expected."
         if repair_label == "Repair not completed":
             return "Elevator repair was reported not completed yet."
+        if _public_elevator_text_is_actionable(detection_text):
+            return _public_elevator_outage_summary(asset, detection_text)
     if incident.category == "other" and PUBLIC_STAIR_SPILL_RE.search(text):
         return "Liquid spill was reported in the stairwell/common area."
     context = _public_visible_context_text(text)

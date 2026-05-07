@@ -353,6 +353,7 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
     assert sheets_sync._public_should_include_update(north_incident, reply_raw) is True
     assert sheets_sync._public_is_actionable_311_update(north_incident, reply_raw) is True
     assert sheets_sync._public_event_issue_label(north_incident, reply_raw) == "North elevator"
+    assert sheets_sync._public_event_summary(north_incident, reply_raw) == "North elevator was reported as still out."
     assert "+1" not in sheets_sync._public_event_summary(north_incident, reply_raw)
 
     south_incident = Incident(
@@ -989,7 +990,7 @@ def test_sync_public_updates_collapses_duplicate_public_incidents_and_keeps_311_
     )
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
     incident_rows = [row for row in values[all_incidents_row + 2:] if row and row[0]]
-    alarm_rows = [row for row in incident_rows if len(row) >= 7 and row[6] == duplicate_text]
+    alarm_rows = [row for row in incident_rows if len(row) >= 7 and row[6] == "Elevator alarm was reported."]
 
     assert len(alarm_rows) == 1
     assert alarm_rows[0][1] == "Alarm rang on an unknown elevator"
@@ -1069,7 +1070,7 @@ def test_sync_public_updates_collapses_same_minute_status_rows(client, monkeypat
     assert "Elevator repair visit" in rows[0][1]
     assert rows[0][2] == "Elevator"
     assert rows[0][3] == "311-27374123 (In Progress)"
-    assert "South lift dead." in rows[0][6]
+    assert "South elevator was reported as out." in rows[0][6]
     assert "Elevator mechanic was reported on site." in rows[0][6]
 
 
