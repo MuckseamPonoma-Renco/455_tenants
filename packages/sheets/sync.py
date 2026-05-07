@@ -1699,6 +1699,8 @@ def _public_elevator_text_is_working_status(text: str) -> bool:
         return False
     if PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(clean):
         return True
+    if _public_elevator_text_is_current_working_after_past_outage(clean):
+        return True
     if re.search(r"\b(?:working\s+normal(?:ly)?|working\s+rn|working\s+now)\b", clean, re.IGNORECASE):
         return True
     if PUBLIC_ELEVATOR_WORKING_STATUS_RE.search(clean) and not re.search(
@@ -1725,6 +1727,24 @@ def _public_elevator_text_is_actionable(text: str) -> bool:
     ):
         return False
     return bool(PUBLIC_ELEVATOR_ACTIONABLE_RE.search(clean))
+
+
+def _public_elevator_text_is_current_working_after_past_outage(text: str) -> bool:
+    clean = _clean_text(text)
+    if not clean:
+        return False
+    current_working = re.search(
+        r"\b(?:looks?\s+like\s+)?(?:both|two|2)\s+(?:elevators?|lifts?)\s+"
+        r"(?:are\s+|were\s+)?(?:working|functioning|operational|running|in\s+service)\b",
+        clean,
+        re.IGNORECASE,
+    )
+    past_outage = re.search(
+        r"\b(?:was|were|had\s+been)\s+(?:still\s+)?(?:out|down|dead|not\s+working)\b",
+        clean,
+        re.IGNORECASE,
+    )
+    return bool(current_working and past_outage)
 
 
 def _public_other_update_issue_label(text: str) -> str:
@@ -1900,6 +1920,8 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
                 re.search(r"\bnormal(?:ly)?\b", detection_text, re.IGNORECASE)
                 or PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(detection_text)
             )
+            if asset == "elevator_both" and _public_elevator_text_is_current_working_after_past_outage(detection_text):
+                return "Both elevators were reported working; one had been down earlier."
             if asset == "elevator_both" and normal_floor_service:
                 return "Both elevators were reported working normally, without floor-by-floor service."
             if asset == "elevator_both":

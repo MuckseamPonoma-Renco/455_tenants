@@ -356,6 +356,35 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
     assert sheets_sync._public_event_summary(north_incident, reply_raw) == "North elevator was reported as still out."
     assert "+1" not in sheets_sync._public_event_summary(north_incident, reply_raw)
 
+    both_incident = Incident(
+        incident_id="inc-both-working",
+        category="elevator",
+        asset="elevator_both",
+        title="Both elevators working",
+        summary="Both elevators were reported working.",
+        proof_refs="msg-both-working",
+    )
+    both_working_raw = RawMessage(
+        message_id="msg-both-working",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-both",
+        ts_iso="2026-05-07T19:29:00Z",
+        ts_epoch=1778182140,
+        text="Just left for my evening rounds and looks like both elevators working. One was still down ~11am",
+        attachments=build_attachment_manifest(
+            items=[],
+            message_context={"reply_text": "Molly\n+1 (347) 581-0269\nCan someone write here if they see an elevator technician today?"},
+            source="whatsapp_web",
+        ),
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(both_incident, both_working_raw) is True
+    assert sheets_sync._public_is_actionable_311_update(both_incident, both_working_raw) is False
+    assert sheets_sync._public_event_issue_label(both_incident, both_working_raw) == "Both elevators working"
+    assert sheets_sync._public_event_summary(both_incident, both_working_raw) == "Both elevators were reported working; one had been down earlier."
+    assert "+1" not in sheets_sync._public_event_summary(both_incident, both_working_raw)
+
     south_incident = Incident(
         incident_id="inc-south",
         category="elevator",
