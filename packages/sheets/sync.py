@@ -119,7 +119,7 @@ PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"stopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
     r"skip(?:s|ped|ping)?\s+(?:a\s+)?floor|irregular\s+floor|"
     r"doors?\s+stuck|one\s+(?:working\s+)?(?:elevator|lift)|"
-    r"down\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
+    r"(?:back|down)\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
     r"reduced\s+service|malfunction(?:ing)?"
     r")\b",
     re.IGNORECASE,
@@ -1691,6 +1691,29 @@ def _public_elevator_asset_from_text(text: str, fallback_asset: str | None) -> s
     return fallback_asset
 
 
+def _public_elevator_text_has_context(text: str, fallback_asset: str | None) -> bool:
+    clean = _clean_text(text)
+    if PUBLIC_ELEVATOR_WORD_RE.search(clean) or PUBLIC_ELEVATOR_SIDE_REFERENCE_RE.search(clean):
+        return True
+    lowered = clean.casefold()
+    if fallback_asset == "elevator_both":
+        if re.search(
+            r"\b(?:both|two|2)\b[^.!?\n]{0,80}\b"
+            r"(?:working|functioning|operational|running|in\s+service|restored|fixed|back\s+(?:up|on|in\s+service))\b",
+            lowered,
+        ):
+            return True
+        if re.search(
+            r"\b(?:both|two|2)\b[^.!?\n]{0,80}\b"
+            r"(?:out|down|dead|broken|stuck|not\s+working|out\s+of\s+(?:service|order))\b",
+            lowered,
+        ):
+            return True
+        if re.search(r"\b(?:back|down)\s+to\s+one\b|\bonly\s+one\b", lowered):
+            return True
+    return False
+
+
 def _public_elevator_text_is_working_status(text: str) -> bool:
     clean = _clean_text(text)
     if not clean:
@@ -1775,7 +1798,13 @@ def _public_should_include_update(incident: Incident, raw: RawMessage | None) ->
         return True
     if incident.category == "elevator":
         detection_text = _public_update_detection_text(raw)
-        if not PUBLIC_ELEVATOR_WORD_RE.search(detection_text) and not PUBLIC_ELEVATOR_SIDE_REFERENCE_RE.search(detection_text):
+        has_elevator_context = _public_elevator_text_has_context(detection_text, incident.asset)
+        has_repair_context = bool(
+            PUBLIC_REPAIR_NOT_COMPLETE_RE.search(detection_text)
+            or PUBLIC_REPAIR_ON_SITE_RE.search(detection_text)
+            or PUBLIC_REPAIR_CALLED_RE.search(detection_text)
+        )
+        if not has_elevator_context and not has_repair_context:
             return False
         return bool(
             _public_elevator_text_is_actionable(detection_text)
@@ -1883,6 +1912,19 @@ def _public_event_category_label(incident: Incident, raw: RawMessage | None) -> 
     return _public_category_label(incident.category)
 
 
+def _public_elevator_text_is_reduced_service(text: str) -> bool:
+    lowered = _clean_text(text).casefold()
+    return bool(
+        re.search(
+            r"\b(?:back|down)\s+to\s+one\b"
+            r"|\bonly\s+one\s+(?:working\s+)?(?:elevator|lift)\b"
+            r"|\bone\s+(?:working\s+)?(?:elevator|lift)\b"
+            r"|\bone\s+(?:elevator|lift)\s+(?:is\s+|was\s+|currently\s+)?(?:out|down|dead|broken|not\s+working|out\s+of\s+(?:service|order))\b",
+            lowered,
+        )
+    )
+
+
 def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
     lowered = _clean_text(text).casefold()
     if "alarm" in lowered:
@@ -1891,6 +1933,13 @@ def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
         return "Elevator floor-service issue was reported."
     if re.search(r"\btrapped\b|\bentrapment\b", lowered):
         return "A person was reported trapped in an elevator."
+    if _public_elevator_text_is_reduced_service(lowered):
+        if re.search(
+            r"\bone\s+(?:elevator|lift)\s+(?:is\s+|was\s+|currently\s+)?(?:out|down|dead|broken|not\s+working|out\s+of\s+(?:service|order))\b",
+            lowered,
+        ):
+            return "One elevator was reported out of service."
+        return "Elevator service was reported reduced to one working elevator."
     still = bool(re.search(r"\bstill\b|\bagain\b|\bcontinued?\b|\bremains?\b", lowered))
     state = "still out" if still else "out"
     if "down" in lowered and "out" not in lowered:

@@ -334,6 +334,74 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
     assert sheets_sync._public_should_include_update(north_incident, north_only_working_raw) is True
     assert sheets_sync._public_event_issue_label(north_incident, north_only_working_raw) == "North elevator"
 
+    generic_working_raw = RawMessage(
+        message_id="msg-generic-working",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-generic-working",
+        ts_iso="2026-05-06T11:13:00Z",
+        ts_epoch=1778065980,
+        text="Appears to be working now",
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(north_incident, generic_working_raw) is False
+
+    one_out_incident = Incident(
+        incident_id="inc-one-out",
+        category="elevator",
+        asset="elevator_both",
+        title="One elevator currently out of service",
+        summary="Hi all-currently one elevator out of service.",
+        proof_refs="msg-one-out",
+    )
+    one_out_raw = RawMessage(
+        message_id="msg-one-out",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-one-out",
+        ts_iso="2026-05-16T20:47:00Z",
+        ts_epoch=1778964420,
+        text="Hi all-currently one elevator out of service",
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(one_out_incident, one_out_raw) is True
+    assert sheets_sync._public_event_issue_label(one_out_incident, one_out_raw) == "Elevator service reduced"
+    assert sheets_sync._public_event_summary(one_out_incident, one_out_raw) == "One elevator was reported out of service."
+
+    both_context_restore_raw = RawMessage(
+        message_id="msg-both-context-restore",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-both-context-restore",
+        ts_iso="2026-05-16T21:36:00Z",
+        ts_epoch=1778967360,
+        text="Both appear to be working now",
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(one_out_incident, both_context_restore_raw) is True
+    assert sheets_sync._public_event_issue_label(one_out_incident, both_context_restore_raw) == "Both elevators working"
+    assert sheets_sync._public_event_summary(one_out_incident, both_context_restore_raw) == "Both elevators were reported working."
+
+    back_to_one_raw = RawMessage(
+        message_id="msg-back-to-one",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-back-to-one",
+        ts_iso="2026-05-16T21:00:00Z",
+        ts_epoch=1778965200,
+        text="Back to one elevator/lift",
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_event_issue_label(one_out_incident, back_to_one_raw) == "Elevator service reduced"
+    assert (
+        sheets_sync._public_event_summary(one_out_incident, back_to_one_raw)
+        == "Elevator service was reported reduced to one working elevator."
+    )
+
     reply_text = (
         "Molly\n+1 (347) 581-0269\n"
         "Was the north lift ever operational today? It was out when we left at 7, "
