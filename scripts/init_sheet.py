@@ -26,7 +26,56 @@ TABS = {
     "Tenant Log": [
         "455 Tenants Log", "", "", "", "", "",
     ],
+    "ElevatorWatch": [
+        "What people need to know", "Current clear answer", "Why it matters",
+        "Checked by", "Last checked", "Human needed", "Source",
+    ],
+    "ProjectStatus": [
+        "section", "item", "status", "detail", "source", "updated_at",
+    ],
+    "PublicRecords": [
+        "source_system", "record_type", "record_key", "verification_status", "machine_confidence",
+        "verification_summary", "status", "status_detail", "filed_at", "approved_at", "permit_issued_at",
+        "inspection_date", "expires_at", "needs_human_verification", "machine_verified_at",
+        "human_verified_at", "human_verified_by", "source_url", "bbl", "bin", "job_number",
+        "permit_number", "device_number",
+    ],
+    "WatchdogChecks": [
+        "check_type", "status", "checked_at", "checked_by", "photo_url", "source_url", "notes",
+    ],
+    "ActionQueue": [
+        "severity", "action_type", "title", "detail", "due_at", "owner_role", "status",
+        "source_record_id", "related_incident_id", "draft_message", "created_at", "completed_at",
+    ],
+    "WeeklyDigest": [
+        "period_start", "period_end", "public_summary", "management_followup_draft",
+        "tenant_update_draft", "generated_at", "used_llm",
+    ],
 }
+
+PRIVATE_ACCESS_NEEDS_TAB = {
+    "AccessNeeds_Private": [
+        "apartment_or_contact_hash", "need_type", "request_text", "management_response",
+        "status", "due_at", "notes", "created_at", "updated_at",
+    ]
+}
+
+
+PUBLIC_WATCHDOG_TABS = {
+    key: TABS[key]
+    for key in ("ElevatorWatch", "ProjectStatus", "PublicRecords", "WatchdogChecks", "ActionQueue", "WeeklyDigest")
+}
+
+
+def tabs_to_initialize():
+    tabs = dict(TABS)
+    if os.environ.get("ENABLE_PRIVATE_ACCESS_NEEDS_SHEET", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        tabs.update(PRIVATE_ACCESS_NEEDS_TAB)
+    return tabs
+
+
+def public_watchdog_tabs_to_initialize():
+    return dict(PUBLIC_WATCHDOG_TABS)
 
 
 def service():
@@ -54,6 +103,7 @@ def main():
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--title")
     group.add_argument("--spreadsheet-id")
+    ap.add_argument("--public-watchdog-tabs", action="store_true", help="Only add/update public replacement-watchdog tabs; preserve existing tabs.")
     args = ap.parse_args()
 
     svc = service()
@@ -79,20 +129,21 @@ def main():
     sheets = spreadsheet.get("sheets", [])
     titles = {sh["properties"]["title"]: sh["properties"]["sheetId"] for sh in sheets}
     requests = []
-    if sheets and "Incidents" not in titles:
+    if not args.public_watchdog_tabs and sheets and "Incidents" not in titles:
         requests.append({
             "updateSheetProperties": {
                 "properties": {"sheetId": sheets[0]["properties"]["sheetId"], "title": "Incidents"},
                 "fields": "title",
             }
         })
-    for tab in TABS:
+    tabs = public_watchdog_tabs_to_initialize() if args.public_watchdog_tabs else tabs_to_initialize()
+    for tab in tabs:
         if tab != "Incidents" and tab not in titles:
             requests.append({"addSheet": {"properties": {"title": tab}}})
     if requests:
         svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={"requests": requests}).execute()
 
-    for tab, headers in TABS.items():
+    for tab, headers in tabs.items():
         svc.spreadsheets().values().update(
             spreadsheetId=sid,
             range=f"{tab}!A1",

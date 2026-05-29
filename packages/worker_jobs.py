@@ -7,6 +7,8 @@ from packages.nyc311.legal_export import export_legal_bundle as export_bundle_im
 from packages.nyc311.replacement_export import export_elevator_replacement_bundle as export_replacement_bundle_impl
 from packages.nyc311.planner import ensure_filing_jobs
 from packages.nyc311.tracker import sync_all_case_statuses
+from packages.public_records.sync import sync_public_records as sync_public_records_impl
+from packages.public_records.sync import sync_replacement_watchdog as sync_replacement_watchdog_impl
 from packages.sheets.sync import (
     sync_311_cases_to_sheets,
     sync_311_queue_to_sheets,
@@ -15,6 +17,7 @@ from packages.sheets.sync import (
     sync_decisions_to_sheets,
     sync_incidents_to_sheets,
     sync_public_updates_to_sheets,
+    sync_replacement_watchdog_to_sheets,
 )
 
 
@@ -27,6 +30,7 @@ def _safe_sync_sheets():
         sync_311_queue_to_sheets()
         sync_decisions_to_sheets()
         sync_public_updates_to_sheets()
+        sync_replacement_watchdog_to_sheets()
     except Exception as exc:
         append_audit_event("SHEETS_SYNC_SKIPPED", None, {"error": str(exc)[:300]})
 
@@ -141,6 +145,24 @@ def sync_311_statuses():
     _safe_sync_sheets()
     append_audit_event("SYNC_311_STATUSES", None, {"updated": len(results)})
     return {"ok": True, "updated": len(results)}
+
+
+def sync_public_records():
+    with get_session() as session:
+        result = sync_public_records_impl(session)
+        session.commit()
+    _safe_sync_sheets()
+    append_audit_event("SYNC_PUBLIC_RECORDS", None, result)
+    return {"ok": True, **result}
+
+
+def resync_replacement_watchdog():
+    with get_session() as session:
+        result = sync_replacement_watchdog_impl(session)
+        session.commit()
+    _safe_sync_sheets()
+    append_audit_event("RESYNC_REPLACEMENT_WATCHDOG", None, result)
+    return {"ok": True, **result}
 
 
 def export_legal_bundle():

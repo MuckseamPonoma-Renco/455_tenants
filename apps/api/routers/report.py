@@ -2,7 +2,7 @@ from html import escape
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 from packages.audit import append_audit_event, compute_message_id, sender_hash
-from packages.db import RawMessage, get_session
+from packages.db import AccessNeedPrivate, RawMessage, get_session
 from packages.queue import enqueue_process_message
 from packages.timeutil import epoch_to_iso
 
@@ -37,6 +37,12 @@ def _render_form(message: str = "") -> str:
     <select name='kind'>
       <option value='elevator_out'>Elevator outage</option>
       <option value='elevator_restore'>Elevator restored</option>
+      <option value='active_elevator_out'>Replacement project: elevator out</option>
+      <option value='long_wait_due_to_one_elevator'>Long wait because only one elevator is running</option>
+      <option value='mobility_access_blocked'>Mobility access blocked</option>
+      <option value='unsafe_barricade_or_signage'>Unsafe barricade or signage</option>
+      <option value='construction_noise_after_hours'>Construction noise after hours</option>
+      <option value='contractor_blocking_egress'>Contractor blocking egress</option>
       <option value='heat_hot_water'>Heat / hot water problem</option>
       <option value='security_access'>Door / lock / intercom problem</option>
       <option value='other'>Other building issue</option>
@@ -77,7 +83,7 @@ def report_submit(
     reporter_label = reporter.strip() or 'QR report'
     note_clean = (note or '').strip()
 
-    if kind == 'elevator_out':
+    if kind in {'elevator_out', 'active_elevator_out'}:
         subject = {
             'elevator_both': 'Both elevators are out',
             'elevator_north': 'North elevator is out',
@@ -93,6 +99,16 @@ def report_submit(
         subject = 'Heat or hot water is not working'
     elif kind == 'security_access':
         subject = 'Door / lock / intercom problem'
+    elif kind == 'long_wait_due_to_one_elevator':
+        subject = 'Only one elevator is running and causing long waits'
+    elif kind == 'unsafe_barricade_or_signage':
+        subject = 'Unsafe construction barricade or signage'
+    elif kind == 'construction_noise_after_hours':
+        subject = 'Construction noise after hours'
+    elif kind == 'contractor_blocking_egress':
+        subject = 'Contractor is blocking building egress'
+    elif kind == 'mobility_access_blocked':
+        subject = 'Mobility access support requested'
     else:
         subject = 'Building issue reported'
 
@@ -105,6 +121,19 @@ def report_submit(
     ts_iso = epoch_to_iso(ts_epoch)
     mid = compute_message_id('455 Report Form', reporter_label, ts_iso or '', text + client_ip)
     with get_session() as session:
+        if kind == 'mobility_access_blocked':
+            private_hash = sender_hash(reporter_label + client_ip)
+            session.add(AccessNeedPrivate(
+                apartment_or_contact_hash=private_hash,
+                need_type='mobility_access_blocked',
+                request_text=note_clean or subject,
+                status='open',
+                created_at=ts_iso,
+                updated_at=ts_iso,
+            ))
+            session.commit()
+            append_audit_event('INGEST_PRIVATE_ACCESS_NEED', None, {'kind': kind})
+            return HTMLResponse(_render_form('Thank you. Your access request was captured privately.'))
         if not session.get(RawMessage, mid):
             session.add(RawMessage(
                 message_id=mid,

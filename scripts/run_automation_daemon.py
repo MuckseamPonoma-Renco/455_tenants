@@ -16,7 +16,7 @@ load_local_env_file()
 
 from packages.audit import append_audit_event, daily_hash_chain
 from packages.nyc311.portal_worker import run_portal_filing_once
-from packages.worker_jobs import process_pending_messages, sync_311_statuses
+from packages.worker_jobs import process_pending_messages, resync_replacement_watchdog, sync_311_statuses
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=int, help="Idle sleep between automation cycles.")
     parser.add_argument("--error-sleep-seconds", type=int, help="Sleep after an unexpected automation error.")
     parser.add_argument("--status-sync-seconds", type=int, help="How often to run NYC311 case-status sync. Use 0 to disable.")
+    parser.add_argument("--public-record-sync-seconds", type=int, help="How often to run replacement-watchdog public-record sync. Use 0 to disable.")
     parser.add_argument("--burst-size", type=int, help="Maximum filing jobs to process per cycle.")
     parser.add_argument("--between-jobs-seconds", type=int, help="Pause between successful filing jobs in the same cycle.")
     parser.add_argument("--startup-catchup-limit", type=int, help="Process up to this many undecided raw messages before the main loop starts.")
@@ -59,6 +60,12 @@ def main() -> None:
     poll_seconds = max(10, args.poll_seconds or _env_int("AUTOMATION_POLL_SECONDS", 60))
     error_sleep_seconds = max(10, args.error_sleep_seconds or _env_int("AUTOMATION_ERROR_SLEEP_SECONDS", 30))
     status_sync_seconds = max(0, args.status_sync_seconds if args.status_sync_seconds is not None else _env_int("AUTOMATION_STATUS_SYNC_SECONDS", 3600))
+    public_record_sync_seconds = max(
+        0,
+        args.public_record_sync_seconds
+        if args.public_record_sync_seconds is not None
+        else _env_int("AUTOMATION_PUBLIC_RECORD_SYNC_SECONDS", 21600),
+    )
     burst_size = max(1, args.burst_size or _env_int("AUTOMATION_BURST_SIZE", 2))
     between_jobs_seconds = max(0, args.between_jobs_seconds or _env_int("AUTOMATION_BETWEEN_JOBS_SECONDS", 5))
     startup_catchup_limit = max(0, args.startup_catchup_limit if args.startup_catchup_limit is not None else _env_int("AUTOMATION_STARTUP_CATCHUP_LIMIT", 200))
@@ -66,7 +73,7 @@ def main() -> None:
     _log(
         "automation loop starting "
         f"headless={headless} verify_lookup={verify_lookup} poll_seconds={poll_seconds} "
-        f"status_sync_seconds={status_sync_seconds} burst_size={burst_size} "
+        f"status_sync_seconds={status_sync_seconds} public_record_sync_seconds={public_record_sync_seconds} burst_size={burst_size} "
         f"startup_catchup_limit={startup_catchup_limit}"
     )
     append_audit_event(
@@ -77,6 +84,7 @@ def main() -> None:
             "verify_lookup": verify_lookup,
             "poll_seconds": poll_seconds,
             "status_sync_seconds": status_sync_seconds,
+            "public_record_sync_seconds": public_record_sync_seconds,
             "burst_size": burst_size,
             "startup_catchup_limit": startup_catchup_limit,
         },
@@ -89,6 +97,7 @@ def main() -> None:
             _log(f"startup catch-up result: {catchup}")
 
     next_status_sync_at = time.monotonic() if status_sync_seconds > 0 else None
+    next_public_record_sync_at = time.monotonic() if public_record_sync_seconds > 0 else None
 
     while True:
         did_work = False
@@ -98,6 +107,12 @@ def main() -> None:
                 result = sync_311_statuses()
                 _log(f"status sync result: {result}")
                 next_status_sync_at = time.monotonic() + status_sync_seconds
+                did_work = True
+
+            if next_public_record_sync_at is not None and now >= next_public_record_sync_at:
+                result = resync_replacement_watchdog()
+                _log(f"replacement watchdog sync result: {result}")
+                next_public_record_sync_at = time.monotonic() + public_record_sync_seconds
                 did_work = True
 
             processed = 0

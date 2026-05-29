@@ -80,6 +80,18 @@ Returns:
 
 Works without an API key via deterministic fallback text, and improves automatically once `OPENAI_API_KEY` is set.
 
+## GET /api/project
+Returns the elevator replacement watchdog state split into management claims, official public records, and tenant-observed reality.
+
+## GET /api/project/records
+Returns imported public records. Rows include `machine_verification_status`, `machine_confidence`, `machine_verified_at`, and `needs_human_verification`. Machine verification is official-source corroboration, not a human confirmation.
+
+## GET /api/project/actions
+Returns replacement-watchdog action queue items.
+
+## GET /api/project/briefing
+Returns structured project state, tenant-ready update draft, management follow-up draft, and next best action. Uses deterministic fallback text.
+
 ## POST /mobile/filings/claim_next
 Claims the next pending job.
 
@@ -94,6 +106,18 @@ Stores a status update from the portal worker or another trusted source.
 
 ## POST /mobile/sr_updates/sync_now
 Runs the 311 case tracker sync immediately.
+
+## POST /admin/sync_public_records
+Imports verified-configured NYC Open Data sources into `PublicRecordWatch`.
+
+## POST /admin/resync_replacement_watchdog
+Imports public records, evaluates replacement-watchdog rules, and syncs watchdog sheet tabs.
+
+## POST /admin/verify_public_record/{id}
+Marks an imported public record human-verified and completes its verification action.
+
+## POST /admin/add_watchdog_check
+Adds a volunteer compliance check, such as permit posting, notice posting, barricade safety, or work-hours posting.
 
 ## POST /admin/export_elevator_replacement_bundle
 Builds the focused elevator pressure bundle with elevator incidents, WhatsApp evidence, linked 311 cases, and recent portal screenshots.

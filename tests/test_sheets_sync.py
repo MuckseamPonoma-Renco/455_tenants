@@ -1171,6 +1171,154 @@ def test_sync_public_updates_collapses_same_minute_status_rows(client, monkeypat
     assert "Elevator mechanic was reported on site." in rows[0][6]
 
 
+def test_sync_public_updates_shows_rough_elevator_ride_and_same_confirmation(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-rough-north",
+                category="elevator",
+                asset="elevator_north",
+                severity=4,
+                status="open",
+                start_ts="2026-05-27T02:53:00Z",
+                start_ts_epoch=1779850380,
+                last_ts_epoch=1779851400,
+                title="North elevator made loud clunk and bounced",
+                summary=(
+                    "North lift made a loud clunk, bounced, and opened slowly. "
+                    "A second resident confirmed the same north lift issue at 11 pm."
+                ),
+                proof_refs="msg-rough,msg-same",
+                report_count=2,
+                witness_count=2,
+                confidence=90,
+            ),
+            RawMessage(
+                message_id="msg-rough",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-rough",
+                ts_iso="2026-05-27T02:53:00Z",
+                ts_epoch=1779850380,
+                text=(
+                    "North lift made that unpleasant loud clunk sound when it delivered me to my flr, "
+                    "the car bounced up and down slightly and the door opened in slo-mo at 10:30pm."
+                ),
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            RawMessage(
+                message_id="msg-same",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-same",
+                ts_iso="2026-05-27T03:10:00Z",
+                ts_epoch=1779851400,
+                text="Yes. Same. North lift at 11 pm.",
+                attachments=None,
+                source="whatsapp_web",
+            ),
+            ServiceRequestCase(
+                service_request_number="311-27654875",
+                incident_id="inc-rough-north",
+                source="portal_playwright",
+                complaint_type="Elevator or Escalator Complaint",
+                status="submitted",
+                submitted_at="2026-05-28T22:50:00Z",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    log_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
+    rows = [row for row in values[log_row + 2:] if row and row[0]]
+
+    rough_row = next(row for row in rows if row[1] == "North elevator operation issue")
+    assert rough_row[3] == "311-27654875 (submitted)"
+    assert rough_row[6] == "North elevator was reported making a loud clunk, bouncing, or opening slowly."
+
+    same_row = next(row for row in rows if row[6] == "A second report confirmed the same north elevator issue.")
+    assert same_row[1] == "North elevator"
+    assert same_row[3] == "311-27654875 (submitted)"
+
+
+def test_sync_public_updates_uses_floor_call_description_instead_of_outage_fallback(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    text = (
+        "So it seems impossible to call the elevator to the third floor. "
+        "I waited for a very long time this morning, and finally gave up. "
+        "I had wanted to go to the basement to do my laundry and there was a lot to carry. "
+        "I tried again later, and waited and waited. "
+        "I finally jumped into the elevator when it happened to stop on its way up. "
+        "I just crowded in there with my laundry and everything and thankfully our neighbors can be so understanding! "
+        "So that's how I finally made it down to the basement."
+    )
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="inc-third-floor-call",
+                category="elevator",
+                asset=None,
+                severity=4,
+                status="open",
+                start_ts="2026-05-29T21:39:00Z",
+                start_ts_epoch=1780090740,
+                last_ts_epoch=1780090740,
+                title="Elevator not responding on third floor",
+                summary=text,
+                proof_refs="msg-third-floor-call",
+                report_count=1,
+                witness_count=1,
+                confidence=90,
+            ),
+            RawMessage(
+                message_id="msg-third-floor-call",
+                chat_name="455 Tenants",
+                sender="Tenant",
+                sender_hash="hash-third-floor-call",
+                ts_iso="2026-05-29T21:39:00Z",
+                ts_epoch=1780090740,
+                text=text,
+                attachments=None,
+                source="whatsapp_web",
+            ),
+        ])
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    metrics = {
+        row[0]: row[1]
+        for row in values
+        if row and row[0] in {"Most common issue type", "Latest update"}
+    }
+    assert metrics["Most common issue type"] == "Elevator"
+    assert metrics["Latest update"] == "Elevator not responding on third floor"
+
+    category_row = next(row for row in values if row and row[0] == "Elevator")
+    assert category_row[4] == "Elevator not responding on third floor"
+
+    log_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
+    update_row = next(row for row in values[log_row + 2:] if row and row[1] == "Elevator not responding on third floor")
+    assert update_row[2] == "Elevator"
+    assert update_row[6] == "Elevator not responding on third floor"
+    assert "Elevator outage was reported as still down." not in " ".join(str(cell) for row in values for cell in row)
+
+
 def test_sync_public_updates_filters_stale_bad_decisions_and_preserves_real_updates(client, monkeypatch):
     service = _FakeService()
     monkeypatch.setattr(sheets_sync, "_service", lambda: service)

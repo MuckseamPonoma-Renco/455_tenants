@@ -117,6 +117,73 @@ def test_filing_draft_description_is_short_and_casual(client):
         assert payload['description'] == 'North elevator stuck and trapped a passenger.'
 
 
+def test_rough_north_elevator_ride_and_confirmation_stay_one_accurate_case(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(message_text, *args, **kwargs):
+        if 'Same' in message_text:
+            return {
+                'is_issue': True,
+                'signal_type': 'report',
+                'category': 'elevator',
+                'asset': 'elevator_north',
+                'event_type': 'status_update',
+                'severity': 4,
+                'confidence': 90,
+                'title': 'North elevator issue confirmed',
+                'summary': 'Second report confirms the same north elevator issue.',
+                'refers_to_open_incident': True,
+                'close_incident': False,
+                'needs_review': False,
+            }
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_north',
+            'event_type': 'new_issue',
+            'severity': 4,
+            'confidence': 90,
+            'title': 'North elevator made loud clunk and bounced',
+            'summary': 'North elevator made a loud clunk, bounced, and opened slowly.',
+            'refers_to_open_incident': False,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift made that unpleasant loud clunk sound when it delivered me to my flr, the car bounced up and down slightly and the door opened in slo-mo at 10:30pm.',
+        'sender': 'Karen',
+        'ts_epoch': 1779850380,
+    })
+    second = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Yes. Same. North lift at 11 pm.',
+        'sender': 'Molly',
+        'ts_epoch': 1779851400,
+    })
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    with get_session() as session:
+        incidents = session.query(Incident).all()
+        jobs = session.query(FilingJob).all()
+        decisions = session.query(MessageDecision).order_by(MessageDecision.created_at.asc()).all()
+
+        assert len(incidents) == 1
+        assert incidents[0].asset == 'elevator_north'
+        assert incidents[0].report_count == 2
+        assert len(jobs) == 1
+        payload = json.loads(jobs[0].payload_json)
+        assert payload['description'] == 'North elevator made a loud clunk, bounced, and opened slowly.'
+        assert jobs[0].notes == 'North elevator made a loud clunk, bounced, and opened slowly.'
+        assert [decision.incident_id for decision in decisions] == [incidents[0].incident_id, incidents[0].incident_id]
+
+
 def test_filing_draft_uses_canonical_full_building_address(client):
     response = client.post('/ingest/tasker', headers=auth_headers(), json={
         'chat_name': '455 Tenants',
@@ -776,6 +843,18 @@ def test_elevator_rules_handle_no_side_elevator_and_floor_service_restore():
     assert south_normal["category"] == "elevator"
     assert south_normal["asset"] == "elevator_south"
     assert south_normal["kind"] == "restore"
+
+    rough_north = classify_rules("North lift made a loud clunk, bounced, and the door opened in slo-mo.")
+    assert rough_north["is_issue"] is True
+    assert rough_north["category"] == "elevator"
+    assert rough_north["asset"] == "elevator_north"
+    assert rough_north["event_type"] == "new_issue"
+
+    floor_call = classify_rules("It seems impossible to call the elevator to the third floor.")
+    assert floor_call["is_issue"] is True
+    assert floor_call["category"] == "elevator"
+    assert floor_call["event_type"] == "new_issue"
+    assert floor_call["title"] == "Elevator not responding to floor call"
 
 
 def test_no_side_elevator_ingest_queues_311_job(client):

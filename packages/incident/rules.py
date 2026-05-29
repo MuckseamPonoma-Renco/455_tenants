@@ -35,6 +35,17 @@ BACK = re.compile(
     r"(back\s+(up|on|in\s+service)|working\s+now|working\s+normal(?:ly)?|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|2\s+lifts\s+working|both\s+elevators\s+currently\s+functioning|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
     re.I,
 )
+IRREGULAR_OPERATION = re.compile(
+    r"\b(?:clunk(?:ed|ing)?|bang(?:ed|ing)?|bounce[sd]?|jolt(?:ed|ing)?|shake[sn]?|shook|"
+    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door)\b",
+    re.I,
+)
+CALL_RESPONSE = re.compile(
+    r"\b(?:impossible|unable|can't|cannot|couldn['’]?t)\b[^.!?\n]{0,90}\b(?:call|summon|get|bring|request)\b[^.!?\n]{0,90}\b(?:elevator|lift)\b"
+    r"|\b(?:elevator|lift)\b[^.!?\n]{0,120}\b(?:not\s+respond(?:ing)?|won['’]?t\s+come|wouldn['’]?t\s+come|doesn['’]?t\s+come|didn['’]?t\s+come|never\s+came|won['’]?t\s+stop|wouldn['’]?t\s+stop)\b"
+    r"|\b(?:call|summon|get|bring|request)\b[^.!?\n]{0,90}\b(?:elevator|lift)\b[^.!?\n]{0,90}\b(?:not\s+respond(?:ing)?|won['’]?t|wouldn['’]?t|doesn['’]?t|didn['’]?t|never)\b",
+    re.I,
+)
 
 HEAT = re.compile(r"\bheat\b|hot\s+water|no\s+hot\s+water|cold\s+water|boiler", re.I)
 LEAK = re.compile(r"leak|flood|water\s+damage|ceiling\s+collapsed|mold", re.I)
@@ -162,6 +173,18 @@ def classify_rules(text: str) -> dict:
             "kind": "restore",
         }
 
+    if _has_elevator_reference(t) and CALL_RESPONSE.search(t):
+        return {
+            "is_issue": True,
+            "category": "elevator",
+            "asset": _asset(t),
+            "event_type": "new_issue",
+            "severity": 4,
+            "title": "Elevator not responding to floor call",
+            "summary": "Tenant reports the elevator did not respond to a floor call.",
+            "kind": "issue",
+        }
+
     if _has_elevator_reference(t) and (OUT.search(t) or ONLY_SIDE_WORKING.search(t)):
         asset = _asset(t)
         sev = 5 if asset == "elevator_both" else 4
@@ -174,6 +197,18 @@ def classify_rules(text: str) -> dict:
             "title": "Elevator outage",
             "summary": "Tenant reports elevator service reduced or not working.",
             "kind": "outage",
+        }
+
+    if _has_elevator_reference(t) and IRREGULAR_OPERATION.search(t):
+        return {
+            "is_issue": True,
+            "category": "elevator",
+            "asset": _asset(t),
+            "event_type": "new_issue",
+            "severity": 4,
+            "title": "Elevator operation issue",
+            "summary": "Tenant reports unsafe or irregular elevator operation.",
+            "kind": "issue",
         }
 
     if re.search(r"\bdown\s+to\s+1\s+elevator\b|\b1\s+elevator\s+again\b", t, re.I):

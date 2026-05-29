@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
+from packages.public_records.sync import project_state, public_elevator_watch_items
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
@@ -113,15 +114,33 @@ PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
     r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
     r"only\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)?\s*(?:is\s+)?(?:working|functioning|operational|running|in\s+service)|"
-    r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down)|"
+    r"(?:elevators?|lifts?|north|south|left|right)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+|again\s+|remains?\s+|remained\s+|currently\s+)?(?:out|down)|"
+    r"(?:they(?:'re| are| were| still| again| remain| remained| currently)|it(?:'s| is| was| still| again| remains| remained| currently))\s+(?:out|down)|"
     r"shutdown|shut\s*off|trapped|entrapment|"
     r"alarm|"
     r"stopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
     r"skip(?:s|ped|ping)?\s+(?:a\s+)?floor|irregular\s+floor|"
     r"doors?\s+stuck|one\s+(?:working\s+)?(?:elevator|lift)|"
     r"(?:back|down)\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
-    r"reduced\s+service|malfunction(?:ing)?"
+    r"reduced\s+service|malfunction(?:ing)?|"
+    r"clunk(?:ed|ing)?|bang(?:ed|ing)?|bounce[sd]?|jolt(?:ed|ing)?|shake[sn]?|shook|"
+    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door"
     r")\b",
+    re.IGNORECASE,
+)
+PUBLIC_ELEVATOR_IRREGULAR_OPERATION_RE = re.compile(
+    r"\b(?:clunk(?:ed|ing)?|bang(?:ed|ing)?|bounce[sd]?|jolt(?:ed|ing)?|shake[sn]?|shook|"
+    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door)\b",
+    re.IGNORECASE,
+)
+PUBLIC_ELEVATOR_SAME_CONFIRMATION_RE = re.compile(
+    r"\b(?:yes[.!?,]?\s+same|same\s+here|me\s+too|same)\b",
+    re.IGNORECASE,
+)
+PUBLIC_ELEVATOR_CALL_RESPONSE_RE = re.compile(
+    r"\b(?:impossible|unable|can't|cannot|couldn['’]?t)\b[^.!?\n]{0,90}\b(?:call|summon|get|bring|request)\b[^.!?\n]{0,90}\b(?:elevator|lift)\b"
+    r"|\b(?:elevator|lift)\b[^.!?\n]{0,120}\b(?:not\s+respond(?:ing)?|won['’]?t\s+come|wouldn['’]?t\s+come|doesn['’]?t\s+come|didn['’]?t\s+come|never\s+came|won['’]?t\s+stop|wouldn['’]?t\s+stop)\b"
+    r"|\b(?:call|summon|get|bring|request)\b[^.!?\n]{0,90}\b(?:elevator|lift)\b[^.!?\n]{0,90}\b(?:not\s+respond(?:ing)?|won['’]?t|wouldn['’]?t|doesn['’]?t|didn['’]?t|never)\b",
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_WORKING_STATUS_RE = re.compile(
@@ -273,6 +292,10 @@ def _allowed_public_chat_names() -> set[str]:
 
 def _public_sheet_id() -> str:
     return _env_first("GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID", "GOOGLE_SHEETS_SPREADSHEET_ID") or _sheet_id()
+
+
+def _watchdog_sheet_id() -> str:
+    return _public_sheet_id()
 
 
 def _configured_public_sheet_id() -> str:
@@ -1614,6 +1637,15 @@ def _public_issue_label(incident: Incident | None) -> str:
     return _public_strip_report_prefix(_public_focus_label(incident))
 
 
+def _public_title_issue_label(incident: Incident | None, *, fallback: str) -> str:
+    title = _clean_text(getattr(incident, "title", "")) if incident is not None else ""
+    if title:
+        label = _public_sanitize_text(_public_strip_report_prefix(title))
+        if label:
+            return label
+    return fallback
+
+
 def _public_evidence_cells(incident: Incident, raw_map: dict[str, RawMessage]) -> tuple[str, str]:
     fallback_open_cell = ""
     for message_id in [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]:
@@ -1749,7 +1781,21 @@ def _public_elevator_text_is_actionable(text: str) -> bool:
         re.IGNORECASE,
     ):
         return False
-    return bool(PUBLIC_ELEVATOR_ACTIONABLE_RE.search(clean))
+    return bool(PUBLIC_ELEVATOR_ACTIONABLE_RE.search(clean) or PUBLIC_ELEVATOR_CALL_RESPONSE_RE.search(clean))
+
+
+def _public_elevator_text_confirms_same_issue(text: str) -> bool:
+    clean = _clean_text(text)
+    return bool(
+        clean
+        and (PUBLIC_ELEVATOR_WORD_RE.search(clean) or PUBLIC_ELEVATOR_SIDE_REFERENCE_RE.search(clean))
+        and PUBLIC_ELEVATOR_SAME_CONFIRMATION_RE.search(clean)
+    )
+
+
+def _public_elevator_text_is_call_response_issue(text: str) -> bool:
+    clean = _clean_text(text)
+    return bool(clean and PUBLIC_ELEVATOR_CALL_RESPONSE_RE.search(clean))
 
 
 def _public_elevator_text_is_current_working_after_past_outage(text: str) -> bool:
@@ -1808,6 +1854,7 @@ def _public_should_include_update(incident: Incident, raw: RawMessage | None) ->
             return False
         return bool(
             _public_elevator_text_is_actionable(detection_text)
+            or _public_elevator_text_confirms_same_issue(detection_text)
             or _public_elevator_text_is_working_status(detection_text)
             or _public_repair_event_label(detection_text)
         )
@@ -1836,7 +1883,7 @@ def _public_is_actionable_311_update(incident: Incident, raw: RawMessage | None)
     if incident.category != "elevator" or raw is None:
         return bool(incident.category != "elevator")
     text = _public_update_detection_text(raw)
-    return _public_elevator_text_is_actionable(text)
+    return _public_elevator_text_is_actionable(text) or _public_elevator_text_confirms_same_issue(text)
 
 
 def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str:
@@ -1868,10 +1915,26 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
                     return "South elevator working normally"
                 return "South elevator working"
             return "Elevator working update"
+        if _public_elevator_text_confirms_same_issue(detection_text):
+            if asset == "elevator_north":
+                return "North elevator"
+            if asset == "elevator_south":
+                return "South elevator"
+            if asset == "elevator_both":
+                return "Both elevators"
+            return "Elevator issue confirmation"
+        if _public_elevator_text_is_call_response_issue(detection_text):
+            return _public_title_issue_label(incident, fallback="Elevator not responding to floor call")
         if actionable:
             lowered = detection_text.casefold()
             if "alarm" in lowered:
                 return _public_issue_label(incident) or "Elevator alarm"
+            if PUBLIC_ELEVATOR_IRREGULAR_OPERATION_RE.search(detection_text):
+                if asset == "elevator_north":
+                    return "North elevator operation issue"
+                if asset == "elevator_south":
+                    return "South elevator operation issue"
+                return "Elevator operation issue"
             if (
                 "floor-by-floor" in lowered
                 or "floor by floor" in lowered
@@ -1927,6 +1990,12 @@ def _public_elevator_text_is_reduced_service(text: str) -> bool:
 
 def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
     lowered = _clean_text(text).casefold()
+    if PUBLIC_ELEVATOR_IRREGULAR_OPERATION_RE.search(text):
+        if asset == "elevator_north":
+            return "North elevator was reported making a loud clunk, bouncing, or opening slowly."
+        if asset == "elevator_south":
+            return "South elevator was reported making a loud clunk, bouncing, or opening slowly."
+        return "Elevator was reported making a loud clunk, bouncing, or opening slowly."
     if "alarm" in lowered:
         return "Elevator alarm was reported."
     if re.search(r"\bfloor[- ]by[- ]floor\b|\bstopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor\b|\bskipping\b|\birregular\s+floor\b", lowered):
@@ -1983,6 +2052,15 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
                 return "South elevator was reported working normally, without floor-by-floor service."
             if asset == "elevator_south":
                 return "South elevator was reported working."
+        if _public_elevator_text_confirms_same_issue(detection_text):
+            if asset == "elevator_north":
+                return "A second report confirmed the same north elevator issue."
+            if asset == "elevator_south":
+                return "A second report confirmed the same south elevator issue."
+            return "A second report confirmed the same elevator issue."
+        if _public_elevator_text_is_call_response_issue(detection_text):
+            label = _public_title_issue_label(incident, fallback="Elevator not responding to floor call")
+            return _public_detail_text(incident, label)
         if _public_elevator_text_is_actionable(detection_text) and PUBLIC_REPAIR_CALLED_RE.search(detection_text):
             if asset == "elevator_both":
                 return "Both elevators were reported out, and repair people were expected."
@@ -2646,6 +2724,207 @@ def sync_311_queue_to_sheets():
         ])
     _replace_tab_values(svc, sheet_id, tab, values)
     _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="queue311")
+
+
+def sync_project_status_to_sheets():
+    svc = _service()
+    sheet_id = _watchdog_sheet_id()
+    tab = _tab("SHEETS_PROJECT_STATUS_TAB", default="ProjectStatus")
+    with get_session() as session:
+        state = project_state(session)
+        session.commit()
+
+    project = state["project"]
+    official_records = state["official_records"]
+    open_actions = [row for row in state["actions"] if row.get("status") == "open"]
+    records_needing_verification = [row for row in official_records if row.get("needs_human_verification")]
+    machine_verified_records = [row for row in official_records if row.get("machine_verified_at")]
+    last_record_sync = max((row.get("last_seen_at") or "" for row in official_records), default="")
+    severity_rank = {"critical": 0, "yellow": 1, "watch": 2, "info": 3}
+    next_action = sorted(open_actions, key=lambda row: (severity_rank.get(row.get("severity"), 9), row.get("due_at") or ""))[0] if open_actions else {}
+    values = [["section", "item", "status", "detail", "source", "updated_at"]]
+    values.extend(
+        [
+            ["summary", "last_public_record_sync", "", last_record_sync, "watchdog", project.get("updated_at") or ""],
+            ["summary", "official_records_total", len(official_records), "Imported NYC/DOB/Open Data records in PublicRecords.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "machine_verified_records", len(machine_verified_records), "Official-source matches accepted automatically from NYC/DOB/Open Data identifiers.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "records_needing_review", len(records_needing_verification), "Records below the auto-verification confidence threshold or with conflicting identifiers.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "open_actions", len(open_actions), "Active watchdog tasks currently shown in ActionQueue.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "next_action", next_action.get("severity") or "", next_action.get("title") or "No open watchdog action.", "watchdog", project.get("updated_at") or ""],
+            ["project", "title", project.get("phase") or "", project.get("title") or "", "management/public-record watchdog", project.get("updated_at") or ""],
+            ["project", "risk_level", project.get("risk_level") or "", project.get("current_bottleneck") or "", "watchdog", project.get("updated_at") or ""],
+            ["project", "next_expected_record", "", project.get("next_expected_record") or "", "watchdog", project.get("updated_at") or ""],
+            ["management_claim", "summary", "claimed", project.get("management_summary") or "", "management_pdf", project.get("updated_at") or ""],
+        ]
+    )
+    for milestone in state["management_claims"]["milestones"]:
+        values.append([
+            "milestone",
+            milestone["phase"],
+            milestone["status"],
+            "; ".join(item for item in [
+                f"asset={milestone.get('elevator_asset')}" if milestone.get("elevator_asset") else "",
+                f"claimed_start={milestone.get('management_claimed_start')}" if milestone.get("management_claimed_start") else "",
+                f"claimed_end={milestone.get('management_claimed_end')}" if milestone.get("management_claimed_end") else "",
+                milestone.get("notes") or "",
+            ] if item),
+            milestone.get("source_type") or "",
+            "",
+        ])
+    _ensure_tab_exists(svc, sheet_id, tab)
+    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
+    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+
+
+def sync_elevator_watch_public_view_to_sheets():
+    svc = _service()
+    sheet_id = _watchdog_sheet_id()
+    tab = _tab("SHEETS_ELEVATOR_WATCH_TAB", default="ElevatorWatch")
+    with get_session() as session:
+        items = public_elevator_watch_items(session)
+    values = [["What people need to know", "Current clear answer", "Why it matters", "Checked by", "Last checked", "Human needed", "Source"]]
+    for item in items:
+        values.append([
+            item.get("topic") or "",
+            item.get("answer") or "",
+            item.get("why_it_matters") or "",
+            item.get("checked_by") or "",
+            normalize_timestamp(item.get("last_checked_at")) or "",
+            item.get("human_needed") or "",
+            item.get("source_url") or "",
+        ])
+    _ensure_tab_exists(svc, sheet_id, tab)
+    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
+    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+
+
+def sync_public_records_to_sheets():
+    svc = _service()
+    sheet_id = _watchdog_sheet_id()
+    tab = _tab("SHEETS_PUBLIC_RECORDS_TAB", default="PublicRecords")
+    with get_session() as session:
+        records = session.query(PublicRecordWatch).all()
+    values = [[
+        "source_system", "record_type", "record_key", "verification_status", "machine_confidence",
+        "verification_summary", "status", "status_detail", "filed_at", "approved_at", "permit_issued_at",
+        "inspection_date", "expires_at", "needs_human_verification", "machine_verified_at",
+        "human_verified_at", "human_verified_by", "source_url", "bbl", "bin", "job_number",
+        "permit_number", "device_number",
+    ]]
+    for row in sorted(records, key=lambda item: item.last_changed_at or "", reverse=True):
+        if not row.visible_public:
+            continue
+        values.append([
+            row.source_system,
+            row.record_type,
+            row.record_key,
+            row.machine_verification_status or "needs_review",
+            row.machine_confidence if row.machine_confidence is not None else "",
+            (row.machine_verification_summary or "")[:500],
+            row.status or "",
+            (row.status_detail or "")[:500],
+            normalize_timestamp(row.filed_at) or "",
+            normalize_timestamp(row.approved_at) or "",
+            normalize_timestamp(row.permit_issued_at) or "",
+            normalize_timestamp(row.inspection_date) or "",
+            normalize_timestamp(row.expires_at) or "",
+            "YES - review needed" if row.needs_human_verification else "",
+            normalize_timestamp(row.machine_verified_at) or "",
+            normalize_timestamp(row.human_verified_at) or "",
+            row.human_verified_by or "",
+            row.source_url or "",
+            row.bbl or "",
+            row.bin or "",
+            row.job_number or "",
+            row.permit_number or "",
+            row.device_number or "",
+        ])
+    _ensure_tab_exists(svc, sheet_id, tab)
+    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
+    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+
+
+def sync_watchdog_checks_to_sheets():
+    svc = _service()
+    sheet_id = _watchdog_sheet_id()
+    tab = _tab("SHEETS_WATCHDOG_CHECKS_TAB", default="WatchdogChecks")
+    with get_session() as session:
+        checks = session.query(ComplianceCheck).all()
+    values = [["check_type", "status", "checked_at", "checked_by", "photo_url", "source_url", "notes"]]
+    for row in sorted(checks, key=lambda item: item.checked_at or "", reverse=True):
+        values.append([
+            row.check_type,
+            row.status,
+            normalize_timestamp(row.checked_at) or "",
+            row.checked_by or "",
+            row.photo_url or "",
+            row.source_url or "",
+            (row.notes or "")[:500],
+        ])
+    _ensure_tab_exists(svc, sheet_id, tab)
+    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
+    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+
+
+def sync_watchdog_actions_to_sheets():
+    svc = _service()
+    sheet_id = _watchdog_sheet_id()
+    tab = _tab("SHEETS_WATCHDOG_ACTIONS_TAB", default="ActionQueue")
+    with get_session() as session:
+        actions = session.query(WatchdogAction).filter(WatchdogAction.status.in_(["open", "pending", "failed"])).all()
+    values = [[
+        "severity", "action_type", "title", "detail", "due_at", "owner_role", "status",
+        "source_record_id", "related_incident_id", "draft_message", "created_at", "completed_at",
+    ]]
+    for row in sorted(actions, key=lambda item: (item.status != "open", item.due_at or "", item.created_at or "")):
+        values.append([
+            row.severity,
+            row.action_type,
+            row.title,
+            (row.detail or "")[:500],
+            normalize_timestamp(row.due_at) or "",
+            row.owner_role or "",
+            row.status,
+            row.source_record_id or "",
+            row.related_incident_id or "",
+            (row.draft_message or "")[:500],
+            normalize_timestamp(row.created_at) or "",
+            normalize_timestamp(row.completed_at) or "",
+        ])
+    _ensure_tab_exists(svc, sheet_id, tab)
+    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
+    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+
+
+def sync_weekly_digest_to_sheets():
+    svc = _service()
+    sheet_id = _watchdog_sheet_id()
+    tab = _tab("SHEETS_WEEKLY_DIGEST_TAB", default="WeeklyDigest")
+    with get_session() as session:
+        digests = session.query(WeeklyDigest).all()
+    values = [["period_start", "period_end", "public_summary", "management_followup_draft", "tenant_update_draft", "generated_at", "used_llm"]]
+    for row in sorted(digests, key=lambda item: item.generated_at or "", reverse=True):
+        values.append([
+            normalize_timestamp(row.period_start) or "",
+            normalize_timestamp(row.period_end) or "",
+            row.public_summary or "",
+            row.management_followup_draft or "",
+            row.tenant_update_draft or "",
+            normalize_timestamp(row.generated_at) or "",
+            "YES" if row.used_llm else "",
+        ])
+    _ensure_tab_exists(svc, sheet_id, tab)
+    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
+    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+
+
+def sync_replacement_watchdog_to_sheets():
+    sync_elevator_watch_public_view_to_sheets()
+    sync_project_status_to_sheets()
+    sync_public_records_to_sheets()
+    sync_watchdog_checks_to_sheets()
+    sync_watchdog_actions_to_sheets()
+    sync_weekly_digest_to_sheets()
 
 
 def sync_decisions_to_sheets():

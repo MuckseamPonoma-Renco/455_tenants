@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./local.db")
@@ -135,13 +135,176 @@ class MessageDecision(Base):
     incident = relationship("Incident", back_populates="decisions")
 
 
+class CapitalProject(Base):
+    __tablename__ = "capital_projects"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    building_key: Mapped[str] = mapped_column(String(128), index=True)
+    title: Mapped[str] = mapped_column(String(256))
+    phase: Mapped[str] = mapped_column(String(64), default="planning")
+    management_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_level: Mapped[str] = mapped_column(String(32), default="watch")
+    current_bottleneck: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_expected_record: Mapped[str | None] = mapped_column(Text, nullable=True)
+    management_contact_email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    superintendent_email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    milestones = relationship("ProjectMilestone", back_populates="project", cascade="all, delete-orphan")
+
+
+class ProjectMilestone(Base):
+    __tablename__ = "project_milestones"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey("capital_projects.id"), nullable=False)
+    phase: Mapped[str] = mapped_column(String(64))
+    elevator_asset: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    management_claimed_start: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    management_claimed_end: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    publicly_verified_start: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    publicly_verified_end: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(64), default="planned")
+    source_type: Mapped[str] = mapped_column(String(64), default="management_claim")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    project = relationship("CapitalProject", back_populates="milestones")
+
+
+class PublicRecordWatch(Base):
+    __tablename__ = "public_record_watch"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_system: Mapped[str] = mapped_column(String(128), index=True)
+    record_type: Mapped[str] = mapped_column(String(128), index=True)
+    record_key: Mapped[str] = mapped_column(String(256))
+    bbl: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    job_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    permit_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    device_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filing_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filed_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    permit_issued_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inspection_date: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    first_seen_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_seen_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_changed_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    needs_human_verification: Mapped[bool] = mapped_column(Boolean, default=True)
+    human_verified_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    human_verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    machine_verification_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    machine_confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    machine_verified_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    machine_verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    machine_verification_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    corroborating_records_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    visible_public: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    actions = relationship("WatchdogAction", back_populates="source_record")
+
+    __table_args__ = (UniqueConstraint("source_system", "record_type", "record_key", name="uq_public_record_watch_key"),)
+
+
+class ComplianceCheck(Base):
+    __tablename__ = "compliance_checks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    check_type: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(64), default="pending")
+    checked_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WatchdogAction(Base):
+    __tablename__ = "watchdog_actions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action_type: Mapped[str] = mapped_column(String(128))
+    severity: Mapped[str] = mapped_column(String(32), default="info")
+    title: Mapped[str] = mapped_column(String(256))
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    due_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(64), default="open")
+    source_record_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("public_record_watch.id"), nullable=True)
+    related_incident_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("incidents.incident_id"), nullable=True)
+    draft_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    source_record = relationship("PublicRecordWatch", back_populates="actions")
+
+
+class WeeklyDigest(Base):
+    __tablename__ = "weekly_digests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    period_start: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    period_end: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    public_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    management_followup_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tenant_update_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generated_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    used_llm: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AccessNeedPrivate(Base):
+    __tablename__ = "access_needs_private"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    apartment_or_contact_hash: Mapped[str] = mapped_column(String(128))
+    need_type: Mapped[str] = mapped_column(String(128))
+    request_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    management_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(64), default="open")
+    due_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 _initialized = False
+
+
+def _ensure_added_columns() -> None:
+    additions = {
+        "public_record_watch": {
+            "machine_verification_status": "VARCHAR(64)",
+            "machine_confidence": "INTEGER",
+            "machine_verified_at": "VARCHAR(64)",
+            "machine_verified_by": "VARCHAR(128)",
+            "machine_verification_summary": "TEXT",
+            "corroborating_records_json": "TEXT",
+        }
+    }
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table_name, columns in additions.items():
+            if table_name not in existing_tables:
+                continue
+            existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in columns.items():
+                if column_name not in existing_columns:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
 
 
 def init_db():
     global _initialized
     if not _initialized:
         Base.metadata.create_all(bind=engine)
+        _ensure_added_columns()
         _initialized = True
 
 

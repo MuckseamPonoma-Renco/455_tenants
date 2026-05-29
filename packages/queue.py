@@ -69,6 +69,26 @@ def enqueue_sync_311_statuses():
     return queue.enqueue(sync_311_statuses).id
 
 
+def enqueue_sync_public_records():
+    from packages.worker_jobs import sync_public_records
+
+    queue = _queue_or_none()
+    if queue is None:
+        sync_public_records()
+        return "inline-sync-public-records"
+    return queue.enqueue(sync_public_records).id
+
+
+def enqueue_resync_replacement_watchdog():
+    from packages.worker_jobs import resync_replacement_watchdog
+
+    queue = _queue_or_none()
+    if queue is None:
+        resync_replacement_watchdog()
+        return "inline-resync-watchdog"
+    return queue.enqueue(resync_replacement_watchdog).id
+
+
 def enqueue_export_legal_bundle():
     from packages.worker_jobs import export_legal_bundle
 

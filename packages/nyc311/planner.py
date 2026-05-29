@@ -27,7 +27,9 @@ ELEVATOR_ACTIONABLE_COMPLAINT_RE = re.compile(
     r"skip(?:s|ped|ping)?\s+(?:a\s+)?floor|irregular\s+floor|"
     r"doors?\s+stuck|one\s+(?:working\s+)?(?:elevator|lift)|"
     r"down\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
-    r"reduced\s+service|malfunction(?:ing)?"
+    r"reduced\s+service|malfunction(?:ing)?|"
+    r"clunk(?:ed|ing)?|bang(?:ed|ing)?|bounce[sd]?|jolt(?:ed|ing)?|shake[sn]?|shook|"
+    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door"
     r")\b",
     re.IGNORECASE,
 )

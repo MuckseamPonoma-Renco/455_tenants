@@ -8,6 +8,7 @@ from packages.auth import require_bearer_token
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.llm.briefing import generate_briefing
 from packages.ops_summary import build_ops_summary
+from packages.public_records.sync import VISIBLE_ACTION_STATUSES, action_payload, project_briefing, project_state, public_record_payload
 from packages.timeutil import normalize_timestamp, normalize_timestamp_fields
 
 router = APIRouter()
@@ -148,3 +149,45 @@ def get_briefing(authorization: str | None = Header(default=None)):
         summary = build_ops_summary(session)
     briefing = generate_briefing(summary)
     return {'ok': True, 'spreadsheet_url': _spreadsheet_url(), 'summary': summary, 'briefing': briefing}
+
+
+@router.get('/project')
+def get_project(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    with get_session() as session:
+        state = project_state(session)
+        session.commit()
+        return {'ok': True, 'spreadsheet_url': _spreadsheet_url(), **state}
+
+
+@router.get('/project/records')
+def get_project_records(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    from packages.db import PublicRecordWatch
+
+    with get_session() as session:
+        records = session.scalars(select(PublicRecordWatch).order_by(PublicRecordWatch.last_changed_at.desc().nullslast())).all()
+        return {'ok': True, 'records': [public_record_payload(row) for row in records]}
+
+
+@router.get('/project/actions')
+def get_project_actions(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    from packages.db import WatchdogAction
+
+    with get_session() as session:
+        actions = session.scalars(
+            select(WatchdogAction)
+            .where(WatchdogAction.status.in_(VISIBLE_ACTION_STATUSES))
+            .order_by(WatchdogAction.created_at.desc().nullslast())
+        ).all()
+        return {'ok': True, 'actions': [action_payload(row) for row in actions]}
+
+
+@router.get('/project/briefing')
+def get_project_briefing(authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization)
+    with get_session() as session:
+        briefing = project_briefing(session)
+        session.commit()
+        return {'ok': True, 'spreadsheet_url': _spreadsheet_url(), 'briefing': briefing}

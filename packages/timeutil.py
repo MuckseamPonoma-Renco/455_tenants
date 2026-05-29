@@ -42,6 +42,16 @@ def parse_ts_to_epoch(value: str | int | float | None) -> int | None:
     if not raw:
         return None
 
+    if re.fullmatch(r"\d{8}", raw):
+        try:
+            yyyy = int(raw[:4])
+            mm = int(raw[4:6])
+            dd = int(raw[6:8])
+            if 1900 <= yyyy <= 2100:
+                return int(datetime(yyyy, mm, dd, tzinfo=NY).timestamp())
+        except ValueError:
+            pass
+
     if re.fullmatch(r"\d+(?:\.\d+)?", raw):
         numeric = float(raw)
         if numeric > 10_000_000_000:

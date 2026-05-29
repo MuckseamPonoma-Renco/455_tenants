@@ -39,16 +39,15 @@ def _public_subject(asset: str | None) -> str:
 def _short_description(inc: Incident) -> str:
     subject = _public_subject(inc.asset)
     summary = " ".join((inc.summary or "").split()).lower()
-    raw_text = ""
+    raw_texts: list[str] = []
     refs = [ref.strip() for ref in (inc.proof_refs or "").split(",") if ref.strip()]
     if refs:
         with get_session() as session:
             rows = session.scalars(select(RawMessage).where(RawMessage.message_id.in_(refs))).all()
         rows = sorted(rows, key=lambda row: int(row.ts_epoch or 0), reverse=True)
-        if rows:
-            raw_text = " ".join((rows[0].text or "").split()).lower()
+        raw_texts = [" ".join((row.text or "").split()).lower() for row in rows if row.text]
 
-    text = raw_text or summary
+    text = " ".join([*raw_texts, summary]).strip()
 
     if "stopping on each floor" in text or "stopping on every floor" in text:
         return f"{subject} stopping on every floor."
@@ -58,6 +57,10 @@ def _short_description(inc: Incident) -> str:
         return f"{subject} trapped a passenger."
     if "problematic ride" in text or "rough ride" in text or "behaving badly" in text:
         return f"{subject} acting up and stopping on random floors."
+    if "clunk" in text and ("bounce" in text or "bounced" in text) and ("slow" in text or "slo-mo" in text):
+        return f"{subject} made a loud clunk, bounced, and opened slowly."
+    if "clunk" in text or "bounce" in text or "bounced" in text or "slo-mo" in text:
+        return f"{subject} operating roughly."
     if "stop" in text and "each floor" in text:
         return f"{subject} stopping on each floor."
     if "one working elevator" in text or "down to one working elevator" in text:
@@ -82,12 +85,16 @@ def build_filing_draft(inc: Incident) -> FilingDraft | None:
 
     subject = _asset_label(inc.asset)
     description = _short_description(inc)
+    issue_title = "defective operation" if any(
+        token in description.casefold()
+        for token in ("clunk", "bounced", "opened slowly", "operating roughly")
+    ) else "outage"
 
     payload = {
         "incident_id": inc.incident_id,
         "complaint_type": "Elevator or Escalator Complaint",
         "problem": "Not Working or Defective",
-        "title": f"{subject.title()} outage at {building_name}",
+        "title": f"{subject.title()} {issue_title} at {building_name}",
         "description": description.strip(),
         "building": {
             "name": building_name,
