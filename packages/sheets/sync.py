@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
-from packages.public_records.sync import project_state, public_elevator_watch_items
+from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
@@ -2746,10 +2746,10 @@ def sync_project_status_to_sheets():
     values.extend(
         [
             ["summary", "last_public_record_sync", "", last_record_sync, "watchdog", project.get("updated_at") or ""],
-            ["summary", "official_records_total", len(official_records), "Imported NYC/DOB/Open Data records in PublicRecords.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "official_records_total", len(official_records), "Trusted elevator/replacement records shown in PublicRecords.", "watchdog", project.get("updated_at") or ""],
             ["summary", "machine_verified_records", len(machine_verified_records), "Official-source matches accepted automatically from NYC/DOB/Open Data identifiers.", "watchdog", project.get("updated_at") or ""],
-            ["summary", "records_needing_review", len(records_needing_verification), "Records below the auto-verification confidence threshold or with conflicting identifiers.", "watchdog", project.get("updated_at") or ""],
-            ["summary", "open_actions", len(open_actions), "Active watchdog tasks currently shown in ActionQueue.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "records_needing_review", len(records_needing_verification), "Tenant-visible records needing manual review.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "open_actions", len(open_actions), "Tenant actions currently shown in ActionQueue.", "watchdog", project.get("updated_at") or ""],
             ["summary", "next_action", next_action.get("severity") or "", next_action.get("title") or "No open watchdog action.", "watchdog", project.get("updated_at") or ""],
             ["project", "title", project.get("phase") or "", project.get("title") or "", "management/public-record watchdog", project.get("updated_at") or ""],
             ["project", "risk_level", project.get("risk_level") or "", project.get("current_bottleneck") or "", "watchdog", project.get("updated_at") or ""],
@@ -2798,6 +2798,34 @@ def sync_elevator_watch_public_view_to_sheets():
     _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
 
 
+def _public_record_sheet_sort_key(row: PublicRecordWatch) -> tuple[int, int, int, str]:
+    status = f"{row.status or ''} {row.status_detail or ''}".casefold()
+    if any(word in status for word in ("active", "open", "pending", "in progress")):
+        status_rank = 0
+    elif any(word in status for word in ("filed", "approved", "issued")):
+        status_rank = 1
+    else:
+        status_rank = 2
+    type_rank = {
+        "elevator_permit_application": 0,
+        "dob_ecb_violation": 1,
+        "dob_violation": 2,
+        "dob_complaint": 3,
+        "nyc_311_service_request": 4,
+        "elevator_safety_compliance": 5,
+        "elevator_device_detail": 6,
+        "oath_hearing_case": 7,
+    }.get(row.record_type or "", 9)
+    epoch = (
+        parse_ts_to_epoch(row.filed_at)
+        or parse_ts_to_epoch(row.permit_issued_at)
+        or parse_ts_to_epoch(row.inspection_date)
+        or parse_ts_to_epoch(row.last_changed_at)
+        or 0
+    )
+    return (status_rank, type_rank, -epoch, row.record_key or "")
+
+
 def sync_public_records_to_sheets():
     svc = _service()
     sheet_id = _watchdog_sheet_id()
@@ -2811,8 +2839,8 @@ def sync_public_records_to_sheets():
         "human_verified_at", "human_verified_by", "source_url", "bbl", "bin", "job_number",
         "permit_number", "device_number",
     ]]
-    for row in sorted(records, key=lambda item: item.last_changed_at or "", reverse=True):
-        if not row.visible_public:
+    for row in sorted(records, key=_public_record_sheet_sort_key):
+        if not public_record_is_tenant_trusted(row):
             continue
         values.append([
             row.source_system,
@@ -2871,7 +2899,11 @@ def sync_watchdog_actions_to_sheets():
     sheet_id = _watchdog_sheet_id()
     tab = _tab("SHEETS_WATCHDOG_ACTIONS_TAB", default="ActionQueue")
     with get_session() as session:
-        actions = session.query(WatchdogAction).filter(WatchdogAction.status.in_(["open", "pending", "failed"])).all()
+        actions = [
+            row
+            for row in session.query(WatchdogAction).filter(WatchdogAction.status.in_(["open", "pending", "failed"])).all()
+            if action_is_tenant_visible(row)
+        ]
     values = [[
         "severity", "action_type", "title", "detail", "due_at", "owner_role", "status",
         "source_record_id", "related_incident_id", "draft_message", "created_at", "completed_at",
@@ -2891,6 +2923,21 @@ def sync_watchdog_actions_to_sheets():
             normalize_timestamp(row.created_at) or "",
             normalize_timestamp(row.completed_at) or "",
         ])
+    if len(values) == 1:
+        values.append([
+            "info",
+            "none",
+            "No tenant action needed",
+            "The system is checking official records and tenant reports automatically. Residents only need to report real conditions when they happen.",
+            "",
+            "system",
+            "automatic",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ])
     _ensure_tab_exists(svc, sheet_id, tab)
     _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
     _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
@@ -2902,14 +2949,31 @@ def sync_weekly_digest_to_sheets():
     tab = _tab("SHEETS_WEEKLY_DIGEST_TAB", default="WeeklyDigest")
     with get_session() as session:
         digests = session.query(WeeklyDigest).all()
-    values = [["period_start", "period_end", "public_summary", "management_followup_draft", "tenant_update_draft", "generated_at", "used_llm"]]
+        tenant_actions = [
+            row
+            for row in session.query(WatchdogAction).filter(WatchdogAction.status.in_(["open", "pending", "failed"])).all()
+            if action_is_tenant_visible(row)
+        ]
+    if tenant_actions:
+        action_needed = "; ".join((row.title or row.action_type or "Tenant action needed") for row in tenant_actions[:3])
+    else:
+        action_needed = "No tenant action needed"
+    values = [[
+        "period_start",
+        "period_end",
+        "tenant_update",
+        "watchdog_status",
+        "tenant_action_needed",
+        "generated_at",
+        "used_llm",
+    ]]
     for row in sorted(digests, key=lambda item: item.generated_at or "", reverse=True):
         values.append([
             normalize_timestamp(row.period_start) or "",
             normalize_timestamp(row.period_end) or "",
-            row.public_summary or "",
-            row.management_followup_draft or "",
-            row.tenant_update_draft or "",
+            row.tenant_update_draft or row.public_summary or "",
+            "DOB/NYC record checks run automatically. Management follow-up drafts are internal.",
+            action_needed,
             normalize_timestamp(row.generated_at) or "",
             "YES" if row.used_llm else "",
         ])

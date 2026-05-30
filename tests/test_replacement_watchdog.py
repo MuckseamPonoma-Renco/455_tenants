@@ -1,6 +1,6 @@
 import os
 
-from packages.db import AccessNeedPrivate, Incident, PublicRecordWatch, WatchdogAction, get_session
+from packages.db import AccessNeedPrivate, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction, get_session
 from packages.project_watch.rules import evaluate_project_rules
 from packages.public_records import sync as public_record_sync
 from packages.public_records.sync import sync_public_records, upsert_public_record
@@ -97,6 +97,7 @@ def test_sheet_initializer_includes_watchdog_tabs(monkeypatch):
     tabs = init_sheet.tabs_to_initialize()
     for tab in ["ElevatorWatch", "ProjectStatus", "PublicRecords", "WatchdogChecks", "ActionQueue", "WeeklyDigest"]:
         assert tab in tabs
+    assert "management_followup_draft" not in tabs["WeeklyDigest"]
     assert "AccessNeeds_Private" not in tabs
 
     monkeypatch.setenv("ENABLE_PRIVATE_ACCESS_NEEDS_SHEET", "1")
@@ -145,6 +146,78 @@ def test_first_public_record_sync_baselines_historical_rows(client, monkeypatch)
         assert session.query(WatchdogAction).filter_by(action_type="new_record_needs_verification").count() == 0
 
 
+def test_public_record_sync_continues_after_partial_source_failure(client, monkeypatch):
+    def flaky_fetch(source, params, limit=500):
+        if source.key == "dob_complaints":
+            raise RuntimeError("temporary Socrata outage")
+        if source.key == "dob_now_elevator_applications":
+            return [_elevator_application_row()]
+        return []
+
+    monkeypatch.setattr(public_record_sync, "fetch_rows", flaky_fetch)
+
+    with get_session() as session:
+        result = sync_public_records(session)
+        session.commit()
+
+        assert result["created"] == 1
+        assert result["source_errors"] == 1
+        assert session.query(PublicRecordWatch).count() == 1
+        action = session.query(WatchdogAction).filter_by(action_type="public_record_source_error").one()
+        assert action.status == "open"
+        assert "dob_complaints" in (action.detail or "")
+
+    monkeypatch.setattr(public_record_sync, "fetch_rows", lambda source, params, limit=500: [])
+    with get_session() as session:
+        result = sync_public_records(session)
+        session.commit()
+
+        assert result["source_errors"] == 0
+        action = session.query(WatchdogAction).filter_by(action_type="public_record_source_error").one()
+        assert action.status == "completed"
+
+
+def test_replacement_watchdog_generates_weekly_digest_automatically(client, monkeypatch):
+    monkeypatch.setattr(public_record_sync, "fetch_rows", lambda source, params, limit=500: [])
+
+    with get_session() as session:
+        first = public_record_sync.sync_replacement_watchdog(session)
+        second = public_record_sync.sync_replacement_watchdog(session)
+        session.commit()
+
+        assert first["weekly_digest_created"] == 1
+        assert second["weekly_digest_created"] == 0
+        assert session.query(public_record_sync.WeeklyDigest).count() == 1
+
+
+def test_weekly_digest_sheet_keeps_management_draft_internal(client, monkeypatch):
+    with get_session() as session:
+        session.add(public_record_sync.WeeklyDigest(
+            period_start="2026-05-22T00:00:00Z",
+            period_end="2026-05-29T00:00:00Z",
+            public_summary="Tenant-safe public summary.",
+            management_followup_draft=(
+                "Please provide the current DOB filing number, permit status, expected start date, "
+                "and posting plan for the 455 Ocean Parkway elevator replacement."
+            ),
+            tenant_update_draft="Residents do not need to search DOB manually.",
+            generated_at="2026-05-29T00:00:00Z",
+            used_llm=False,
+        ))
+        session.commit()
+
+    fake = _FakeService()
+    monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-123")
+    monkeypatch.setattr(sheets_sync, "_service", lambda: fake)
+    sheets_sync.sync_weekly_digest_to_sheets()
+    body_text = str([kwargs.get("body") for kind, kwargs in fake.calls if kind == "update"])
+    assert "tenant_update" in body_text
+    assert "No tenant action needed" in body_text
+    assert "Residents do not need to search DOB manually." in body_text
+    assert "management_followup_draft" not in body_text
+    assert "Please provide the current DOB filing number" not in body_text
+
+
 def test_unverified_public_records_are_not_presented_as_verified(client, monkeypatch):
     with get_session() as session:
         record, _ = upsert_public_record(session, "dob_now_elevator_applications", _elevator_application_row())
@@ -153,19 +226,38 @@ def test_unverified_public_records_are_not_presented_as_verified(client, monkeyp
 
     response = client.get("/api/project/records", headers=auth_headers())
     assert response.status_code == 200, response.text
-    api_record = next(row for row in response.json()["records"] if row["id"] == record_id)
-    assert api_record["needs_human_verification"] is True
-    assert api_record["human_verified_at"] is None
+    assert all(row["id"] != record_id for row in response.json()["records"])
 
     fake = _FakeService()
     monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-123")
     monkeypatch.setattr(sheets_sync, "_service", lambda: fake)
     sheets_sync.sync_public_records_to_sheets()
     body_text = str([kwargs.get("body") for kind, kwargs in fake.calls if kind == "update"])
-    assert "YES - review needed" in body_text
+    assert "YES - review needed" not in body_text
 
 
-def test_machine_verification_accepts_official_elevator_matches_and_closes_verification_actions():
+def test_tenant_public_records_exclude_unrelated_trusted_building_rows(client):
+    with get_session() as session:
+        record, _ = upsert_public_record(session, "hpd_violations", {
+            "violationid": "HPD-TRUSTED-1",
+            "buildingid": "123",
+            "bin": "3126839",
+            "bbl": "3053900074",
+            "currentstatus": "Open",
+            "violationstatus": "Open",
+            "novdescription": "Repair plaster in apartment.",
+            "inspectiondate": "2026-05-01T00:00:00.000",
+        })
+        apply_machine_verification(session)
+        session.commit()
+        record_id = record.id
+
+    response = client.get("/api/project/records", headers=auth_headers())
+    assert response.status_code == 200, response.text
+    assert all(row["id"] != record_id for row in response.json()["records"])
+
+
+def test_machine_verification_accepts_official_elevator_matches_and_closes_verification_actions(client):
     with get_session() as session:
         application, _ = upsert_public_record(session, "dob_now_elevator_applications", _elevator_application_row())
         device, _ = upsert_public_record(session, "dob_now_elevator_device_details", {
@@ -211,7 +303,7 @@ def test_machine_verification_accepts_official_elevator_matches_and_closes_verif
         assert result["verification_actions_auto_closed"] >= 2
 
 
-def test_machine_verification_keeps_weak_matches_in_review():
+def test_machine_verification_keeps_weak_matches_in_review(client):
     with get_session() as session:
         device, _ = upsert_public_record(session, "dob_now_elevator_device_details", {
             "job_filing_number": "UNLINKED-I1",
@@ -224,6 +316,7 @@ def test_machine_verification_keeps_weak_matches_in_review():
         session.commit()
 
         assert device.needs_human_verification is True
+        assert device.visible_public is False
         assert device.machine_verification_status == "needs_review"
         assert (device.machine_confidence or 0) < 80
 
@@ -245,6 +338,7 @@ def test_watchdog_action_sheet_only_shows_active_actions(client, monkeypatch):
             title="Resident photo needed: lobby/start-date notice",
             detail="Should appear in active queue.",
             status="open",
+            owner_role="resident",
             created_at="2026-05-02T00:00:00Z",
             updated_at="2026-05-02T00:00:00Z",
         ))
@@ -268,6 +362,7 @@ def test_watchdog_action_sheet_only_shows_active_actions(client, monkeypatch):
 def test_api_project_returns_three_streams(client):
     with get_session() as session:
         upsert_public_record(session, "dob_now_elevator_applications", _elevator_application_row())
+        apply_machine_verification(session)
         session.add(Incident(
             incident_id="tenant-elevator-1",
             category="elevator",
@@ -323,7 +418,9 @@ def test_elevator_watch_public_view_keeps_manual_work_to_physical_checks(client,
         evaluate_project_rules(session)
         session.flush()
         assert session.query(WatchdogAction).filter_by(action_type="permit_issued", status="open").count() == 0
-        assert session.query(WatchdogAction).filter_by(action_type="active_official_elevator_record", status="open").count() == 1
+        assert session.query(WatchdogAction).filter_by(action_type="active_official_elevator_record", status="open").count() == 0
+        management_action = session.query(WatchdogAction).filter_by(action_type="no_public_filing_after_30_days", status="open").one()
+        assert management_action.owner_role == "tenant_association"
         session.commit()
 
     response = client.get("/api/project", headers=auth_headers())
@@ -344,6 +441,104 @@ def test_elevator_watch_public_view_keeps_manual_work_to_physical_checks(client,
     assert "What people need to know" in body_text
     assert "No current full-replacement permit" in body_text
     assert "No resident DOB search needed" in body_text
+
+
+def test_tenant_queue_shows_management_request_when_no_current_replacement_filing(client, monkeypatch):
+    with get_session() as session:
+        upsert_public_record(session, "dob_now_elevator_applications", {
+            **_elevator_application_row("Signed Off"),
+            "job_filing_number": "BOLD-I1",
+            "descriptionofwork": "Provide New Door Lock Monitoring System.",
+            "signedoff_date": "2021-07-21T00:00:00.000",
+            "permit_expiration_date": "2021-11-08T00:00:00.000",
+        })
+        evaluate_project_rules(session)
+        session.commit()
+
+    response = client.get("/api/project/actions", headers=auth_headers())
+    assert response.status_code == 200, response.text
+    actions = response.json()["actions"]
+    assert any(row["action_type"] == "no_public_filing_after_30_days" for row in actions)
+    action = next(row for row in actions if row["action_type"] == "no_public_filing_after_30_days")
+    assert action["owner_role"] == "tenant_association"
+    assert "DOB filing has been submitted" in action["title"]
+    assert "official public records" in action["draft_message"]
+    assert "If not, please share the expected filing date" in action["draft_message"]
+
+    fake = _FakeService()
+    monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-123")
+    monkeypatch.setattr(sheets_sync, "_service", lambda: fake)
+    sheets_sync.sync_watchdog_actions_to_sheets()
+    body_text = str([kwargs.get("body") for kind, kwargs in fake.calls if kind == "update"])
+    assert "Ask management whether the DOB filing has been submitted" in body_text
+    assert "If not, please share the expected filing date" in body_text
+    assert "No tenant action needed" not in body_text
+
+
+def test_management_request_closes_when_current_replacement_filing_exists(client):
+    with get_session() as session:
+        session.add(WatchdogAction(
+            action_type="no_public_filing_after_30_days",
+            severity="watch",
+            title="Ask management whether the DOB filing has been submitted",
+            detail="Existing management request should close when a matching filing appears.",
+            status="open",
+            owner_role="tenant_association",
+            created_at="2026-05-01T00:00:00Z",
+            updated_at="2026-05-01T00:00:00Z",
+        ))
+        upsert_public_record(session, "dob_now_elevator_applications", _elevator_application_row("Filed"))
+        evaluate_project_rules(session)
+        session.commit()
+
+        action = session.query(WatchdogAction).filter_by(action_type="no_public_filing_after_30_days").one()
+        assert action.status == "completed"
+
+
+def test_existing_311_case_suppresses_tenant_visible_elevator_action(client):
+    with get_session() as session:
+        session.add(Incident(
+            incident_id="tenant-elevator-with-case",
+            category="elevator",
+            asset="elevator_north",
+            severity=4,
+            status="open",
+            start_ts="2026-05-01T00:00:00Z",
+            start_ts_epoch=1777593600,
+            last_ts_epoch=1777593600,
+            title="North elevator out",
+            summary="Tenant observed north elevator outage.",
+            proof_refs="",
+            report_count=1,
+            witness_count=1,
+            confidence=80,
+            needs_review=False,
+            updated_at="2026-05-01T00:00:00Z",
+        ))
+        session.add(ServiceRequestCase(
+            service_request_number="311-27654875",
+            incident_id="tenant-elevator-with-case",
+            source="portal_playwright",
+            complaint_type="Elevator",
+            status="In Progress",
+            submitted_at="2026-05-02T00:00:00Z",
+        ))
+        session.add(WatchdogAction(
+            action_type="active_phase_one_elevator_down",
+            severity="yellow",
+            title="One elevator down during replacement watch",
+            detail="Existing action should close because the system already has a 311 case.",
+            status="open",
+            owner_role="operator",
+            related_incident_id="tenant-elevator-with-case",
+            created_at="2026-05-02T00:00:00Z",
+            updated_at="2026-05-02T00:00:00Z",
+        ))
+        evaluate_project_rules(session)
+        session.commit()
+
+        action = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
+        assert action.status == "completed"
 
 
 def test_report_still_ingests_elevator_outage_and_restore_events(client):

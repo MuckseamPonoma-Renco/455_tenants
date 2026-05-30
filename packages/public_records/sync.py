@@ -16,7 +16,7 @@ from packages.db import (
     WatchdogAction,
     WeeklyDigest,
 )
-from packages.project_watch.rules import action_for_changed_record, action_for_new_record, evaluate_project_rules, now_iso
+from packages.project_watch.rules import action_for_changed_record, action_for_new_record, ensure_action, evaluate_project_rules, now_iso
 from packages.public_records.config import building_bbl_compact, building_bin, source_configs
 from packages.public_records.normalize import normalize_record
 from packages.public_records.nyc_open_data import fetch_rows, query_url
@@ -26,6 +26,7 @@ from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 
 BUILDING_KEY = "455-ocean-parkway"
 VISIBLE_ACTION_STATUSES = ("open", "pending", "failed")
+LAST_FETCH_ERRORS: list[dict[str, str]] = []
 
 
 def _source_map():
@@ -128,16 +129,34 @@ def _query_specs() -> list[tuple[str, dict[str, str]]]:
     ]
 
 
+def _fetch_error_payload(source_key: str, params: dict[str, str], exc: Exception) -> dict[str, str]:
+    return {
+        "source_key": source_key,
+        "params": json.dumps(params, sort_keys=True),
+        "error": str(exc)[:500],
+        "checked_at": now_iso(),
+    }
+
+
 def fetch_public_record_rows() -> list[tuple[str, dict[str, Any], str]]:
+    global LAST_FETCH_ERRORS
     sources = _source_map()
     fetched: list[tuple[str, dict[str, Any], str]] = []
+    errors: list[dict[str, str]] = []
     elevator_jobs: set[str] = set()
     device_ids: set[str] = set()
 
-    for source_key, params in _query_specs():
+    def fetch_source(source_key: str, params: dict[str, str], *, limit: int = 500) -> tuple[str, list[dict[str, Any]]]:
         source = sources[source_key]
-        url = query_url(source, {"$limit": "500", **params})
-        rows = fetch_rows(source, params, limit=500)
+        url = query_url(source, {"$limit": str(limit), **params})
+        try:
+            return url, fetch_rows(source, params, limit=limit)
+        except Exception as exc:
+            errors.append(_fetch_error_payload(source_key, params, exc))
+            return url, []
+
+    for source_key, params in _query_specs():
+        url, rows = fetch_source(source_key, params)
         for row in rows:
             fetched.append((source_key, row, url))
             if source_key == "dob_now_elevator_applications" and row.get("job_filing_number"):
@@ -145,19 +164,55 @@ def fetch_public_record_rows() -> list[tuple[str, dict[str, Any], str]]:
             if source_key == "dob_now_elevator_safety_compliance" and row.get("device_number"):
                 device_ids.add(str(row["device_number"]))
 
-    device_source = sources["dob_now_elevator_device_details"]
     for job in sorted(elevator_jobs):
         params = {"job_filing_number": job}
-        url = query_url(device_source, {"$limit": "500", **params})
-        for row in fetch_rows(device_source, params, limit=500):
+        url, rows = fetch_source("dob_now_elevator_device_details", params)
+        for row in rows:
             fetched.append(("dob_now_elevator_device_details", row, url))
     for device_id in sorted(device_ids):
         params = {"device_id": device_id}
-        url = query_url(device_source, {"$limit": "500", **params})
-        for row in fetch_rows(device_source, params, limit=500):
+        url, rows = fetch_source("dob_now_elevator_device_details", params)
+        for row in rows:
             fetched.append(("dob_now_elevator_device_details", row, url))
 
+    LAST_FETCH_ERRORS = errors
     return fetched
+
+
+def _sync_source_error_action(session, errors: list[dict[str, str]]) -> None:
+    open_actions = session.scalars(
+        select(WatchdogAction).where(
+            WatchdogAction.action_type == "public_record_source_error",
+            WatchdogAction.status.in_(["open", "pending"]),
+        )
+    ).all()
+    if not errors:
+        for action in open_actions:
+            action.status = "completed"
+            action.completed_at = now_iso()
+            action.updated_at = now_iso()
+        return
+
+    source_names = sorted({row["source_key"] for row in errors})
+    detail_lines = [
+        f"{row['source_key']} {row['params']}: {row['error']}"
+        for row in errors[:6]
+    ]
+    if len(errors) > 6:
+        detail_lines.append(f"...and {len(errors) - 6} more source/query failure(s).")
+    ensure_action(
+        session,
+        action_type="public_record_source_error",
+        severity="watch",
+        title="Public-record sync had partial source failures",
+        detail=(
+            "The watchdog kept using the sources that responded, but these official-source queries failed: "
+            + "; ".join(detail_lines)
+        ),
+        due_at=(datetime.now(tz=timezone.utc) + timedelta(days=1)).isoformat(),
+        owner_role="system",
+        draft_message=f"Retry public-record sync; affected source(s): {', '.join(source_names)}.",
+    )
 
 
 def upsert_public_record(
@@ -214,13 +269,17 @@ def upsert_public_record(
 
 
 def sync_public_records(session, *, baseline: bool | None = None) -> dict[str, int]:
-    counts = {"fetched": 0, "created": 0, "baseline_created": 0, "changed": 0, "unchanged": 0}
+    counts = {"fetched": 0, "created": 0, "baseline_created": 0, "changed": 0, "unchanged": 0, "source_errors": 0}
     seen: set[tuple[str, str, str]] = set()
     existing_sources = {
         source_system
         for (source_system,) in session.execute(select(PublicRecordWatch.source_system).distinct()).all()
     }
-    for source_key, row, url in fetch_public_record_rows():
+    fetched_rows = fetch_public_record_rows()
+    fetch_errors = list(LAST_FETCH_ERRORS)
+    counts["source_errors"] = len(fetch_errors)
+    _sync_source_error_action(session, fetch_errors)
+    for source_key, row, url in fetched_rows:
         source = _source_map()[source_key]
         normalized = normalize_record(source, row, source_url=url)
         seen_key = (normalized["source_system"], normalized["record_type"], normalized["record_key"])
@@ -247,10 +306,24 @@ def sync_replacement_watchdog(session) -> dict[str, int]:
     ensure_default_project(session)
     counts = sync_public_records(session)
     actions = evaluate_project_rules(session)
+    digest = ensure_recent_weekly_digest(session)
     session.flush()
-    counts["actions_open"] = session.query(WatchdogAction).filter(WatchdogAction.status == "open").count()
+    open_actions = session.query(WatchdogAction).filter(WatchdogAction.status == "open").all()
+    counts["actions_open"] = sum(1 for action in open_actions if action_is_tenant_visible(action))
     counts["actions_touched"] = len(actions)
+    counts["weekly_digest_created"] = 1 if digest else 0
     return counts
+
+
+def ensure_recent_weekly_digest(session, *, max_age_days: int = 7) -> WeeklyDigest | None:
+    latest = session.scalars(
+        select(WeeklyDigest).order_by(WeeklyDigest.generated_at.desc().nullslast())
+    ).first()
+    latest_epoch = parse_ts_to_epoch(latest.generated_at) if latest else None
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    if latest_epoch and (now_epoch - latest_epoch) < max_age_days * 86400:
+        return None
+    return generate_weekly_digest(session)
 
 
 def verify_public_record(session, record_id: int, *, verified_by: str | None = None) -> PublicRecordWatch | None:
@@ -651,6 +724,18 @@ def public_record_payload(row: PublicRecordWatch) -> dict[str, Any]:
     }
 
 
+def public_record_is_tenant_trusted(row: PublicRecordWatch) -> bool:
+    if not row.visible_public:
+        return False
+    if not _is_elevator_record(row):
+        return False
+    if row.needs_human_verification:
+        return False
+    if row.machine_verification_status == "official_conflict":
+        return False
+    return bool(row.human_verified_at or row.machine_verified_at)
+
+
 def action_payload(row: WatchdogAction) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -670,18 +755,27 @@ def action_payload(row: WatchdogAction) -> dict[str, Any]:
     }
 
 
+def action_is_tenant_visible(row: WatchdogAction) -> bool:
+    return row.status in VISIBLE_ACTION_STATUSES and row.owner_role in {"resident", "tenant_association"}
+
+
 def project_state(session) -> dict[str, Any]:
     project = session.scalar(select(CapitalProject).where(CapitalProject.building_key == BUILDING_KEY))
     if not project:
         project = ensure_default_project(session)
         session.flush()
     milestones = session.scalars(select(ProjectMilestone).where(ProjectMilestone.project_id == project.id)).all()
-    records = session.scalars(select(PublicRecordWatch).order_by(PublicRecordWatch.last_changed_at.desc().nullslast())).all()
+    records = [
+        row
+        for row in session.scalars(select(PublicRecordWatch).order_by(PublicRecordWatch.last_changed_at.desc().nullslast())).all()
+        if public_record_is_tenant_trusted(row)
+    ]
     actions = session.scalars(
         select(WatchdogAction)
         .where(WatchdogAction.status.in_(VISIBLE_ACTION_STATUSES))
         .order_by(WatchdogAction.created_at.desc().nullslast())
     ).all()
+    tenant_actions = [row for row in actions if action_is_tenant_visible(row)]
     checks = session.scalars(select(ComplianceCheck).order_by(ComplianceCheck.checked_at.desc().nullslast())).all()
     elevator_incidents = session.scalars(
         select(Incident)
@@ -729,7 +823,7 @@ def project_state(session) -> dict[str, Any]:
                 for row in service_requests
             ],
         },
-        "actions": [action_payload(row) for row in actions],
+        "actions": [action_payload(row) for row in tenant_actions],
         "public_view": public_elevator_watch_items(session),
         "checks": [
             {
@@ -767,9 +861,11 @@ def project_briefing(session) -> dict[str, Any]:
         f"Tenant reports show {len(tenant_incidents)} recent elevator record(s). Residents only need to report real conditions or send a hallway-posting photo when the public view asks for it."
     )
     management_draft = (
-        "Please provide the current DOB filing number, permit status, expected start date, and posting plan for the "
-        "455 Ocean Parkway elevator replacement. Tenants are tracking management claims, official public records, "
-        "and observed elevator service separately."
+        "Please confirm whether a DOB NOW elevator filing has been submitted for the full elevator replacement "
+        "at 455 Ocean Parkway. If yes, please share the filing number, current status, expected start date, and "
+        "required posting plan. If not, please share the expected filing date and what approvals, drawings, "
+        "contracts, or equipment decisions remain before submission. Tenants are tracking management claims, "
+        "official public records, and observed elevator service separately."
     )
     if next_action and next_action.get("draft_message"):
         management_draft = next_action["draft_message"]

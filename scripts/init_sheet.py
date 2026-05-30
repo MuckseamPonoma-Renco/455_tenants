@@ -48,8 +48,8 @@ TABS = {
         "source_record_id", "related_incident_id", "draft_message", "created_at", "completed_at",
     ],
     "WeeklyDigest": [
-        "period_start", "period_end", "public_summary", "management_followup_draft",
-        "tenant_update_draft", "generated_at", "used_llm",
+        "period_start", "period_end", "tenant_update", "watchdog_status",
+        "tenant_action_needed", "generated_at", "used_llm",
     ],
 }
 

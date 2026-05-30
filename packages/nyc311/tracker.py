@@ -3,9 +3,11 @@ from typing import Any
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
+from packages.audit import append_audit_event
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase
 from packages.timeutil import normalize_timestamp
 
@@ -180,6 +182,13 @@ def _tracker_endpoint() -> str:
     return os.environ.get("NYC311_TRACKER_ENDPOINT", "https://data.cityofnewyork.us/resource/erm2-nwe9.json")
 
 
+def _tracker_retries() -> int:
+    try:
+        return max(1, int(os.environ.get("NYC311_TRACKER_RETRIES", "3")))
+    except ValueError:
+        return 3
+
+
 def fetch_live_status(sr_number: str) -> dict | None:
     normalized = normalize_sr_number(sr_number)
     if not normalized:
@@ -190,10 +199,20 @@ def fetch_live_status(sr_number: str) -> dict | None:
         "$select": "unique_key,status,agency,complaint_type,descriptor,created_date,closed_date,resolution_description,resolution_action_updated_date",
         "unique_key": normalized.split("-", 1)[1],
     }
+    attempts = _tracker_retries()
     with httpx.Client(timeout=20.0) as client:
-        response = client.get(endpoint, params=query)
-        response.raise_for_status()
-        payload = response.json()
+        for attempt in range(1, attempts + 1):
+            try:
+                response = client.get(endpoint, params=query)
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                retryable_status = status is not None and (status >= 500 or status == 429)
+                if attempt >= attempts or (status is not None and not retryable_status):
+                    raise
+                time.sleep(min(2.0, 0.25 * attempt))
         if isinstance(payload, list) and payload:
             return payload[0]
     return None
@@ -340,16 +359,31 @@ def sync_all_case_statuses(session, *, portal_fallback: bool | None = None, head
     rows = session.scalars(select(ServiceRequestCase).order_by(ServiceRequestCase.submitted_at.desc())).all()
     portal_checked = 0
     for case in rows:
-        live = fetch_live_status(case.service_request_number)
         source = "nyc_open_data"
-        updated = apply_open_data_status(case, live) if live else False
+        try:
+            live = fetch_live_status(case.service_request_number)
+            updated = apply_open_data_status(case, live) if live else False
+        except Exception as exc:
+            updated = False
+            append_audit_event(
+                "NYC311_STATUS_OPEN_DATA_ERROR",
+                None,
+                {"service_request_number": case.service_request_number, "error": str(exc)[:500]},
+            )
         if not updated and use_portal_fallback and portal_checked < portal_max_cases:
             portal_checked += 1
-            from packages.nyc311.portal import lookup_service_request_status
+            try:
+                from packages.nyc311.portal import lookup_service_request_status
 
-            lookup = lookup_service_request_status(case.service_request_number, headless=headless)
-            updated = apply_portal_lookup_status(case, lookup)
-            source = "nyc311_portal"
+                lookup = lookup_service_request_status(case.service_request_number, headless=headless)
+                updated = apply_portal_lookup_status(case, lookup)
+                source = "nyc311_portal"
+            except Exception as exc:
+                append_audit_event(
+                    "NYC311_STATUS_PORTAL_ERROR",
+                    None,
+                    {"service_request_number": case.service_request_number, "error": str(exc)[:500]},
+                )
         if updated:
             results.append({"service_request_number": case.service_request_number, "status": case.status, "source": source})
     return results

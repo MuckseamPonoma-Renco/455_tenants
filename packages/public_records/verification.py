@@ -305,6 +305,7 @@ def apply_machine_verification(session) -> dict[str, int]:
             next_verified_by = None
 
         next_needs_human = False if (record.human_verified_at or result.machine_verified) else True
+        next_visible_public = bool(record.human_verified_at or result.machine_verified)
         changed = (
             record.machine_verification_status != result.status
             or int(record.machine_confidence or 0) != result.confidence
@@ -313,6 +314,7 @@ def apply_machine_verification(session) -> dict[str, int]:
             or record.machine_verification_summary != result.summary
             or (record.corroborating_records_json or None) != (json.dumps(result.corroborating_records, sort_keys=True) if result.corroborating_records else None)
             or bool(record.needs_human_verification) != bool(next_needs_human)
+            or bool(record.visible_public) != next_visible_public
         )
         if changed:
             record.machine_verification_status = result.status
@@ -322,6 +324,7 @@ def apply_machine_verification(session) -> dict[str, int]:
             record.machine_verification_summary = result.summary
             record.corroborating_records_json = json.dumps(result.corroborating_records, sort_keys=True) if result.corroborating_records else None
             record.needs_human_verification = next_needs_human
+            record.visible_public = next_visible_public
             counts["machine_updated"] += 1
 
         if result.machine_verified or result.status != "official_conflict":

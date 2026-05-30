@@ -37,6 +37,16 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
+def _run_step(label: str, func):
+    try:
+        return func()
+    except Exception as exc:
+        append_audit_event("AUTOMATION_STEP_ERROR", None, {"step": label, "error": str(exc)[:500]})
+        daily_hash_chain()
+        _log(f"{label} error: {exc}")
+        return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Tenant Issue OS automation loop.")
     parser.add_argument("--headful", action="store_true", help="Run Playwright with a visible browser window.")
@@ -103,21 +113,28 @@ def main() -> None:
         did_work = False
         try:
             now = time.monotonic()
-            if next_status_sync_at is not None and now >= next_status_sync_at:
-                result = sync_311_statuses()
-                _log(f"status sync result: {result}")
-                next_status_sync_at = time.monotonic() + status_sync_seconds
-                did_work = True
-
             if next_public_record_sync_at is not None and now >= next_public_record_sync_at:
-                result = resync_replacement_watchdog()
-                _log(f"replacement watchdog sync result: {result}")
+                result = _run_step("replacement watchdog sync", resync_replacement_watchdog)
+                if result is not None:
+                    _log(f"replacement watchdog sync result: {result}")
+                    did_work = True
                 next_public_record_sync_at = time.monotonic() + public_record_sync_seconds
-                did_work = True
+
+            if next_status_sync_at is not None and now >= next_status_sync_at:
+                result = _run_step("status sync", sync_311_statuses)
+                if result is not None:
+                    _log(f"status sync result: {result}")
+                    did_work = True
+                next_status_sync_at = time.monotonic() + status_sync_seconds
 
             processed = 0
             while processed < burst_size:
-                result = run_portal_filing_once(headless=headless, verify_lookup=verify_lookup)
+                result = _run_step(
+                    "portal filing",
+                    lambda: run_portal_filing_once(headless=headless, verify_lookup=verify_lookup),
+                )
+                if result is None:
+                    break
                 job_meta = result.get("job")
                 if job_meta is None and result.get("job_id") is None:
                     break

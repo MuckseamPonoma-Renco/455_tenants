@@ -88,6 +88,35 @@ def test_sync_all_case_statuses_uses_portal_fallback_when_open_data_has_no_row(c
         assert case.raw_status_json is not None
 
 
+def test_sync_all_case_statuses_continues_after_one_lookup_error(client, monkeypatch):
+    def fake_fetch(sr_number):
+        if sr_number == "311-11111111":
+            raise RuntimeError("temporary 503")
+        return {
+            "unique_key": sr_number.split("-", 1)[1],
+            "status": "Closed",
+            "agency": "DOB",
+            "complaint_type": "Elevator",
+            "closed_date": "2026-05-01T12:00:00.000",
+        }
+
+    monkeypatch.setattr(tracker, "fetch_live_status", fake_fetch)
+
+    with get_session() as session:
+        session.add(ServiceRequestCase(service_request_number="311-11111111", status="submitted"))
+        session.add(ServiceRequestCase(service_request_number="311-22222222", status="submitted"))
+        session.commit()
+
+        results = tracker.sync_all_case_statuses(session, portal_fallback=False)
+        session.commit()
+
+        first = session.query(ServiceRequestCase).filter_by(service_request_number="311-11111111").one()
+        second = session.query(ServiceRequestCase).filter_by(service_request_number="311-22222222").one()
+        assert results == [{"service_request_number": "311-22222222", "status": "Closed", "source": "nyc_open_data"}]
+        assert first.status == "submitted"
+        assert second.status == "Closed"
+
+
 def test_portal_lookup_status_does_not_persist_navigation_text_as_status(client):
     with get_session() as session:
         case = ServiceRequestCase(

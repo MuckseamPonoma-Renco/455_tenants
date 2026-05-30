@@ -81,13 +81,13 @@ Returns:
 Works without an API key via deterministic fallback text, and improves automatically once `OPENAI_API_KEY` is set.
 
 ## GET /api/project
-Returns the elevator replacement watchdog state split into management claims, official public records, and tenant-observed reality.
+Returns the tenant-safe elevator replacement watchdog state split into management claims, trusted official public records, and tenant-observed reality. Weak or conflicting official-record matches are kept internal until verified.
 
 ## GET /api/project/records
-Returns imported public records. Rows include `machine_verification_status`, `machine_confidence`, `machine_verified_at`, and `needs_human_verification`. Machine verification is official-source corroboration, not a human confirmation.
+Returns tenant-visible trusted elevator/replacement-relevant public records. Rows include `machine_verification_status`, `machine_confidence`, and `machine_verified_at`. Machine verification is official-source corroboration, not a human confirmation.
 
 ## GET /api/project/actions
-Returns replacement-watchdog action queue items.
+Returns tenant-visible replacement-watchdog action queue items. Internal operator/system monitoring is not exposed here.
 
 ## GET /api/project/briefing
 Returns structured project state, tenant-ready update draft, management follow-up draft, and next best action. Uses deterministic fallback text.

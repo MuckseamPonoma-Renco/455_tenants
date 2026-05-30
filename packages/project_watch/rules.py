@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from packages.db import Incident, PublicRecordWatch, WatchdogAction
+from packages.db import FilingJob, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction
 from packages.timeutil import parse_ts_to_epoch
 
 
@@ -144,7 +144,13 @@ def _permit_is_closed_or_expired(record: PublicRecordWatch) -> bool:
 
 
 def _is_current_replacement_permit(record: PublicRecordWatch) -> bool:
-    if not record.permit_issued_at or record.record_type != "elevator_permit_application":
+    if not record.permit_issued_at or not _is_current_replacement_filing(record):
+        return False
+    return True
+
+
+def _is_current_replacement_filing(record: PublicRecordWatch) -> bool:
+    if record.record_type != "elevator_permit_application":
         return False
     if _permit_is_closed_or_expired(record):
         return False
@@ -164,7 +170,33 @@ def _is_current_replacement_permit(record: PublicRecordWatch) -> bool:
     )
 
 
+def _complete_open_actions(session, action_type: str, *, keep_related_incident_ids: set[str] | None = None) -> None:
+    keep_related_incident_ids = keep_related_incident_ids or set()
+    for action in session.scalars(
+        select(WatchdogAction).where(
+            WatchdogAction.action_type == action_type,
+            WatchdogAction.status.in_(["open", "pending"]),
+        )
+    ).all():
+        if action.related_incident_id and action.related_incident_id in keep_related_incident_ids:
+            continue
+        action.status = "completed"
+        action.completed_at = now_iso()
+        action.updated_at = now_iso()
+
+
+def _incident_has_automated_followup(session, incident_id: str) -> bool:
+    cases = session.scalars(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == incident_id)).all()
+    for case in cases:
+        status = (case.status or "").casefold()
+        if not any(word in status for word in ("closed", "resolved", "dismissed", "cancel")):
+            return True
+    jobs = session.scalars(select(FilingJob).where(FilingJob.incident_id == incident_id)).all()
+    return any((job.state or "").casefold() in {"pending", "claimed", "submitted"} for job in jobs)
+
+
 def evaluate_project_rules(session) -> list[WatchdogAction]:
+    session.flush()
     actions: list[WatchdogAction] = []
     records = session.scalars(select(PublicRecordWatch)).all()
     elevator_filing_records = [
@@ -172,25 +204,14 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
         if row.record_type in {"elevator_permit_application", "elevator_device_detail", "elevator_safety_compliance"}
     ]
     permit_records = [row for row in elevator_filing_records if row.record_type == "elevator_permit_application"]
+    current_replacement_filing_ids: set[int] = set()
     current_replacement_permit_ids: set[int] = set()
-
-    if not permit_records:
-        actions.append(
-            ensure_action(
-                session,
-                action_type="no_public_filing_after_30_days",
-                severity="watch",
-                title="Ask management for the actual DOB filing number",
-                detail="Management described a replacement project, but the watchdog has not seen a matching DOB NOW elevator permit application for the configured property.",
-                due_at=_due(7),
-                owner_role="operator",
-                draft_message="Can you share the DOB filing number and current permit status for the full elevator replacement at 455 Ocean Parkway?",
-            )
-        )
 
     for record in permit_records:
         status = (record.status or "").casefold()
         detail = (record.status_detail or "").casefold()
+        if _is_current_replacement_filing(record):
+            current_replacement_filing_ids.add(record.id)
         if any(word in status or word in detail for word in ("objection", "incomplete", "hold")):
             actions.append(
                 ensure_action(
@@ -252,8 +273,37 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                         due_at=_due(2),
                         owner_role="operator",
                         source_record_id=record.id,
-                    )
                 )
+            )
+
+    if not current_replacement_filing_ids:
+        actions.append(
+            ensure_action(
+                session,
+                action_type="no_public_filing_after_30_days",
+                severity="watch",
+                title="Ask management whether the DOB filing has been submitted",
+                detail=(
+                    "Management described a replacement project, but automatic DOB/NYC checks have not found "
+                    "a current full-replacement elevator filing for 455 Ocean Parkway. A tenant representative "
+                    "should ask whether a DOB NOW filing exists yet. If it exists, management should provide the "
+                    "filing number and status; if it does not, management should provide the expected filing date "
+                    "and what approvals, drawings, contracts, or equipment decisions remain before submission."
+                ),
+                due_at=_due(7),
+                owner_role="tenant_association",
+                draft_message=(
+                    "Please confirm whether a DOB NOW elevator filing has been submitted for the full elevator "
+                    "replacement at 455 Ocean Parkway. If yes, please share the filing number, current status, "
+                    "expected start date, and required posting plan. If not, please share the expected filing date "
+                    "and what approvals, drawings, contracts, or equipment decisions remain before submission. "
+                    "Tenants are tracking management claims, official public records, and observed elevator service "
+                    "separately so updates stay accurate."
+                ),
+            )
+        )
+    else:
+        _complete_open_actions(session, "no_public_filing_after_30_days")
 
     for stale_action in session.scalars(
         select(WatchdogAction).where(
@@ -266,33 +316,13 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
             stale_action.completed_at = now_iso()
             stale_action.updated_at = now_iso()
 
-    for record in records:
-        if not _is_elevator_public_record(record):
-            continue
-        status = (record.status or "").casefold()
-        if record.record_type in {"dob_ecb_violation", "dob_violation", "dob_complaint"} and any(
-            word in status for word in ("active", "open", "pending")
-        ):
-            actions.append(
-                ensure_action(
-                    session,
-                    action_type="active_official_elevator_record",
-                    severity="watch",
-                    title="Active DOB elevator record found",
-                    detail=(
-                        f"The system already found active or pending official elevator record {record.record_key}. "
-                        "Residents do not need to search DOB; this should be shown as a plain public fact and used for escalation if service problems continue."
-                    ),
-                    due_at=_due(2),
-                    owner_role="system",
-                    source_record_id=record.id,
-                )
-            )
+    _complete_open_actions(session, "active_official_elevator_record")
 
     now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
     open_elevator_incidents = session.scalars(
         select(Incident).where(Incident.category == "elevator", Incident.status != "closed")
     ).all()
+    active_one_elevator_incident_ids: set[str] = set()
     for incident in open_elevator_incidents:
         age_hours = ((now_epoch - int(incident.start_ts_epoch or incident.last_ts_epoch or now_epoch)) / 3600.0)
         if incident.asset == "elevator_both":
@@ -308,7 +338,8 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                     related_incident_id=incident.incident_id,
                 )
             )
-        elif age_hours >= 24:
+        elif age_hours >= 24 and not _incident_has_automated_followup(session, incident.incident_id):
+            active_one_elevator_incident_ids.add(incident.incident_id)
             actions.append(
                 ensure_action(
                     session,
@@ -321,6 +352,11 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                     related_incident_id=incident.incident_id,
                 )
             )
+    _complete_open_actions(
+        session,
+        "active_phase_one_elevator_down",
+        keep_related_incident_ids=active_one_elevator_incident_ids,
+    )
 
     latest_change_epoch = max((parse_ts_to_epoch(row.last_changed_at) or 0 for row in records), default=0)
     if records and latest_change_epoch and (now_epoch - latest_change_epoch) >= 14 * 86400:

@@ -36,7 +36,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### DOB NOW: Build Elevator Device Details
 
@@ -62,7 +62,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### DOB NOW Elevator Safety Compliance
 
@@ -88,7 +88,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### DOB Complaints Received
 
@@ -114,7 +114,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### DOB Violations
 
@@ -140,7 +140,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### DOB ECB Violations
 
@@ -166,7 +166,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### OATH Hearings Division Case Status
 
@@ -191,7 +191,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### 311 Service Requests from 2020 to Present
 
@@ -217,7 +217,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### Buildings Subject to HPD Jurisdiction
 
@@ -243,7 +243,7 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified
 
 ### Housing Maintenance Code Violations
 
@@ -269,4 +269,4 @@ Store in `PublicRecordWatch`:
 - `record_key`: dataset-specific primary ID from the normalization layer
 - `raw_json`, `raw_hash`, `first_seen_at`, `last_seen_at`, `last_changed_at`
 - `machine_verification_status`, `machine_confidence`, `machine_verified_at`, `machine_verification_summary` from official-source matching
-- `needs_human_verification`: `true` only when official-source matching is weak, conflicting, or below the auto-verification threshold
+- `needs_human_verification`: `true` only for internal weak, conflicting, or below-threshold matches; these rows are not tenant-visible until verified

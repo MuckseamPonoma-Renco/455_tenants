@@ -8,7 +8,15 @@ from packages.auth import require_bearer_token
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.llm.briefing import generate_briefing
 from packages.ops_summary import build_ops_summary
-from packages.public_records.sync import VISIBLE_ACTION_STATUSES, action_payload, project_briefing, project_state, public_record_payload
+from packages.public_records.sync import (
+    VISIBLE_ACTION_STATUSES,
+    action_is_tenant_visible,
+    action_payload,
+    project_briefing,
+    project_state,
+    public_record_is_tenant_trusted,
+    public_record_payload,
+)
 from packages.timeutil import normalize_timestamp, normalize_timestamp_fields
 
 router = APIRouter()
@@ -166,7 +174,11 @@ def get_project_records(authorization: str | None = Header(default=None)):
     from packages.db import PublicRecordWatch
 
     with get_session() as session:
-        records = session.scalars(select(PublicRecordWatch).order_by(PublicRecordWatch.last_changed_at.desc().nullslast())).all()
+        records = [
+            row
+            for row in session.scalars(select(PublicRecordWatch).order_by(PublicRecordWatch.last_changed_at.desc().nullslast())).all()
+            if public_record_is_tenant_trusted(row)
+        ]
         return {'ok': True, 'records': [public_record_payload(row) for row in records]}
 
 
@@ -176,11 +188,12 @@ def get_project_actions(authorization: str | None = Header(default=None)):
     from packages.db import WatchdogAction
 
     with get_session() as session:
-        actions = session.scalars(
+        rows = session.scalars(
             select(WatchdogAction)
             .where(WatchdogAction.status.in_(VISIBLE_ACTION_STATUSES))
             .order_by(WatchdogAction.created_at.desc().nullslast())
         ).all()
+        actions = [row for row in rows if action_is_tenant_visible(row)]
         return {'ok': True, 'actions': [action_payload(row) for row in actions]}
 
 
