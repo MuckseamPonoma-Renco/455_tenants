@@ -357,6 +357,83 @@ def test_public_elevator_asset_from_text_prefers_both_dead_status():
     assert sheets_sync._public_elevator_asset_from_text(text, "elevator_both") == "elevator_both"
 
 
+def test_public_renderer_treats_both_work_now_as_working_status():
+    assert sheets_sync._public_elevator_text_is_working_status("Both work now") is True
+    assert sheets_sync._public_event_issue_label(
+        Incident(
+            incident_id="both-work-now",
+            category="elevator",
+            asset="elevator_both",
+            severity=2,
+            status="closed",
+            title="Elevator restored",
+            summary="Both work now.",
+        ),
+        RawMessage(
+            message_id="both-work-now-message",
+            chat_name="455 Tenants",
+            sender="Karen",
+            sender_hash="sender",
+            ts_iso="6/27/26 8:46:04 AM",
+            ts_epoch=1782564364,
+            text="Both work now",
+            source="zip_import",
+        ),
+    ) == "Both elevators working"
+
+
+def test_public_renderer_ignores_conditional_elevator_safety_discussion():
+    text = (
+        "It is worth noting that the location of a stuck lift is UNKNOWN. "
+        "If both lifts are stuck, they can't see where the stuck lift is by looking up the adjacent shaft."
+    )
+
+    assert sheets_sync._public_elevator_text_is_actionable(text) is False
+
+
+def test_public_collapse_duplicate_incidents_promotes_both_elevator_asset():
+    south = Incident(
+        incident_id="south-canonical",
+        category="elevator",
+        asset="elevator_south",
+        severity=4,
+        status="open",
+        start_ts_epoch=1781176244,
+        last_ts_epoch=1781176244,
+        title="Elevator outage",
+        summary="Elevator outage was reported as out.",
+        proof_refs="south-message",
+    )
+    both = Incident(
+        incident_id="both-merged",
+        category="elevator",
+        asset="elevator_both",
+        severity=5,
+        status="open",
+        start_ts_epoch=1781176740,
+        last_ts_epoch=1781176740,
+        title="Elevator outage",
+        summary="Elevator outage was reported as out.",
+        proof_refs="both-message",
+    )
+    case = ServiceRequestCase(
+        service_request_number="311-00000001",
+        incident_id=south.incident_id,
+        status="In Progress",
+        submitted_at="2026-06-11T12:00:00Z",
+    )
+
+    collapsed, _case_map = sheets_sync._public_collapse_duplicate_incidents(
+        [south, both],
+        {south.incident_id: [case]},
+        {south.incident_id: ["south-message"], both.incident_id: ["both-message"]},
+    )
+
+    assert len(collapsed) == 1
+    assert collapsed[0].incident_id == south.incident_id
+    assert collapsed[0].asset == "elevator_both"
+
+
 def test_public_sanitizer_removes_standalone_person_names():
     text = sheets_sync._public_safe_summary_text(
         "Crowds form in the lobby and Jack mans elevator door like a bouncer. | "

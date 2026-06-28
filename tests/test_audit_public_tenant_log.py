@@ -1,4 +1,4 @@
-from scripts.audit_public_tenant_log import PublicRow, SourcePublicRow, _dedupe_source_rows
+from scripts.audit_public_tenant_log import PublicRow, SourcePublicRow, _dedupe_source_rows, _public_row_covers_source_row
 
 
 def test_public_row_key_includes_follow_up_cell():
@@ -18,6 +18,44 @@ def test_public_row_key_includes_follow_up_cell():
     )
 
     assert base.key != wrong_follow_up.key
+
+
+def test_public_row_covers_source_row_with_aggregate_follow_up():
+    live = PublicRow(
+        updated="2026-06-27 11:43 AM",
+        issue="Both elevators",
+        category="Elevator",
+        follow_up="3 active 311 cases; latest 311-28007634 (In Progress)",
+        summary="Both elevators were reported as out.",
+    )
+    source = PublicRow(
+        updated="2026-06-27 11:43 AM",
+        issue="Both elevators",
+        category="Elevator",
+        follow_up="311-28024527 (In Progress)",
+        summary="Both elevators were reported as out.",
+    )
+
+    assert _public_row_covers_source_row(live, source)
+
+
+def test_public_row_covers_source_row_merged_at_same_timestamp():
+    live = PublicRow(
+        updated="2026-06-11 7:10 AM",
+        issue="South elevator / Elevator outage",
+        category="Elevator",
+        follow_up="",
+        summary="South elevator was reported as out. Elevator outage was reported as out.",
+    )
+    source = PublicRow(
+        updated="2026-06-11 7:10 AM",
+        issue="Elevator outage",
+        category="Elevator",
+        follow_up="",
+        summary="Elevator outage was reported as out.",
+    )
+
+    assert _public_row_covers_source_row(live, source)
 
 
 def test_source_public_rows_keep_matching_updates_outside_duplicate_window():

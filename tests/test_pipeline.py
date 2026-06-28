@@ -413,6 +413,12 @@ def test_elevator_zero_lifts_and_both_working_rules_are_classified():
     guidance = classify_rules("NYC.gov Elevator Safety / 3 Rules if You Get Stuck")
     assert guidance["is_issue"] is False
 
+    conditional = classify_rules(
+        "It is worth noting that the location of a stuck lift is UNKNOWN. "
+        "If both lifts are stuck, they can't see where the stuck lift is by looking up the adjacent shaft."
+    )
+    assert conditional["is_issue"] is False
+
 
 def test_contextual_elevator_followups_do_not_become_heat_issue(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
@@ -456,6 +462,35 @@ def test_contextual_entrapment_followup_closes_recent_elevator_incident(client, 
         'text': "He's out now",
         'sender': 'Ani',
         'ts_epoch': 1781176858,
+    })
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, second.json()['message_id'])
+        assert decision is not None
+        assert decision.chosen_source == 'rules_context'
+        assert decision.is_issue is True
+        assert decision.category == 'elevator'
+        assert decision.event_type == 'restore'
+        assert session.query(Incident).filter_by(status='closed').count() == 1
+
+
+def test_contextual_same_day_both_work_now_closes_elevator_incident(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'No elevators.',
+        'sender': 'Karen',
+        'ts_epoch': 1782558383,
+    })
+    second = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both work now',
+        'sender': 'Karen',
+        'ts_epoch': 1782564364,
     })
 
     assert first.status_code == 200, first.text

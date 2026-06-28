@@ -77,6 +77,11 @@ ELEVATOR_SAFETY_GUIDANCE = re.compile(
     r"ring\s+the\s+alarm|help\s+is\s+on\s+the\s+way)\b",
     re.I,
 )
+ELEVATOR_CONDITIONAL_SAFETY_DISCUSSION = re.compile(
+    r"\bif\s+(?:both\s+)?(?:elevators?|lifts?)\s+(?:are\s+|were\s+)?stuck\b"
+    r"|\b(?:indicator\s+floor\s+lights|adjacent\s+shaft|emergency\s+two-way|building\s+code|asme\s+a17\.3)\b",
+    re.I,
+)
 
 ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+working|stuck|shutdown|shut\s*off)"
 ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
@@ -168,7 +173,7 @@ def classify_rules(text: str) -> dict:
     if DISCUSSION_QUESTION.search(t) and RECORDKEEPING_DISCUSSION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
-    if ELEVATOR_SAFETY_GUIDANCE.search(t):
+    if ELEVATOR_SAFETY_GUIDANCE.search(t) or ELEVATOR_CONDITIONAL_SAFETY_DISCUSSION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
     if QUESTION_ONLY.search(t) and not OUT.search(t) and not BACK.search(t):

@@ -7,7 +7,7 @@ import re
 from sqlalchemy import func
 from zoneinfo import ZoneInfo
 from packages.audit import compute_message_id
-from packages.db import Incident, IncidentWitness, MessageDecision, RawMessage
+from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, RawMessage, ServiceRequestCase, WatchdogAction
 from packages.incident.rules import classify_rules, explicit_elevator_asset, text_explicitly_supports_category
 from packages.llm.classifier import llm_classify_message, llm_review_decision
 from packages.llm.triage import should_call_llm
@@ -205,6 +205,31 @@ def _has_recent_same_chat_elevator_context(session, rm: RawMessage) -> bool:
             RawMessage.ts_epoch.isnot(None),
             RawMessage.ts_epoch <= int(rm.ts_epoch),
             RawMessage.ts_epoch >= int(rm.ts_epoch) - RECENT_CHAT_CONTEXT_WINDOW_SECONDS,
+            MessageDecision.is_issue.is_(True),
+            MessageDecision.category == "elevator",
+        )
+        .scalar()
+        or 0
+    )
+    return bool(count)
+
+
+def _has_same_day_same_chat_elevator_context(session, rm: RawMessage) -> bool:
+    if rm.ts_epoch is None or not rm.chat_name:
+        return False
+    local_dt = datetime.datetime.fromtimestamp(int(rm.ts_epoch), tz=BUILDING_TZ)
+    start_epoch = int(
+        datetime.datetime.combine(local_dt.date(), datetime.time.min, tzinfo=BUILDING_TZ).timestamp()
+    )
+    count = (
+        session.query(func.count(MessageDecision.message_id))
+        .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
+        .filter(
+            RawMessage.message_id != rm.message_id,
+            RawMessage.chat_name == rm.chat_name,
+            RawMessage.ts_epoch.isnot(None),
+            RawMessage.ts_epoch <= int(rm.ts_epoch),
+            RawMessage.ts_epoch >= start_epoch,
             MessageDecision.is_issue.is_(True),
             MessageDecision.category == "elevator",
         )
@@ -627,11 +652,12 @@ def _should_use_llm(text: str, rules: dict) -> bool:
 def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -> dict | None:
     if rm.ts_epoch is None or not rm.chat_name:
         return None
-    if not _has_recent_same_chat_elevator_context(session, rm):
-        return None
+    recent_elevator_context = _has_recent_same_chat_elevator_context(session, rm)
 
     text = rm.text or ""
     if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(text):
+        if not recent_elevator_context and not _has_same_day_same_chat_elevator_context(session, rm):
+            return None
         return {
             "is_issue": True,
             "signal_type": "report",
@@ -646,6 +672,9 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             "close_incident": True,
             "needs_review": False,
         }
+
+    if not recent_elevator_context:
+        return None
 
     if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text):
         return {
@@ -663,6 +692,22 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             "needs_review": bool((rules or {}).get("category") == "heat_hot_water"),
         }
     return None
+
+
+def _prune_incident_if_unreferenced(session, incident_id: str | None) -> None:
+    if not incident_id:
+        return
+    if session.query(MessageDecision).filter(MessageDecision.incident_id == incident_id).count():
+        return
+    if session.query(FilingJob).filter(FilingJob.incident_id == incident_id).count():
+        return
+    if session.query(ServiceRequestCase).filter(ServiceRequestCase.incident_id == incident_id).count():
+        return
+    if session.query(WatchdogAction).filter(WatchdogAction.related_incident_id == incident_id).count():
+        return
+    incident = session.get(Incident, incident_id)
+    if incident is not None:
+        session.delete(incident)
 
 
 def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[dict | None, str]:
@@ -904,6 +949,7 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
 
 def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | None, chosen: dict | None, chosen_source: str, incident_id: str | None):
     row = session.get(MessageDecision, rm.message_id) or MessageDecision(message_id=rm.message_id)
+    previous_incident_id = row.incident_id
     row.incident_id = incident_id
     row.created_at = _now_iso()
     row.chosen_source = chosen_source
@@ -917,6 +963,8 @@ def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | No
     row.final_json = json.dumps(chosen or {}, ensure_ascii=False)
     persisted = session.merge(row)
     session.flush()
+    if previous_incident_id and previous_incident_id != incident_id:
+        _prune_incident_if_unreferenced(session, previous_incident_id)
     incident = session.get(Incident, incident_id) if incident_id else None
     persisted.auto_file_candidate = bool(incident and incident_is_auto_eligible(incident))
 

@@ -77,6 +77,11 @@ PUBLIC_ELEVATOR_REPLACEMENT_DISCUSSION_RE = re.compile(
     r"\b(?:replace|replacing|replacement|construction|project|schedule|late\s+20\d{2}|new\s+elevators?)\b",
     re.IGNORECASE,
 )
+PUBLIC_ELEVATOR_SAFETY_DISCUSSION_RE = re.compile(
+    r"\bif\s+(?:both\s+)?(?:elevators?|lifts?)\s+(?:are\s+|were\s+)?stuck\b"
+    r"|\b(?:indicator\s+floor\s+lights|adjacent\s+shaft|emergency\s+two-way|building\s+code|asme\s+a17\.3)\b",
+    re.IGNORECASE,
+)
 PUBLIC_RECORDKEEPING_DISCUSSION_RE = re.compile(
     r"\b(?:form|record|records|court|listing|listed|log|logging)\b.*\b(?:hours?|breakages?|called|arrive|come|fixed|repair)\b"
     r"|\b(?:hours?|breakages?|called|arrive|come|fixed|repair)\b.*\b(?:form|record|records|court|listing|listed|log|logging)\b",
@@ -152,7 +157,7 @@ PUBLIC_ELEVATOR_CALL_RESPONSE_RE = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_WORKING_STATUS_RE = re.compile(
-    r"\b(?:working\s+(?:normal(?:ly)?|now|rn)|working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))\b",
+    r"\b(?:working\s+(?:normal(?:ly)?|now|rn)|working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service)|both\s+work\s+now)\b",
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE = re.compile(
@@ -1510,6 +1515,8 @@ def _public_collapse_duplicate_incidents(
                 collapsed.append(cluster[0])
                 return
             canonical = _public_canonical_incident(cluster, collapsed_case_map)
+            if any(row.category == "elevator" and row.asset == "elevator_both" for row in cluster):
+                canonical.asset = "elevator_both"
             seen_cases: set[str] = set()
             merged_cases: list[ServiceRequestCase] = []
             for row in cluster:
@@ -1821,6 +1828,8 @@ def _public_elevator_text_is_actionable(text: str) -> bool:
         return False
     if PUBLIC_RECORDKEEPING_DISCUSSION_RE.search(clean):
         return False
+    if PUBLIC_ELEVATOR_SAFETY_DISCUSSION_RE.search(clean):
+        return False
     if _public_elevator_text_is_working_status(clean):
         return False
     if PUBLIC_ELEVATOR_REPLACEMENT_DISCUSSION_RE.search(clean) and not re.search(
@@ -1894,6 +1903,8 @@ def _public_should_include_update(
         and decision_event == "restore"
     )
     if PUBLIC_RECORDKEEPING_DISCUSSION_RE.search(text) or PUBLIC_FORM_PROCESS_DISCUSSION_RE.search(text):
+        return False
+    if incident.category == "elevator" and PUBLIC_ELEVATOR_SAFETY_DISCUSSION_RE.search(text):
         return False
     if PUBLIC_GENERIC_RESOLVED_FRAGMENT_RE.search(text) and not decision_is_elevator_restore:
         return False

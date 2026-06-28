@@ -42,6 +42,15 @@ class PublicRow:
             _normalize_text(self.summary),
         )
 
+    @property
+    def content_key(self) -> tuple[str, str, str, str]:
+        return (
+            _normalize_public_time(self.updated),
+            _normalize_text(self.issue),
+            _normalize_text(self.category),
+            _normalize_text(self.summary),
+        )
+
 
 @dataclass(frozen=True)
 class SourcePublicRow:
@@ -200,6 +209,22 @@ def _source_row_dicts(rows: list[SourcePublicRow], *, limit: int) -> list[dict[s
     return [{"message_id": row.message_id, **asdict(row.row)} for row in rows[:limit]]
 
 
+def _public_row_covers_source_row(public_row: PublicRow, source_row: PublicRow) -> bool:
+    if public_row.content_key == source_row.content_key:
+        return True
+    if _normalize_public_time(public_row.updated) != _normalize_public_time(source_row.updated):
+        return False
+    if _normalize_text(public_row.category) != _normalize_text(source_row.category):
+        return False
+    public_issue = _normalize_text(public_row.issue)
+    source_issue = _normalize_text(source_row.issue)
+    if public_issue != source_issue and source_issue not in public_issue:
+        return False
+    public_summary = _normalize_text(public_row.summary)
+    source_summary = _normalize_text(source_row.summary)
+    return public_summary == source_summary or source_summary in public_summary
+
+
 def _source_public_rows(*, days: int) -> list[SourcePublicRow]:
     cutoff = datetime.now(tz=NY) - timedelta(days=days)
     allowed_chat_names = sheets_sync._allowed_public_chat_names()
@@ -306,7 +331,11 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
     missing = [row for row in expected_rows if row.key not in live_keys]
     unexpected = [row for row in live_rows if row.key not in expected_keys]
     source_rows = _source_public_rows(days=days)
-    missing_source = [row for row in source_rows if row.row.key not in live_keys]
+    missing_source = [
+        row
+        for row in source_rows
+        if row.row.key not in live_keys and not any(_public_row_covers_source_row(live_row, row.row) for live_row in live_rows)
+    ]
 
     expected_latest = expected_rows[0].issue if expected_rows else ""
     live_latest = _metric(live_values, "Latest update") if live_values else ""
