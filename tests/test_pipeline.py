@@ -1305,7 +1305,12 @@ def test_context_can_promote_elevator_category_without_inflating_asset(client, m
     })
     assert first.status_code == 200, first.text
 
+    captured_context = {}
+
     def fake_llm(message_text, open_incidents=None, recent_related=None, recent_chat=None):
+        captured_context['open_incidents'] = open_incidents or []
+        captured_context['recent_related'] = recent_related or []
+        captured_context['recent_chat'] = recent_chat or []
         return {
             'is_issue': True,
             'signal_type': 'report',
@@ -1322,6 +1327,9 @@ def test_context_can_promote_elevator_category_without_inflating_asset(client, m
         }
 
     def fake_review(message_text, rules_choice, llm_choice, open_incidents=None, recent_related=None, recent_chat=None):
+        assert any('North elevator is out again' in row['text'] for row in (recent_chat or []))
+        assert any(row.get('decision_category') == 'elevator' for row in (recent_related or []))
+        assert any(row['category'] == 'elevator' for row in (open_incidents or []))
         return {
             'is_issue': True,
             'signal_type': 'report',
@@ -1347,6 +1355,10 @@ def test_context_can_promote_elevator_category_without_inflating_asset(client, m
         'ts_epoch': 1770002060,
     })
     assert follow_up.status_code == 200, follow_up.text
+
+    assert any('North elevator is out again' in row['text'] for row in captured_context['recent_chat'])
+    assert any(row.get('decision_category') == 'elevator' for row in captured_context['recent_related'])
+    assert any(row['category'] == 'elevator' for row in captured_context['open_incidents'])
 
     with get_session() as session:
         incident = session.query(Incident).one()

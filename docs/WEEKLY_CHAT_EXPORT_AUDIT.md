@@ -100,7 +100,9 @@ The app cannot put a 196 MB ZIP into every model call. The reliable design is re
 - public elevator/project watchdog state -> public-record and watchdog tables
 - spreadsheet -> generated control surface from the database
 
-When the classifier runs, it uses the database context around the message: open incidents, recent chat, relevant historical messages, rules, model review, and final guardrails. The spreadsheet is already represented by the same database state when the sheet is generated.
+When the classifier runs, it uses a retrieved database context around the message: open and recently closed incidents, same-chat messages from the last few days, related issue messages from recent history, rules, model review, and final guardrails. The default context window is 3 days / 80 same-chat messages, plus 14 days / 40 related issue messages. That is the practical version of "know the whole chat": the full export stays in the database, and each decision gets the relevant recent slice instead of a single message in isolation.
+
+The spreadsheet is already represented by the same database state when the sheet is generated.
 
 If you manually edit spreadsheet cells and expect those edits to steer future decisions, that needs a separate readback step. Without readback, the sheet is output, not the source of truth.
 

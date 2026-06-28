@@ -41,6 +41,12 @@ def _normalized_output(out: dict | None) -> dict:
 def _build_prompt(message_text: str, open_incidents: list[dict], recent_related: list[dict], recent_chat: list[dict]) -> str:
     return f"""You are classifying messages from a tenants WhatsApp group about building issues.
 
+The app database contains the full imported chat history. The context below is the retrieved decision snapshot for this message:
+- open and recently closed incidents,
+- related issue messages from recent history,
+- same-chat messages from the last few days, ordered oldest to newest.
+Use this context before deciding. Short replies, pronouns, and fragments often depend on the surrounding chat.
+
 Return ONLY valid JSON with this schema:
 {{
   "is_issue": boolean,
@@ -68,13 +74,13 @@ Rules:
 - If elevators mentioned but no north/south: asset=null. If both elevators: asset="elevator_both".
 - If not a building issue: is_issue=false, category="other", event_type="non_issue".
 
-Open incidents (current state):
+Open and recently closed incidents:
 {open_incidents}
 
-Recent possibly-related messages:
+Recent possibly-related issue messages:
 {recent_related}
 
-Recent chat context (most recent last):
+Recent same-chat context from the last few days (most recent last):
 {recent_chat}
 
 New message:
@@ -91,6 +97,12 @@ def _build_review_prompt(
     llm_choice: dict | None,
 ) -> str:
     return f"""You are reviewing a disagreement in a tenants WhatsApp issue triage system.
+
+The app database contains the full imported chat history. The context below is the retrieved decision snapshot for this message:
+- open and recently closed incidents,
+- related issue messages from recent history,
+- same-chat messages from the last few days, ordered oldest to newest.
+Use this context before deciding. Short replies, pronouns, and fragments often depend on the surrounding chat.
 
 Return ONLY valid JSON with this schema:
 {{
@@ -120,13 +132,13 @@ Rules engine choice:
 First-pass model choice:
 {llm_choice}
 
-Open incidents:
+Open and recently closed incidents:
 {open_incidents}
 
-Recent possibly-related messages:
+Recent possibly-related issue messages:
 {recent_related}
 
-Recent chat context (most recent last):
+Recent same-chat context from the last few days (most recent last):
 {recent_chat}
 
 New message:

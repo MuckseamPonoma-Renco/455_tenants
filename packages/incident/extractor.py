@@ -18,8 +18,15 @@ from packages.whatsapp.parser import is_media_placeholder_text
 OTHER_WINDOW_SECONDS = int(os.environ.get("OTHER_WINDOW_SECONDS", "21600"))
 ELEVATOR_SILENCE_GAP_SECONDS = int(os.environ.get("ELEVATOR_SILENCE_GAP_SECONDS", "7200"))
 ELEVATOR_CONTINUATION_MAX_SECONDS = int(os.environ.get("ELEVATOR_CONTINUATION_MAX_SECONDS", "604800"))
-RECENT_CHAT_CONTEXT_WINDOW_SECONDS = int(os.environ.get("RECENT_CHAT_CONTEXT_WINDOW_SECONDS", "1800"))
-RECENT_CHAT_CONTEXT_LIMIT = int(os.environ.get("RECENT_CHAT_CONTEXT_LIMIT", "8"))
+RECENT_CHAT_CONTEXT_DAYS = int(os.environ.get("RECENT_CHAT_CONTEXT_DAYS", "3"))
+RECENT_CHAT_CONTEXT_WINDOW_SECONDS = int(
+    os.environ.get("RECENT_CHAT_CONTEXT_WINDOW_SECONDS", str(RECENT_CHAT_CONTEXT_DAYS * 86400))
+)
+RECENT_CHAT_CONTEXT_LIMIT = int(os.environ.get("RECENT_CHAT_CONTEXT_LIMIT", "80"))
+RECENT_RELATED_CONTEXT_DAYS = int(os.environ.get("RECENT_RELATED_CONTEXT_DAYS", "14"))
+RECENT_RELATED_CONTEXT_LIMIT = int(os.environ.get("RECENT_RELATED_CONTEXT_LIMIT", "40"))
+RECENT_INCIDENT_CONTEXT_DAYS = int(os.environ.get("RECENT_INCIDENT_CONTEXT_DAYS", "7"))
+RECENT_INCIDENT_CONTEXT_LIMIT = int(os.environ.get("RECENT_INCIDENT_CONTEXT_LIMIT", "16"))
 LLM_MODE = os.environ.get("LLM_MODE", "uncertain").lower().strip()
 BUILDING_TZ = ZoneInfo(os.environ.get("BUILDING_TIMEZONE", "America/New_York"))
 VALID_CATEGORIES = {"elevator", "heat_hot_water", "leaks_water_damage", "pests", "security_access", "other"}
@@ -121,8 +128,20 @@ def _inc_id(cat: str, asset: str | None, ts_iso: str | None, title: str) -> str:
     return compute_message_id(cat, asset or "", ts_iso or "", title)[:32]
 
 
-def _open_incidents_context(session) -> list[dict]:
-    rows = session.query(Incident).filter(Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast()).limit(8).all()
+def _open_incidents_context(session, rm: RawMessage | None = None) -> list[dict]:
+    cutoff = None
+    if rm is not None and rm.ts_epoch is not None:
+        cutoff = int(rm.ts_epoch) - RECENT_INCIDENT_CONTEXT_DAYS * 86400
+    query = session.query(Incident)
+    if cutoff is None:
+        query = query.filter(Incident.status != "closed")
+    else:
+        query = query.filter(
+            (Incident.status != "closed")
+            | (Incident.last_ts_epoch.isnot(None) & (Incident.last_ts_epoch >= cutoff))
+            | (Incident.end_ts_epoch.isnot(None) & (Incident.end_ts_epoch >= cutoff))
+        )
+    rows = query.order_by(Incident.last_ts_epoch.desc().nullslast()).limit(RECENT_INCIDENT_CONTEXT_LIMIT).all()
     return [
         {
             "incident_id": row.incident_id,
@@ -131,40 +150,103 @@ def _open_incidents_context(session) -> list[dict]:
             "status": row.status,
             "severity": row.severity,
             "start_ts": row.start_ts,
+            "end_ts": row.end_ts,
+            "last_ts_epoch": row.last_ts_epoch,
             "summary": (row.summary or "")[:180],
         }
         for row in rows
     ]
 
 
+def _message_context_row(msg: RawMessage, decision: MessageDecision | None = None, *, text_limit: int = 240) -> dict:
+    row = {
+        "ts": msg.ts_iso,
+        "sender": msg.sender,
+        "source": msg.source,
+        "text": (msg.text or "")[:text_limit],
+    }
+    if decision is not None:
+        row.update(
+            {
+                "decision_is_issue": bool(decision.is_issue),
+                "decision_category": decision.category,
+                "decision_event_type": decision.event_type,
+                "decision_source": decision.chosen_source,
+                "incident_id": decision.incident_id,
+            }
+        )
+    return row
+
+
 def _recent_related_context(session, rm: RawMessage) -> list[dict]:
     txt = (rm.text or "").lower()
-    key_tokens = ["elevator", "lift", "heat", "hot water", "cold", "leak", "roach", "mice", "rat", "door", "lock", "intercom", "security", "mold", "boiler"]
+    key_tokens = [
+        "elevator",
+        "lift",
+        "stuck",
+        "out",
+        "down",
+        "dead",
+        "work",
+        "working",
+        "mechanic",
+        "heat",
+        "hot water",
+        "cold",
+        "leak",
+        "roach",
+        "mice",
+        "rat",
+        "door",
+        "lock",
+        "intercom",
+        "security",
+        "mold",
+        "boiler",
+    ]
     hits = [token for token in key_tokens if token in txt]
     if not hits:
         return []
 
-    query = session.query(RawMessage).filter(RawMessage.message_id != rm.message_id)
+    query = (
+        session.query(RawMessage, MessageDecision)
+        .outerjoin(MessageDecision, RawMessage.message_id == MessageDecision.message_id)
+        .filter(RawMessage.message_id != rm.message_id)
+    )
     if rm.chat_name:
         query = query.filter(RawMessage.chat_name == rm.chat_name)
     if rm.ts_epoch is not None:
-        query = query.filter(RawMessage.ts_epoch.isnot(None), RawMessage.ts_epoch <= rm.ts_epoch)
-    query = query.order_by(RawMessage.ts_epoch.desc().nullslast()).limit(60).all()
+        query = query.filter(
+            RawMessage.ts_epoch.isnot(None),
+            RawMessage.ts_epoch <= rm.ts_epoch,
+            RawMessage.ts_epoch >= int(rm.ts_epoch) - RECENT_RELATED_CONTEXT_DAYS * 86400,
+        )
+    rows = query.order_by(RawMessage.ts_epoch.desc().nullslast()).limit(160).all()
 
     out = []
-    for msg in query:
+    for msg, decision in rows:
         if is_media_placeholder_text(msg.text):
             continue
         lower = (msg.text or "").lower()
-        if any(token in lower for token in hits):
-            out.append({"ts": msg.ts_iso, "sender": msg.sender, "text": (msg.text or "")[:140]})
-        if len(out) >= 6:
+        decision_matches = bool(
+            decision
+            and decision.is_issue
+            and any(token in (decision.category or "") for token in ("elevator", "heat", "leaks", "pests", "security"))
+        )
+        if any(token in lower for token in hits) or decision_matches:
+            out.append(_message_context_row(msg, decision, text_limit=180))
+        if len(out) >= RECENT_RELATED_CONTEXT_LIMIT:
             break
+    out.reverse()
     return out
 
 
 def _recent_chat_context(session, rm: RawMessage) -> list[dict]:
-    query = session.query(RawMessage).filter(RawMessage.message_id != rm.message_id)
+    query = (
+        session.query(RawMessage, MessageDecision)
+        .outerjoin(MessageDecision, RawMessage.message_id == MessageDecision.message_id)
+        .filter(RawMessage.message_id != rm.message_id)
+    )
     if rm.chat_name:
         query = query.filter(RawMessage.chat_name == rm.chat_name)
     if rm.ts_epoch is not None:
@@ -174,12 +256,8 @@ def _recent_chat_context(session, rm: RawMessage) -> list[dict]:
     rows = query.order_by(RawMessage.ts_epoch.desc().nullslast()).limit(RECENT_CHAT_CONTEXT_LIMIT).all()
     rows.reverse()
     return [
-        {
-            "ts": row.ts_iso,
-            "sender": row.sender,
-            "text": (row.text or "")[:180],
-        }
-        for row in rows
+        _message_context_row(row, decision)
+        for row, decision in rows
         if not is_media_placeholder_text(row.text)
     ]
 
@@ -214,13 +292,10 @@ def _has_recent_same_chat_elevator_context(session, rm: RawMessage) -> bool:
     return bool(count)
 
 
-def _has_same_day_same_chat_elevator_context(session, rm: RawMessage) -> bool:
+def _has_recent_days_same_chat_elevator_context(session, rm: RawMessage) -> bool:
     if rm.ts_epoch is None or not rm.chat_name:
         return False
-    local_dt = datetime.datetime.fromtimestamp(int(rm.ts_epoch), tz=BUILDING_TZ)
-    start_epoch = int(
-        datetime.datetime.combine(local_dt.date(), datetime.time.min, tzinfo=BUILDING_TZ).timestamp()
-    )
+    start_epoch = int(rm.ts_epoch) - RECENT_CHAT_CONTEXT_DAYS * 86400
     count = (
         session.query(func.count(MessageDecision.message_id))
         .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
@@ -656,7 +731,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
 
     text = rm.text or ""
     if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(text):
-        if not recent_elevator_context and not _has_same_day_same_chat_elevator_context(session, rm):
+        if not recent_elevator_context and not _has_recent_days_same_chat_elevator_context(session, rm):
             return None
         return {
             "is_issue": True,
@@ -901,7 +976,7 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
     ):
         return context_choice, rules, None, "rules_context"
     llm = None
-    open_incidents = _open_incidents_context(session)
+    open_incidents = _open_incidents_context(session, rm)
     recent_related = _recent_related_context(session, rm)
     recent_chat = _recent_chat_context(session, rm)
     if _should_use_llm(rm.text or "", rules):
