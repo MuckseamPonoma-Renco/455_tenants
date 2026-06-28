@@ -5,6 +5,7 @@ ELEVATOR_SIDE_REFERENCE = re.compile(r"\b(?:the\s+)?(?:north|south|left|right)\s
 ELEVATOR_ASSET_NORTH = re.compile(r"\bnorth\b", re.I)
 ELEVATOR_ASSET_SOUTH = re.compile(r"\bsouth\b", re.I)
 ELEVATOR_ASSET_BOTH = re.compile(r"\b(both|two elevators|2 lifts|2 elevators)\b", re.I)
+ELEVATOR_ASSET_ZERO = re.compile(r"\b(?:zero|no)\s+(?:elevators?|lifts?)\b", re.I)
 ONLY_SIDE_WORKING = re.compile(
     r"\bonly\s+(?:the\s+)?(?P<side>north|south|left|right)\s+"
     r"(?:elevator|lift|one|side)?\s*(?:is\s+)?"
@@ -30,9 +31,14 @@ OUT = re.compile(
     r"not\s+to\s+cool overnight|both\s+elevators\s+are\s+out|both\s+lifts\s+are\s+out)",
     re.I,
 )
+REDUCED_SERVICE = re.compile(
+    r"\b(?:currently\s+)?(?:only\s+)?one\s+(?:elevator|lift)\s+(?:in\s+service|working|running|operational)\b"
+    r"|\b(?:elevator|lift)\s+service\s+(?:is\s+)?reduced\b",
+    re.I,
+)
 CONTINUING = re.compile(r"\b(still|again)\b", re.I)
 BACK = re.compile(
-    r"(back\s+(up|on|in\s+service)|working\s+now|working\s+normal(?:ly)?|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|2\s+lifts\s+working|both\s+elevators\s+currently\s+functioning|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
+    r"(back\s+(up|on|in\s+service)|working\s+now|working\s+normal(?:ly)?|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|2\s+lifts\s+working|both\s+(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?(?:working|functioning|operational|running)|both\s+(?:are\s+|were\s+)?(?:working|functioning|operational|running)|both\s+work\s+now|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
     re.I,
 )
 IRREGULAR_OPERATION = re.compile(
@@ -66,6 +72,11 @@ RECORDKEEPING_DISCUSSION = re.compile(
     r"|\b(?:hours?|breakages?|called|arrive|come|fixed|repair)\b.*\b(?:form|record|records|court|listing|list|listed|log|logging)\b",
     re.I,
 )
+ELEVATOR_SAFETY_GUIDANCE = re.compile(
+    r"\b(?:nyc\.?gov|elevator\s+safety|rules\s+if\s+you\s+get\s+stuck|if\s+you\s+get\s+stuck\s+in\s+(?:an\s+)?elevator|"
+    r"ring\s+the\s+alarm|help\s+is\s+on\s+the\s+way)\b",
+    re.I,
+)
 
 ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+working|stuck|shutdown|shut\s*off)"
 ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
@@ -95,7 +106,7 @@ def _asset_status(text: str, side: str) -> tuple[bool, bool]:
 
 
 def _asset(text: str):
-    if ELEVATOR_ASSET_BOTH.search(text):
+    if ELEVATOR_ASSET_BOTH.search(text) or ELEVATOR_ASSET_ZERO.search(text):
         return "elevator_both"
     only_working = ONLY_SIDE_WORKING.search(text)
     if only_working:
@@ -157,6 +168,9 @@ def classify_rules(text: str) -> dict:
     if DISCUSSION_QUESTION.search(t) and RECORDKEEPING_DISCUSSION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
+    if ELEVATOR_SAFETY_GUIDANCE.search(t):
+        return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
+
     if QUESTION_ONLY.search(t) and not OUT.search(t) and not BACK.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
@@ -185,7 +199,7 @@ def classify_rules(text: str) -> dict:
             "kind": "issue",
         }
 
-    if _has_elevator_reference(t) and (OUT.search(t) or ONLY_SIDE_WORKING.search(t)):
+    if _has_elevator_reference(t) and (OUT.search(t) or ONLY_SIDE_WORKING.search(t) or REDUCED_SERVICE.search(t) or ELEVATOR_ASSET_ZERO.search(t)):
         asset = _asset(t)
         sev = 5 if asset == "elevator_both" else 4
         return {

@@ -252,6 +252,111 @@ def test_public_evidence_rows_use_message_text_not_quoted_reply(tmp_path, monkey
     assert "North lift working" not in rows[0][6]
 
 
+def test_public_update_rows_keep_same_outage_reports_hours_apart():
+    incident_one = Incident(
+        incident_id="inc-night",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator not working",
+        summary="North elevator not working.",
+        proof_refs="msg-night",
+        last_ts_epoch=1780537920,
+    )
+    incident_two = Incident(
+        incident_id="inc-morning",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator out",
+        summary="North elevator out.",
+        proof_refs="msg-morning",
+        last_ts_epoch=1780572240,
+    )
+    raw_night = RawMessage(
+        message_id="msg-night",
+        chat_name="455 Tenants",
+        sender="Max",
+        ts_iso="2026-06-04T01:52:00Z",
+        ts_epoch=1780537920,
+        text="North elevator not working.",
+        source="whatsapp_web",
+    )
+    raw_morning = RawMessage(
+        message_id="msg-morning",
+        chat_name="455 Tenants",
+        sender="Max",
+        ts_iso="2026-06-04T11:24:00Z",
+        ts_epoch=1780572240,
+        text="North elevator out.",
+        source="whatsapp_web",
+    )
+
+    rows = sheets_sync._public_update_rows(
+        [incident_one, incident_two],
+        {"msg-night": raw_night, "msg-morning": raw_morning},
+        {"inc-night": [], "inc-morning": []},
+        {"455 tenants"},
+    )
+
+    matching_rows = [row for row in rows if row[1] == "North elevator" and row[6] == "North elevator was reported as out."]
+    assert [row[0] for row in matching_rows] == ["2026-06-04 07:24 AM", "2026-06-03 09:52 PM"]
+
+
+def test_public_update_rows_still_dedupes_near_duplicate_outage_reports(monkeypatch):
+    monkeypatch.setattr(sheets_sync, "PUBLIC_UPDATE_DUPLICATE_WINDOW_SECONDS", 900)
+    incident_one = Incident(
+        incident_id="inc-first",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator not working",
+        summary="North elevator not working.",
+        proof_refs="msg-first",
+        last_ts_epoch=1780537920,
+    )
+    incident_two = Incident(
+        incident_id="inc-second",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator out",
+        summary="North elevator out.",
+        proof_refs="msg-second",
+        last_ts_epoch=1780538340,
+    )
+    raw_first = RawMessage(
+        message_id="msg-first",
+        chat_name="455 Tenants",
+        sender="Max",
+        ts_iso="2026-06-04T01:52:00Z",
+        ts_epoch=1780537920,
+        text="North elevator not working.",
+        source="whatsapp_web",
+    )
+    raw_second = RawMessage(
+        message_id="msg-second",
+        chat_name="455 Tenants",
+        sender="Max",
+        ts_iso="2026-06-04T01:59:00Z",
+        ts_epoch=1780538340,
+        text="North elevator out.",
+        source="whatsapp_web",
+    )
+
+    rows = sheets_sync._public_update_rows(
+        [incident_one, incident_two],
+        {"msg-first": raw_first, "msg-second": raw_second},
+        {"inc-first": [], "inc-second": []},
+        {"455 tenants"},
+    )
+
+    matching_rows = [row for row in rows if row[1] == "North elevator" and row[6] == "North elevator was reported as out."]
+    assert [row[0] for row in matching_rows] == ["2026-06-03 09:59 PM"]
+
+
+def test_public_elevator_asset_from_text_prefers_both_dead_status():
+    text = "South (died 11pm) & North (turned off by mechanic 9pm, no could fix) BOTH dead."
+
+    assert sheets_sync._public_elevator_asset_from_text(text, "elevator_both") == "elevator_both"
+
+
 def test_public_sanitizer_removes_standalone_person_names():
     text = sheets_sync._public_safe_summary_text(
         "Crowds form in the lobby and Jack mans elevator door like a bouncer. | "
@@ -346,6 +451,32 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
         source="whatsapp_web",
     )
     assert sheets_sync._public_should_include_update(north_incident, generic_working_raw) is False
+
+    south_stopped_incident = Incident(
+        incident_id="inc-south-stopped",
+        category="elevator",
+        asset="elevator_south",
+        title="South elevator stopped and not moving",
+        summary="South elevator stopped and did not seem to be moving.",
+        proof_refs="msg-south-stopped",
+    )
+    south_stopped_raw = RawMessage(
+        message_id="msg-south-stopped",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-south-stopped",
+        ts_iso="2026-06-04T11:23:00Z",
+        ts_epoch=1780572180,
+        text=(
+            "I heard one elevator running, but it doesn't seem to be moving now. "
+            "South elevator stopped for me."
+        ),
+        attachments=None,
+        source="whatsapp_web",
+    )
+    assert sheets_sync._public_should_include_update(south_stopped_incident, south_stopped_raw) is True
+    assert sheets_sync._public_event_issue_label(south_stopped_incident, south_stopped_raw) == "South elevator"
+    assert sheets_sync._public_event_summary(south_stopped_incident, south_stopped_raw) == "South elevator was reported stopped or not moving."
 
     one_out_incident = Incident(
         incident_id="inc-one-out",
@@ -1169,6 +1300,106 @@ def test_sync_public_updates_collapses_same_minute_status_rows(client, monkeypat
     assert rows[0][3] == "311-27374123 (In Progress)"
     assert "South elevator was reported as out." in rows[0][6]
     assert "Elevator mechanic was reported on site." in rows[0][6]
+
+
+def test_sync_public_updates_uses_decision_messages_beyond_capped_proof_refs(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-123")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "455 Tenants")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
+
+    with get_session() as session:
+        session.add(
+            Incident(
+                incident_id="inc-capped-proofs",
+                category="elevator",
+                asset="elevator_both",
+                severity=4,
+                status="closed",
+                start_ts="2026-06-04T11:24:00Z",
+                start_ts_epoch=1780572240,
+                end_ts="2026-06-04T20:08:00Z",
+                end_ts_epoch=1780603680,
+                last_ts_epoch=1780603680,
+                title="North elevator out",
+                summary=(
+                    "North elevator out. | I think no mechanic is on site. "
+                    "Nothing arrived on 14 after a prolonged wait. | "
+                    "No elevators so far today. | Both of them are working now."
+                ),
+                proof_refs="msg-north,msg-ride,msg-no-mechanic",
+                report_count=5,
+                witness_count=2,
+                confidence=90,
+            )
+        )
+        messages = [
+            ("msg-north", "2026-06-04T11:24:00Z", 1780572240, "North elevator out.", "new_issue"),
+            ("msg-ride", "2026-06-04T11:24:00Z", 1780572240, "Went up 2 and then made it straight to lobby.", "status_update"),
+            (
+                "msg-no-mechanic",
+                "2026-06-04T11:44:00Z",
+                1780573440,
+                "I think no mechanic is on site. I walked down. Nothing arrived on 14 after a prolonged wait.",
+                "status_update",
+            ),
+            (
+                "msg-no-elevators",
+                "2026-06-04T11:50:00Z",
+                1780573800,
+                "No elevators so far today. Someone said they tried to work on it overnight with no luck.",
+                "still_out",
+            ),
+            ("msg-restored", "2026-06-04T20:08:00Z", 1780603680, "Both of them are working now", "restore"),
+        ]
+        for message_id, ts_iso, ts_epoch, text, event_type in messages:
+            session.add(
+                RawMessage(
+                    message_id=message_id,
+                    chat_name="455 Tenants",
+                    sender="Tenant",
+                    sender_hash=f"hash-{message_id}",
+                    ts_iso=ts_iso,
+                    ts_epoch=ts_epoch,
+                    text=text,
+                    attachments=None,
+                    source="whatsapp_web",
+                )
+            )
+            session.add(
+                MessageDecision(
+                    message_id=message_id,
+                    incident_id="inc-capped-proofs",
+                    chosen_source="rules",
+                    is_issue=True,
+                    category="elevator",
+                    event_type=event_type,
+                    confidence=85,
+                    needs_review=event_type == "status_update",
+                )
+            )
+        session.commit()
+
+    sheets_sync.sync_public_updates_to_sheets()
+
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
+    metrics = {row[0]: row[1] for row in values if row and row[0] in {"Latest update"}}
+    assert metrics["Latest update"] == "Both elevators working"
+    log_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
+    rows = [row for row in values[log_row + 2:] if row and row[0]]
+
+    restored_row = next(row for row in rows if row[0] == "2026-06-04 04:08 PM")
+    assert restored_row[1] == "Both elevators working"
+    assert restored_row[6] == "Both elevators were reported working."
+
+    no_elevators_row = next(row for row in rows if row[0] == "2026-06-04 07:50 AM")
+    assert no_elevators_row[1] == "Both elevators"
+    assert no_elevators_row[6] == "Both elevators were reported as out."
+
+    no_mechanic_row = next(row for row in rows if row[0] == "2026-06-04 07:44 AM")
+    assert no_mechanic_row[1] == "Elevator repair not completed"
+    assert no_mechanic_row[6] == "Elevator repair was reported not completed yet."
 
 
 def test_sync_public_updates_shows_rough_elevator_ride_and_same_confirmation(client, monkeypatch):

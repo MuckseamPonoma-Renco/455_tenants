@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +13,7 @@ from packages.local_env import load_local_env_file
 
 load_local_env_file(ROOT / ".env")
 
-from packages.whatsapp.parser import parse_export_text
+from packages.whatsapp.export import parse_export_path
 from packages.db import get_session, RawMessage
 from packages.audit import compute_message_id, sender_hash
 from packages.tasker_capture import find_recent_duplicate
@@ -24,21 +24,16 @@ from packages.queue import enqueue_full_resync, enqueue_process_message
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--zip', required=True, help='WhatsApp export ZIP (contains _chat.txt)')
+    ap.add_argument(
+        '--llm-mode',
+        default='off',
+        help='LLM_MODE to use while processing imported backlog messages. Default: off.',
+    )
     args = ap.parse_args()
 
-    z = zipfile.ZipFile(args.zip)
-    txt = '_chat.txt' if '_chat.txt' in z.namelist() else None
-    if not txt:
-        for n in z.namelist():
-            if n.lower().endswith('.txt'):
-                txt = n
-                break
-    if not txt:
-        raise SystemExit('No .txt chat file found in ZIP')
-
     print(f"Importing {Path(args.zip).name}...", flush=True)
-    content = z.read(txt).decode('utf-8', errors='replace')
-    parsed = parse_export_text(content)
+    export = parse_export_path(args.zip)
+    parsed = export.messages
 
     inserted = 0
     deduped = 0
@@ -79,13 +74,22 @@ def main() -> None:
             mids_to_queue.append(mid)
         s.commit()
 
+    if args.llm_mode:
+        os.environ["LLM_MODE"] = args.llm_mode
+
     for mid in mids_to_queue:
         enqueue_process_message(mid, sync_sheets=False)
         queued += 1
     if mids_to_queue:
         enqueue_full_resync()
 
-    print({'parsed': len(parsed), 'inserted': inserted, 'deduped': deduped, 'queued': queued, 'chat_file': txt})
+    print({
+        'parsed': len(parsed),
+        'inserted': inserted,
+        'deduped': deduped,
+        'queued': queued,
+        'chat_files': export.chat_files,
+    })
 
 
 if __name__ == '__main__':

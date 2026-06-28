@@ -80,6 +80,19 @@ SOURCE_ELEVATOR_AFFECTED_RE = re.compile(
     r"\b(out|down|broken|stuck|not\s+working|out\s+of\s+service|shutdown|shut\s*off)\b",
     re.IGNORECASE,
 )
+CONTEXTUAL_ELEVATOR_RESTORE_RE = re.compile(
+    r"\b(?:he|she|they|child|kid|person|passenger|guy)\b[^.!?\n]{0,80}\bout\s+now\b"
+    r"|\bboth\s+(?:elevators?|lifts?)?\s*(?:are\s+|were\s+)?(?:working|functioning|operational|running)\b"
+    r"|\bboth\s+work\s+now\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_ELEVATOR_OUTAGE_RE = re.compile(
+    r"\b(?:it|they|north|south|one|both)\b[^.!?\n]{0,80}\b(?:was|were|is|are|still|again)?\s*(?:out|down|dead|stuck|not\s+working)\b"
+    r"|\b(?:no|zero)\s+(?:elevators?|lifts?)\b"
+    r"|\b(?:mechanic|mechanics)\b[^.!?\n]{0,120}\b(?:called|not\s+arrived|not\s+here|arriv(?:ed|ing)|coming)\b"
+    r"|\b(?:excessive\s+heat|mechanical\s+room|heat\s+in\s+the\s+shaft)\b",
+    re.IGNORECASE,
+)
 SOURCE_DEFAULT_REDACTED_NAMES = (
     "Emma",
     "Greg",
@@ -611,6 +624,47 @@ def _should_use_llm(text: str, rules: dict) -> bool:
     return should_call_llm(text or "", rules.get("is_issue", False), rules.get("kind", "nonissue"))
 
 
+def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -> dict | None:
+    if rm.ts_epoch is None or not rm.chat_name:
+        return None
+    if not _has_recent_same_chat_elevator_context(session, rm):
+        return None
+
+    text = rm.text or ""
+    if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(text):
+        return {
+            "is_issue": True,
+            "signal_type": "report",
+            "category": "elevator",
+            "asset": None,
+            "event_type": "restore",
+            "severity": 2,
+            "confidence": 82,
+            "title": "Elevator restored",
+            "summary": "Tenant reports the recent elevator issue is resolved.",
+            "refers_to_open_incident": True,
+            "close_incident": True,
+            "needs_review": False,
+        }
+
+    if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text):
+        return {
+            "is_issue": True,
+            "signal_type": "report",
+            "category": "elevator",
+            "asset": None,
+            "event_type": "still_out" if re.search(r"\bstill|again\b", text, re.IGNORECASE) else "status_update",
+            "severity": 4,
+            "confidence": 78,
+            "title": "Elevator outage update",
+            "summary": "Tenant gives a follow-up about the recent elevator outage.",
+            "refers_to_open_incident": True,
+            "close_incident": False,
+            "needs_review": bool((rules or {}).get("category") == "heat_hot_water"),
+        }
+    return None
+
+
 def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[dict | None, str]:
     if rule_choice and llm_choice and llm_choice.get("is_issue"):
         if rule_choice.get("category") == llm_choice.get("category"):
@@ -795,6 +849,12 @@ def _should_request_review(rule_choice: dict | None, llm_choice: dict | None, ll
 def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | None, str]:
     rules = classify_rules(rm.text)
     rule_choice = _rule_choice(rules)
+    context_choice = _contextual_elevator_followup_choice(session, rm, rules)
+    if context_choice and (
+        not rule_choice
+        or (rule_choice.get("category") == "heat_hot_water" and context_choice.get("category") == "elevator")
+    ):
+        return context_choice, rules, None, "rules_context"
     llm = None
     open_incidents = _open_incidents_context(session)
     recent_related = _recent_related_context(session, rm)

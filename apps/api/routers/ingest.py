@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import zipfile
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -17,7 +16,7 @@ from packages.tasker_capture import (
 )
 from packages.timeutil import epoch_to_iso, parse_ts_to_epoch
 from packages.whatsapp.attachments import merge_attachment_manifests, strip_reply_context_from_text
-from packages.whatsapp.parser import parse_export_text
+from packages.whatsapp.export import parse_export_payload
 
 router = APIRouter()
 
@@ -216,23 +215,11 @@ def ingest_whatsapp_web_batch(payload: CaptureBatchPayload, authorization: str |
 async def ingest_export(file: UploadFile = File(...), authorization: str | None = Header(default=None)):
     require_bearer_token(authorization)
     raw = await file.read()
-    is_zip = raw[:4] == b'PK\x03\x04'
-
-    if is_zip:
-        zf = zipfile.ZipFile(io.BytesIO(raw))
-        txt_name = '_chat.txt' if '_chat.txt' in zf.namelist() else None
-        if not txt_name:
-            for name in zf.namelist():
-                if name.lower().endswith('.txt'):
-                    txt_name = name
-                    break
-        if not txt_name:
-            raise HTTPException(status_code=400, detail='ZIP does not contain a .txt chat export')
-        content = zf.read(txt_name).decode('utf-8', errors='replace')
-    else:
-        content = raw.decode('utf-8', errors='replace')
-
-    parsed = parse_export_text(content)
+    try:
+        export = parse_export_payload(file.filename or "_chat.txt", raw)
+    except (ValueError, zipfile.BadZipFile) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    parsed = export.messages
     inserted = 0
     deduped = 0
     job_ids = []
@@ -280,13 +267,15 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
         'inserted': inserted,
         'parsed': len(parsed),
         'deduped': deduped,
-        'zip': bool(is_zip),
+        'zip': bool(export.is_zip),
+        'chat_files': export.chat_files,
     })
     return {
         'ok': True,
         'inserted': inserted,
         'parsed': len(parsed),
         'deduped': deduped,
-        'zip': bool(is_zip),
+        'zip': bool(export.is_zip),
+        'chat_files': export.chat_files,
         'enqueued': len(job_ids),
     }

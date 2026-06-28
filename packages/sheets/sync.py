@@ -24,6 +24,7 @@ SHEET_EXTERNAL_LINK_LIMIT = 2
 PUBLIC_CURRENT_ISSUE_MAX_AGE_HOURS = 72
 PUBLIC_RECENT_ISSUE_MAX_AGE_HOURS = 168
 PUBLIC_DUPLICATE_WINDOW_SECONDS = int(os.environ.get("PUBLIC_DUPLICATE_WINDOW_SECONDS", "86400"))
+PUBLIC_UPDATE_DUPLICATE_WINDOW_SECONDS = int(os.environ.get("PUBLIC_UPDATE_DUPLICATE_WINDOW_SECONDS", "900"))
 PUBLIC_LAYOUT_COLUMNS = 10
 PUBLIC_WORKBOOK_TITLE = "455 Tenants Log"
 PUBLIC_FROZEN_ROWS = 1
@@ -62,7 +63,7 @@ PUBLIC_ELEVATOR_WORKING_RE = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_AFFECTED_RE = re.compile(
-    r"\b(out|down|broken|stuck|not\s+working|out\s+of\s+service|shutdown|shut\s*off)\b",
+    r"\b(out|down|broken|stuck|stopped|not\s+moving|not\s+working|out\s+of\s+service|shutdown|shut\s*off)\b",
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_WORD_RE = re.compile(r"\b(?:elevators?|lifts?)\b", re.IGNORECASE)
@@ -91,6 +92,12 @@ PUBLIC_REPAIR_ON_SITE_RE = re.compile(
     r"|\b(?:here|arrived|on\s+site)\b[^.!?\n]{0,80}\b(?:mechanic|mechanics|repair\s+(?:person|people|crew))\b",
     re.IGNORECASE,
 )
+PUBLIC_REPAIR_NOT_ON_SITE_RE = re.compile(
+    r"\bno\s+(?:elevator\s+)?(?:mechanic|mechanics|repair\s+(?:person|people|crew))\b[^.!?\n]{0,80}\b(?:here|on\s+site|arriv(?:ed|ing))?\b"
+    r"|\b(?:mechanic|mechanics|repair\s+(?:person|people|crew))\b[^.!?\n]{0,80}\b(?:not|isn['’]?t|aren['’]?t|wasn['’]?t|weren['’]?t)\b[^.!?\n]{0,50}\b(?:here|on\s+site|arriv(?:ed|ing))\b"
+    r"|\bnothing\s+arriv(?:ed|ing)\b",
+    re.IGNORECASE,
+)
 PUBLIC_REPAIR_NOT_COMPLETE_RE = re.compile(
     r"\b(?:cannot|can't|could\s+not|couldn't)\s+repair\b|\bback\s+tomorrow\b|\bwill\s+be\s+back\b",
     re.IGNORECASE,
@@ -111,6 +118,7 @@ PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|"
     r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
     r"out\s+of\s+(?:service|order)|not\s+working|broken|stuck|dead|"
+    r"stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
     r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
     r"only\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)?\s*(?:is\s+)?(?:working|functioning|operational|running|in\s+service)|"
@@ -1072,8 +1080,30 @@ def _raw_message_is_public(raw: RawMessage | None, allowed_chat_names: set[str])
     return _clean_text(raw.chat_name).casefold() in allowed_chat_names
 
 
-def _incident_is_public(incident: Incident, raw_map: dict[str, RawMessage], allowed_chat_names: set[str]) -> bool:
-    message_ids = [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]
+def _public_incident_message_ids(
+    incident: Incident,
+    message_ids_by_incident: dict[str, list[str]] | None = None,
+) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    for message_id in [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]:
+        if message_id not in seen:
+            refs.append(message_id)
+            seen.add(message_id)
+    for message_id in (message_ids_by_incident or {}).get(incident.incident_id, []):
+        if message_id and message_id not in seen:
+            refs.append(message_id)
+            seen.add(message_id)
+    return refs
+
+
+def _incident_is_public(
+    incident: Incident,
+    raw_map: dict[str, RawMessage],
+    allowed_chat_names: set[str],
+    message_ids_by_incident: dict[str, list[str]] | None = None,
+) -> bool:
+    message_ids = _public_incident_message_ids(incident, message_ids_by_incident)
     if not message_ids:
         return not allowed_chat_names
     return any(_raw_message_is_public(raw_map.get(message_id), allowed_chat_names) for message_id in message_ids)
@@ -1402,7 +1432,7 @@ def _public_repair_event_label(text: str) -> str:
     clean = _clean_text(text)
     if not clean or PUBLIC_RECORDKEEPING_DISCUSSION_RE.search(clean):
         return ""
-    if PUBLIC_REPAIR_NOT_COMPLETE_RE.search(clean):
+    if PUBLIC_REPAIR_NOT_COMPLETE_RE.search(clean) or PUBLIC_REPAIR_NOT_ON_SITE_RE.search(clean):
         return "Repair not completed"
     if PUBLIC_REPAIR_ON_SITE_RE.search(clean):
         return "Mechanic on site"
@@ -1452,6 +1482,7 @@ def _public_merged_proof_refs(cluster: list[Incident], canonical: Incident) -> s
 def _public_collapse_duplicate_incidents(
     incidents: list[Incident],
     case_map: dict[str, list[ServiceRequestCase]],
+    message_ids_by_incident: dict[str, list[str]] | None = None,
 ) -> tuple[list[Incident], dict[str, list[ServiceRequestCase]]]:
     if len(incidents) < 2:
         return incidents, case_map
@@ -1490,6 +1521,16 @@ def _public_collapse_duplicate_incidents(
                     merged_cases.append(case)
             collapsed_case_map[canonical.incident_id] = sorted(merged_cases, key=_public_case_sort_key, reverse=True)
             canonical.proof_refs = _public_merged_proof_refs(cluster, canonical)
+            if message_ids_by_incident is not None:
+                merged_message_ids: list[str] = []
+                seen_message_ids: set[str] = set()
+                for row in cluster:
+                    for message_id in _public_incident_message_ids(row, message_ids_by_incident):
+                        if message_id in seen_message_ids:
+                            continue
+                        seen_message_ids.add(message_id)
+                        merged_message_ids.append(message_id)
+                message_ids_by_incident[canonical.incident_id] = merged_message_ids
             collapsed.append(canonical)
 
         for incident in rows:
@@ -1682,6 +1723,13 @@ def _public_elevator_asset_from_text(text: str, fallback_asset: str | None) -> s
     clean = _clean_text(text).casefold()
     if re.search(r"\b(?:both|zero|no|two|2)\s+(?:elevators?|lifts?)\b", clean):
         return "elevator_both"
+    if re.search(
+        r"\b(?:both|zero|no|two|2)\b[^.!?\n]{0,80}\b"
+        r"(?:out|down|dead|broken|stuck|stopped|not\s+moving|not\s+working|out\s+of\s+(?:service|order))\b",
+        clean,
+        re.IGNORECASE,
+    ):
+        return "elevator_both"
     only_working = PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE.search(clean)
     if only_working:
         side = only_working.group("side").casefold()
@@ -1700,7 +1748,7 @@ def _public_elevator_asset_from_text(text: str, fallback_asset: str | None) -> s
             for segment in segments
         )
 
-    affected_status = r"(?:out|down|dead|broken|stuck|not\s+working|out\s+of\s+(?:service|order))"
+    affected_status = r"(?:out|down|dead|broken|stuck|stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|not\s+working|out\s+of\s+(?:service|order))"
     working_status = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
     north_affected = side_has("north", affected_status)
     south_affected = side_has("south", affected_status)
@@ -1759,7 +1807,7 @@ def _public_elevator_text_is_working_status(text: str) -> bool:
     if re.search(r"\b(?:working\s+normal(?:ly)?|working\s+rn|working\s+now)\b", clean, re.IGNORECASE):
         return True
     if PUBLIC_ELEVATOR_WORKING_STATUS_RE.search(clean) and not re.search(
-        r"\b(?:not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|dead|out|down|out\s+of\s+(?:service|order)|not\s+working|stuck|trapped|entrapment|alarm)\b",
+        r"\b(?:not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|dead|out|down|out\s+of\s+(?:service|order)|not\s+working|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|stopped|stuck|trapped|entrapment|alarm)\b",
         clean,
         re.IGNORECASE,
     ):
@@ -1828,15 +1876,26 @@ def _public_has_apartment_entry_concern(text: str) -> bool:
     return bool(PUBLIC_APARTMENT_ENTRY_RE.search(clean) or PUBLIC_APARTMENT_OCCUPANCY_ENTRY_RE.search(clean))
 
 
-def _public_should_include_update(incident: Incident, raw: RawMessage | None) -> bool:
+def _public_should_include_update(
+    incident: Incident,
+    raw: RawMessage | None,
+    decision: MessageDecision | None = None,
+) -> bool:
     if raw is None:
         return True
     text = _clean_text(raw.text)
     if not text:
         return False
+    decision_event = _clean_text(getattr(decision, "event_type", ""))
+    decision_category = _clean_text(getattr(decision, "category", ""))
+    decision_is_elevator_restore = (
+        incident.category == "elevator"
+        and decision_category == "elevator"
+        and decision_event == "restore"
+    )
     if PUBLIC_RECORDKEEPING_DISCUSSION_RE.search(text) or PUBLIC_FORM_PROCESS_DISCUSSION_RE.search(text):
         return False
-    if PUBLIC_GENERIC_RESOLVED_FRAGMENT_RE.search(text):
+    if PUBLIC_GENERIC_RESOLVED_FRAGMENT_RE.search(text) and not decision_is_elevator_restore:
         return False
     if public_attachment_entries(raw.message_id, raw.attachments):
         return True
@@ -1847,16 +1906,18 @@ def _public_should_include_update(incident: Incident, raw: RawMessage | None) ->
         has_elevator_context = _public_elevator_text_has_context(detection_text, incident.asset)
         has_repair_context = bool(
             PUBLIC_REPAIR_NOT_COMPLETE_RE.search(detection_text)
+            or PUBLIC_REPAIR_NOT_ON_SITE_RE.search(detection_text)
             or PUBLIC_REPAIR_ON_SITE_RE.search(detection_text)
             or PUBLIC_REPAIR_CALLED_RE.search(detection_text)
         )
-        if not has_elevator_context and not has_repair_context:
+        if not has_elevator_context and not has_repair_context and not decision_is_elevator_restore:
             return False
         return bool(
             _public_elevator_text_is_actionable(detection_text)
             or _public_elevator_text_confirms_same_issue(detection_text)
             or _public_elevator_text_is_working_status(detection_text)
             or _public_repair_event_label(detection_text)
+            or (decision_is_elevator_restore and _public_elevator_text_is_working_status(detection_text))
         )
     if incident.category == "other":
         return bool(_public_other_update_issue_label(text))
@@ -1867,14 +1928,16 @@ def _public_incident_has_includeable_update(
     incident: Incident,
     raw_map: dict[str, RawMessage],
     allowed_chat_names: set[str],
+    message_ids_by_incident: dict[str, list[str]] | None = None,
+    decision_map: dict[str, MessageDecision] | None = None,
 ) -> bool:
-    message_ids = [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]
+    message_ids = _public_incident_message_ids(incident, message_ids_by_incident)
     if not message_ids:
         return True
     return any(
         (raw := raw_map.get(message_id)) is not None
         and _raw_message_is_public(raw, allowed_chat_names)
-        and _public_should_include_update(incident, raw)
+        and _public_should_include_update(incident, raw, (decision_map or {}).get(message_id))
         for message_id in message_ids
     )
 
@@ -1943,6 +2006,13 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
                 or re.search(r"\bstopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor\b", lowered)
             ):
                 return "Elevator floor-service issue"
+            if re.search(r"\b(?:stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move)\b", lowered):
+                if asset == "elevator_both":
+                    return "Both elevators"
+                if asset == "elevator_north":
+                    return "North elevator"
+                if asset == "elevator_south":
+                    return "South elevator"
             if re.search(r"\b(?:one|1)\s+(?:working\s+)?(?:elevator|lift)\b|\bback\s+to\s+one\b|\bdown\s+to\s+one\b", lowered):
                 return "Elevator service reduced"
             if asset == "elevator_both":
@@ -2002,6 +2072,14 @@ def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
         return "Elevator floor-service issue was reported."
     if re.search(r"\btrapped\b|\bentrapment\b", lowered):
         return "A person was reported trapped in an elevator."
+    if re.search(r"\b(?:stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move)\b", lowered):
+        if asset == "elevator_both":
+            return "Both elevators were reported stopped or not moving."
+        if asset == "elevator_north":
+            return "North elevator was reported stopped or not moving."
+        if asset == "elevator_south":
+            return "South elevator was reported stopped or not moving."
+        return "Elevator was reported stopped or not moving."
     if _public_elevator_text_is_reduced_service(lowered):
         if re.search(
             r"\bone\s+(?:elevator|lift)\s+(?:is\s+|was\s+|currently\s+)?(?:out|down|dead|broken|not\s+working|out\s+of\s+(?:service|order))\b",
@@ -2088,16 +2166,19 @@ def _public_update_rows(
     raw_map: dict[str, RawMessage],
     case_map: dict[str, list[ServiceRequestCase]],
     allowed_chat_names: set[str],
+    message_ids_by_incident: dict[str, list[str]] | None = None,
+    decision_map: dict[str, MessageDecision] | None = None,
 ) -> list[list[object]]:
-    rows: list[tuple[int, str, list[object]]] = []
+    rows: list[tuple[int, str, str, list[object]]] = []
     seen_messages: set[str] = set()
     for incident in incidents:
-        message_ids = [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]
+        message_ids = _public_incident_message_ids(incident, message_ids_by_incident)
         if not message_ids:
             focus_label = _public_focus_label(incident)
             rows.append((
                 _incident_last_epoch(incident),
                 incident.incident_id,
+                "",
                 [
                     _public_ts(incident.last_ts_epoch, fallback=incident.updated_at) or "",
                     focus_label,
@@ -2117,14 +2198,16 @@ def _public_update_rows(
             raw = raw_map.get(message_id)
             if raw is None or not _raw_message_is_public(raw, allowed_chat_names):
                 continue
-            if not _public_should_include_update(incident, raw):
+            if not _public_should_include_update(incident, raw, (decision_map or {}).get(message_id)):
                 continue
             seen_messages.add(message_id)
+            source_text_key = re.sub(r"\W+", " ", _public_update_detection_text(raw).casefold()).strip()
             preview_cell, open_cell = _public_raw_evidence_cells(raw)
             cases = case_map.get(incident.incident_id, []) if _public_is_actionable_311_update(incident, raw) else []
             rows.append((
                 int(raw.ts_epoch or _incident_last_epoch(incident) or 0),
                 message_id,
+                source_text_key,
                 [
                     _public_ts(raw.ts_iso, fallback=raw.ts_epoch) or "",
                     _public_event_issue_label(incident, raw),
@@ -2138,33 +2221,46 @@ def _public_update_rows(
                 ],
             ))
     rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    deduped_rows: list[tuple[tuple[str, str, str], int, str, list[object]]] = []
-    for epoch, key, row in rows:
+    deduped_rows: list[tuple[tuple[str, str, str], int, str, str, list[object]]] = []
+    for epoch, key, source_text_key, row in rows:
         duplicate_key = (str(row[1]).casefold(), str(row[2]).casefold(), str(row[6]).casefold())
         existing_index = next(
             (
                 idx
-                for idx, (existing_key, existing_epoch, _existing_message_key, _existing_row) in enumerate(deduped_rows)
+                for idx, (
+                    existing_key,
+                    existing_epoch,
+                    _existing_message_key,
+                    existing_source_text_key,
+                    _existing_row,
+                ) in enumerate(deduped_rows)
                 if existing_key == duplicate_key
-                and abs(int(epoch or 0) - int(existing_epoch or 0)) <= PUBLIC_DUPLICATE_WINDOW_SECONDS
+                and (
+                    abs(int(epoch or 0) - int(existing_epoch or 0)) <= PUBLIC_UPDATE_DUPLICATE_WINDOW_SECONDS
+                    or (
+                        source_text_key
+                        and source_text_key == existing_source_text_key
+                        and abs(int(epoch or 0) - int(existing_epoch or 0)) <= PUBLIC_DUPLICATE_WINDOW_SECONDS
+                    )
+                )
             ),
             None,
         )
         if existing_index is None:
-            deduped_rows.append((duplicate_key, epoch, key, row))
+            deduped_rows.append((duplicate_key, epoch, key, source_text_key, row))
             continue
-        _existing_key, existing_epoch, _existing_message_key, existing_row = deduped_rows[existing_index]
+        _existing_key, existing_epoch, _existing_message_key, existing_source_text_key, existing_row = deduped_rows[existing_index]
         existing_has_evidence = bool(existing_row[4] or existing_row[5])
         row_has_evidence = bool(row[4] or row[5])
         existing_has_case = bool(existing_row[3])
         row_has_case = bool(row[3])
         if row_has_evidence and not existing_has_evidence:
-            deduped_rows[existing_index] = (duplicate_key, epoch, key, row)
+            deduped_rows[existing_index] = (duplicate_key, epoch, key, source_text_key, row)
         elif row_has_case and not existing_has_case:
-            deduped_rows[existing_index] = (duplicate_key, epoch, key, row)
+            deduped_rows[existing_index] = (duplicate_key, epoch, key, source_text_key, row)
         elif row_has_evidence == existing_has_evidence and row_has_case == existing_has_case and int(epoch or 0) > int(existing_epoch or 0):
-            deduped_rows[existing_index] = (duplicate_key, epoch, key, row)
-    rows = [(epoch, key, row) for _duplicate_key, epoch, key, row in deduped_rows]
+            deduped_rows[existing_index] = (duplicate_key, epoch, key, source_text_key, row)
+    rows = [(epoch, key, row) for _duplicate_key, epoch, key, _source_text_key, row in deduped_rows]
     rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return _public_collapse_same_timestamp_rows([row for _epoch, _key, row in rows])
 
@@ -2401,21 +2497,47 @@ def sync_public_updates_to_sheets():
 
     with get_session() as session:
         incidents = session.query(Incident).all()
+        incident_ids_all = [row.incident_id for row in incidents]
+        decision_rows = (
+            session.query(MessageDecision)
+            .filter(MessageDecision.incident_id.in_(incident_ids_all))
+            .all()
+            if incident_ids_all
+            else []
+        )
+        message_ids_by_incident: dict[str, list[str]] = {}
+        decision_map: dict[str, MessageDecision] = {}
+        for decision in decision_rows:
+            if not decision.incident_id:
+                continue
+            message_ids_by_incident.setdefault(decision.incident_id, []).append(decision.message_id)
+            decision_map[decision.message_id] = decision
         proof_message_ids = {
             message_id
             for incident in incidents
             for message_id in [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]
         }
+        proof_message_ids.update(decision_map.keys())
         raw_map = (
             {row.message_id: row for row in session.query(RawMessage).filter(RawMessage.message_id.in_(sorted(proof_message_ids))).all()}
             if proof_message_ids
             else {}
         )
-        public_incidents = [row for row in incidents if _incident_is_public(row, raw_map, allowed_chat_names)]
+        public_incidents = [
+            row
+            for row in incidents
+            if _incident_is_public(row, raw_map, allowed_chat_names, message_ids_by_incident)
+        ]
         public_incidents = [
             row
             for row in public_incidents
-            if _public_incident_has_includeable_update(row, raw_map, allowed_chat_names)
+            if _public_incident_has_includeable_update(
+                row,
+                raw_map,
+                allowed_chat_names,
+                message_ids_by_incident,
+                decision_map,
+            )
         ]
         incident_ids = [row.incident_id for row in public_incidents]
         all_cases = session.query(ServiceRequestCase).filter(ServiceRequestCase.incident_id.in_(incident_ids)).all() if incident_ids else []
@@ -2428,11 +2550,18 @@ def sync_public_updates_to_sheets():
 
     public_incidents.sort(key=_public_incident_sort_key, reverse=True)
 
-    public_incidents, case_map = _public_collapse_duplicate_incidents(public_incidents, case_map)
+    public_incidents, case_map = _public_collapse_duplicate_incidents(public_incidents, case_map, message_ids_by_incident)
     public_cases = [case for cases in case_map.values() for case in cases]
     public_cases.sort(key=_public_case_sort_key, reverse=True)
     category_rows = _public_category_rows(public_incidents, case_map)
-    update_rows = _public_update_rows(public_incidents, raw_map, case_map, allowed_chat_names)
+    update_rows = _public_update_rows(
+        public_incidents,
+        raw_map,
+        case_map,
+        allowed_chat_names,
+        message_ids_by_incident,
+        decision_map,
+    )
     refresh_label = _fmt_ts(now_epoch)
     top_category = category_rows[0][0] if category_rows else ""
     latest_issue = str(update_rows[0][1]) if update_rows else (_public_focus_label(public_incidents[0]) if public_incidents else "")

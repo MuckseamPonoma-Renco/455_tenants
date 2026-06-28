@@ -17,6 +17,7 @@ local.db
 *.sqlite
 *.sqlite3
 /exports/
+/incoming/
 /WhatsApp Chat - *.zip
 /mnt/data/
 secrets/*.json

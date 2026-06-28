@@ -1,4 +1,5 @@
 import json
+import zipfile
 
 from pathlib import Path
 from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, RawMessage, ServiceRequestCase, get_session
@@ -288,6 +289,27 @@ def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path)
         assert session.query(Incident).count() == 1
 
 
+def test_export_ingest_imports_all_chat_txt_files_in_zip(client, tmp_path):
+    export_path = tmp_path / 'all_chats.zip'
+    with zipfile.ZipFile(export_path, 'w') as archive:
+        archive.writestr('WhatsApp Chat - 455 Tenants.txt', '[6/5/26, 9:00:00 AM] Karen: North lift dead\n')
+        archive.writestr('WhatsApp Chat - Building Lobby.txt', '[6/5/26, 9:05:00 AM] Molly: lobby door lock broken\n')
+        archive.writestr('notes.txt', 'not a chat export\n')
+
+    with export_path.open('rb') as f:
+        response = client.post('/ingest/export', headers=auth_headers(), files={'file': ('all_chats.zip', f, 'application/zip')})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['parsed'] == 2
+    assert payload['inserted'] == 2
+    assert payload['chat_files'] == ['WhatsApp Chat - 455 Tenants.txt', 'WhatsApp Chat - Building Lobby.txt']
+
+    with get_session() as session:
+        chat_names = {row.chat_name for row in session.query(RawMessage).all()}
+        assert chat_names == {'455 Tenants', 'Building Lobby'}
+
+
 def test_export_ingest_dedupes_matching_tasker_message_even_when_chat_name_differs(client, tmp_path):
     client.post('/ingest/tasker', headers=auth_headers(), json={
         'chat_name': '455 Tenants',
@@ -370,6 +392,83 @@ def test_operator_text_no_longer_false_matches_pests(client):
         assert decision.is_issue is False
         assert decision.category is None
         assert session.query(Incident).count() == 0
+
+
+def test_elevator_zero_lifts_and_both_working_rules_are_classified():
+    zero = classify_rules("Still no lifts & no mechanic as yet.")
+    assert zero["is_issue"] is True
+    assert zero["category"] == "elevator"
+    assert zero["asset"] == "elevator_both"
+    assert zero["event_type"] == "still_out"
+
+    one = classify_rules("Hi all-currently one elevator in service")
+    assert one["is_issue"] is True
+    assert one["category"] == "elevator"
+
+    restored = classify_rules("Both elevators working.")
+    assert restored["is_issue"] is True
+    assert restored["category"] == "elevator"
+    assert restored["kind"] == "restore"
+
+    guidance = classify_rules("NYC.gov Elevator Safety / 3 Rules if You Get Stuck")
+    assert guidance["is_issue"] is False
+
+
+def test_contextual_elevator_followups_do_not_become_heat_issue(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'South elevator not working.',
+        'sender': 'Molly',
+        'ts_epoch': 1781262566,
+    })
+    second = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Oh sorry, it was out at 10pm or so last night. Wojtek/Valentine cited excessive heat as the cause.',
+        'sender': 'Karen',
+        'ts_epoch': 1781262741,
+    })
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, second.json()['message_id'])
+        assert decision is not None
+        assert decision.chosen_source == 'rules_context'
+        assert decision.is_issue is True
+        assert decision.category == 'elevator'
+        assert decision.event_type == 'status_update'
+
+
+def test_contextual_entrapment_followup_closes_recent_elevator_incident(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Elevator is stuck and my child is on it',
+        'sender': 'Ani',
+        'ts_epoch': 1781176244,
+    })
+    second = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': "He's out now",
+        'sender': 'Ani',
+        'ts_epoch': 1781176858,
+    })
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, second.json()['message_id'])
+        assert decision is not None
+        assert decision.chosen_source == 'rules_context'
+        assert decision.is_issue is True
+        assert decision.category == 'elevator'
+        assert decision.event_type == 'restore'
+        assert session.query(Incident).filter_by(status='closed').count() == 1
 
 
 def test_export_ingest_schedules_single_resync_after_bulk_processing(client, tmp_path, monkeypatch):

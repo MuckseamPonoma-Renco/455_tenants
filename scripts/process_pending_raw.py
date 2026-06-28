@@ -8,9 +8,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from packages.local_env import load_local_env_file
-from packages.worker_jobs import process_pending_messages
 
 load_local_env_file(ROOT / ".env")
+
+from packages.worker_jobs import process_pending_messages
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +62,7 @@ def main() -> None:
     print(f"decisions_total={result['decisions_total']}")
     if args.resync_sheets:
         print("resync_sheets=1")
+    else:
         print("resync_sheets=0")
 
 
