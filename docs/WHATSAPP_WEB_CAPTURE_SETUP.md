@@ -23,6 +23,8 @@ WHATSAPP_CAPTURE_POLL_SECONDS=30
 WHATSAPP_CAPTURE_MESSAGE_LIMIT=30
 WHATSAPP_CAPTURE_SCROLL_PAGES=8
 WHATSAPP_CAPTURE_HEADLESS=0
+WHATSAPP_CAPTURE_DISK_CACHE_BYTES=268435456
+WHATSAPP_CAPTURE_MEDIA_CACHE_BYTES=67108864
 ```
 
 Optional:
@@ -40,6 +42,7 @@ Notes:
 - `WHATSAPP_CAPTURE_CHAT_NAMES` must match the chat titles in WhatsApp exactly.
 - The first API target is local `http://127.0.0.1:8000`; if that is unavailable, the worker will also try `PUBLIC_BASE_URL`.
 - `WHATSAPP_CAPTURE_HEADLESS=0` is the safest starting mode because you may need to scan the QR code once.
+- The dedicated Chrome profile caps rebuildable disk/media cache at 256 MB / 64 MB by default. This does not delete the WhatsApp session, IndexedDB, or captured evidence; set either cache value to `0` only if a different cap is required.
 - Media downloads are best-effort. When WhatsApp Web does not expose a downloadable asset cleanly, the watcher still stores metadata and a message-bubble screenshot.
 - If `PUBLIC_BASE_URL` is set, the synced Sheet can now show inline image previews plus tenant-openable media links for captured WhatsApp evidence.
 

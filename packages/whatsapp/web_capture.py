@@ -244,6 +244,8 @@ class WhatsAppCaptureConfig:
     browser_channel: str
     login_timeout_seconds: int
     prime_visible_messages: bool
+    disk_cache_size_bytes: int = 268_435_456
+    media_cache_size_bytes: int = 67_108_864
 
 
 @dataclass(frozen=True)
@@ -369,6 +371,8 @@ def capture_config_from_env(
         browser_channel=_clean(browser_channel or os.environ.get("WHATSAPP_CAPTURE_BROWSER_CHANNEL") or "chrome"),
         login_timeout_seconds=max(0, login_timeout_seconds if login_timeout_seconds is not None else _int_env("WHATSAPP_CAPTURE_LOGIN_TIMEOUT_SECONDS", 120)),
         prime_visible_messages=_bool_env("WHATSAPP_CAPTURE_PRIME_VISIBLE", True) if prime_visible_messages is None else prime_visible_messages,
+        disk_cache_size_bytes=max(0, _int_env("WHATSAPP_CAPTURE_DISK_CACHE_BYTES", 268_435_456)),
+        media_cache_size_bytes=max(0, _int_env("WHATSAPP_CAPTURE_MEDIA_CACHE_BYTES", 67_108_864)),
     )
 
 
@@ -1160,6 +1164,11 @@ def _launch_context(config: WhatsAppCaptureConfig) -> PlaywrightCaptureRuntime:
     config.user_data_dir.mkdir(parents=True, exist_ok=True)
     config.media_dir.mkdir(parents=True, exist_ok=True)
     playwright = sync_playwright().start()
+    browser_args: list[str] = []
+    if config.disk_cache_size_bytes:
+        browser_args.append(f"--disk-cache-size={config.disk_cache_size_bytes}")
+    if config.media_cache_size_bytes:
+        browser_args.append(f"--media-cache-size={config.media_cache_size_bytes}")
     try:
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(config.user_data_dir),
@@ -1168,6 +1177,7 @@ def _launch_context(config: WhatsAppCaptureConfig) -> PlaywrightCaptureRuntime:
             viewport={"width": 1440, "height": 1600},
             timezone_id="America/New_York",
             accept_downloads=True,
+            args=browser_args,
         )
     except Exception:
         playwright.stop()

@@ -389,6 +389,53 @@ def test_capture_config_uses_a_bounded_default_login_wait(monkeypatch):
     config = web_capture.capture_config_from_env()
 
     assert config.login_timeout_seconds == 120
+    assert config.disk_cache_size_bytes == 268_435_456
+    assert config.media_cache_size_bytes == 67_108_864
+
+
+def test_launch_context_sets_bounded_chrome_cache_args(monkeypatch, tmp_path):
+    launched = {}
+
+    class Context:
+        pass
+
+    class Chromium:
+        def launch_persistent_context(self, **kwargs):
+            launched.update(kwargs)
+            return Context()
+
+    class Playwright:
+        chromium = Chromium()
+
+        def stop(self):
+            pass
+
+    class SyncPlaywright:
+        def start(self):
+            return Playwright()
+
+    config = WhatsAppCaptureConfig(
+        chat_names=("455 Tenants",),
+        ingest_token="test-token",
+        api_bases=("http://127.0.0.1:8000",),
+        headless=True,
+        poll_seconds=30,
+        message_limit=5,
+        max_scroll_pages=1,
+        user_data_dir=tmp_path / "profile",
+        state_path=tmp_path / "state.json",
+        status_path=tmp_path / "status.json",
+        media_dir=tmp_path / "media",
+        browser_channel="chrome",
+        login_timeout_seconds=120,
+        prime_visible_messages=False,
+    )
+    monkeypatch.setattr(web_capture, "sync_playwright", lambda: SyncPlaywright())
+
+    runtime = web_capture._launch_context(config)
+
+    assert runtime.context.__class__ is Context
+    assert launched["args"] == ["--disk-cache-size=268435456", "--media-cache-size=67108864"]
 
 
 def test_is_ready_accepts_modern_whatsapp_chat_list_without_an_open_chat():
