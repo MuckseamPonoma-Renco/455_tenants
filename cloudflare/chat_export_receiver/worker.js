@@ -139,7 +139,15 @@ function amzTimestamp(now) {
 function canonicalQuery(parameters) {
   return Object.entries(parameters)
     .map(([key, value]) => [encodeRfc3986(key), encodeRfc3986(String(value))])
-    .sort(([leftKey, leftValue], [rightKey, rightValue]) => leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue))
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => {
+      if (leftKey !== rightKey) {
+        return leftKey < rightKey ? -1 : 1;
+      }
+      if (leftValue !== rightValue) {
+        return leftValue < rightValue ? -1 : 1;
+      }
+      return 0;
+    })
     .map(([key, value]) => `${key}=${value}`)
     .join("&");
 }
