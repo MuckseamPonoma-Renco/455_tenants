@@ -156,3 +156,17 @@ This does not replace live capture. If the Mac-side WhatsApp watcher is stalled,
 `.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and every 15 minutes. It validates that the API is reachable, Neon accepts a live query, the automation loop has a recent heartbeat, the database and Sheets are configured, host free storage is above the 10 GiB safety threshold, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. It sends no chat export, message text, file name, or spreadsheet data to GitHub.
 
 This is an outage detector, not a cloud receiver. A failed check means the Mac or tunnel needs attention; it cannot unlock a FileVault-protected Mac, restore power, or import a new iCloud file while the Mac is unavailable.
+
+## Optional Cloud Recovery
+
+`.github/workflows/cloud-recovery.yml` is intentionally disabled until all private configuration is present. Once enabled, it downloads pending R2 exports to an ephemeral GitHub-hosted runner, imports and audits them, refreshes 311 status and replacement-watchdog data on their normal schedules, and writes the same Tenant Log outputs. It never uploads a chat archive as an artifact or logs chat text. The runner forces `AUTO_FILE_ENABLED=0`, so it cannot submit a new NYC311 filing.
+
+It is a failover path, not a second primary worker: a scheduled run exits before reading or writing data when the Mac's public automation heartbeat is fresh. It runs only after that heartbeat is missing, unhealthy, or older than 20 minutes. A manual `--force` run is available only to a repository operator for a deliberate recovery.
+
+Enable it only after the private Cloudflare receiver is deployed and these GitHub Actions secrets are configured:
+
+- `CLOUD_RECOVERY_ENABLED`: `true`
+- `CLOUD_RECOVERY_ENV`: a multiline `.env` body containing the production `DATABASE_URL`, `CLOUD_EXPORT_RECEIVER_URL`, `CLOUD_EXPORT_RECEIVER_PULL_TOKEN`, `GOOGLE_SHEETS_SPREADSHEET_ID`, public-sheet/policy settings, and other non-file runtime settings needed to mirror the local configuration
+- `CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON`: the Google service-account JSON used for Sheets access
+
+This moves full-export recovery, public Sheet refreshes, and elevator-watch maintenance off the Mac. It does not replace live WhatsApp Web capture, which still requires the local authenticated WhatsApp session.

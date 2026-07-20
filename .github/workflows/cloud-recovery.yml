@@ -1,0 +1,105 @@
+name: Cloud recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Recovery work to run after configuration is ready
+        required: true
+        default: full
+        type: choice
+        options:
+          - exports
+          - status
+          - watchdog
+          - full
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cloud-recovery.yml
+      - scripts/run_cloud_recovery_cycle.py
+      - scripts/sync_cloud_chat_export_inbox.py
+      - scripts/run_automation_daemon.py
+      - packages/**
+      - requirements.txt
+  schedule:
+    - cron: '3,18,33,48 * * * *'
+    - cron: '11 * * * *'
+    - cron: '27 */6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tenant-issue-os-cloud-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUD_RECOVERY_ENABLED: ${{ secrets.CLOUD_RECOVERY_ENABLED }}
+      CLOUD_RECOVERY_ENV: ${{ secrets.CLOUD_RECOVERY_ENV }}
+      CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON }}
+      EVENT_SCHEDULE: ${{ github.event.schedule }}
+      MANUAL_MODE: ${{ inputs.mode }}
+    steps:
+      - name: Choose a safe recovery mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          enabled="$(printf '%s' "${CLOUD_RECOVERY_ENABLED:-}" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$enabled" != "true" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Cloud recovery is not enabled."
+            exit 0
+          fi
+          mode="full"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            mode="check"
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            mode="${MANUAL_MODE:-full}"
+          else
+            case "$EVENT_SCHEDULE" in
+              '3,18,33,48 * * * *') mode="exports" ;;
+              '11 * * * *') mode="status" ;;
+              '27 */6 * * *') mode="watchdog" ;;
+            esac
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.mode.outputs.enabled == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.mode.outputs.enabled == 'true'
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install recovery dependencies
+        if: steps.mode.outputs.enabled == 'true'
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run configuration check or recovery cycle
+        if: steps.mode.outputs.enabled == 'true'
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          env_file="$RUNNER_TEMP/tenant-issue-os-cloud.env"
+          credentials_file="$RUNNER_TEMP/tenant-issue-os-google-service-account.json"
+          trap 'rm -f "$env_file" "$credentials_file"' EXIT
+          printf '%s\n' "$CLOUD_RECOVERY_ENV" > "$env_file"
+          printf '%s\n' "$CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON" > "$credentials_file"
+          export GOOGLE_APPLICATION_CREDENTIALS="$credentials_file"
+          python scripts/run_cloud_recovery_cycle.py --env-file "$env_file" --check-config
+          if [[ "$MODE" != "check" ]]; then
+            python scripts/run_cloud_recovery_cycle.py --env-file "$env_file" --mode "$MODE"
+          fi
