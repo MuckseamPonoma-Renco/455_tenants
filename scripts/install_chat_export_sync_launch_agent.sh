@@ -11,7 +11,8 @@ RUNTIME_ROOT="$STAGING_BASE/runtime"
 PROGRAM="$RUNTIME_ROOT/scripts/run_chat_export_inbox_sync.sh"
 STDOUT_LOG="$MAC_SERVICE_LOG_DIR/chat-export-sync.out.log"
 STDERR_LOG="$MAC_SERVICE_LOG_DIR/chat-export-sync.err.log"
-START_INTERVAL_SECONDS="${CHAT_EXPORT_SYNC_INTERVAL_SECONDS:-21600}"
+START_INTERVAL_SECONDS="${CHAT_EXPORT_SYNC_INTERVAL_SECONDS:-900}"
+THROTTLE_INTERVAL_SECONDS="${CHAT_EXPORT_SYNC_THROTTLE_INTERVAL_SECONDS:-120}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "install_chat_export_sync_launch_agent.sh only supports macOS" >&2
@@ -48,18 +49,21 @@ rsync -a --delete \
 
 chmod +x "$PROGRAM"
 
-"$(mac_service_runtime_python)" - "$PLIST_PATH" "$LABEL" "$PROGRAM" "$RUNTIME_ROOT" "$STDOUT_LOG" "$STDERR_LOG" "$START_INTERVAL_SECONDS" <<'PY'
+"$(mac_service_runtime_python)" - "$PLIST_PATH" "$LABEL" "$PROGRAM" "$RUNTIME_ROOT" "$STDOUT_LOG" "$STDERR_LOG" "$START_INTERVAL_SECONDS" "$THROTTLE_INTERVAL_SECONDS" <<'PY'
 import pathlib
 import plistlib
 import sys
 
-plist_path, label, program, repo_root, stdout_log, stderr_log, interval = sys.argv[1:8]
+plist_path, label, program, repo_root, stdout_log, stderr_log, interval, throttle_interval = sys.argv[1:9]
+icloud_inbox = pathlib.Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
 body = {
     "Label": label,
     "ProgramArguments": [program],
     "WorkingDirectory": repo_root,
     "RunAtLoad": True,
     "StartInterval": int(interval),
+    "ThrottleInterval": int(throttle_interval),
+    "WatchPaths": [str(icloud_inbox)],
     "StandardOutPath": stdout_log,
     "StandardErrorPath": stderr_log,
 }
@@ -75,12 +79,13 @@ plutil -lint "$PLIST_PATH" >/dev/null
 launchctl bootout "gui/$MAC_SERVICE_UID/$LABEL" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$MAC_SERVICE_UID" "$PLIST_PATH"
 launchctl enable "gui/$MAC_SERVICE_UID/$LABEL"
-launchctl kickstart -k "gui/$MAC_SERVICE_UID/$LABEL" >/dev/null 2>&1 || true
 
 echo "Loaded $LABEL"
 echo "  plist: $PLIST_PATH"
 echo "  interval_seconds: $START_INTERVAL_SECONDS"
+echo "  throttle_interval_seconds: $THROTTLE_INTERVAL_SECONDS"
 echo "  runtime: $RUNTIME_ROOT"
-echo "  iCloud inbox: $HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
+echo "  iCloud scan sources: $HOME/Library/Mobile Documents/com~apple~CloudDocs and $HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
+echo "  immediate watch path: $HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
 echo "  stdout: $STDOUT_LOG"
 echo "  stderr: $STDERR_LOG"

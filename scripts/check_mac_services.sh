@@ -24,6 +24,10 @@ PUBLIC_HEALTH_CODE=""
 LOCAL_API_HEALTHY=0
 PUBLIC_HEALTHY=0
 STARTUP_GRACE_SECONDS="${MAC_SERVICE_STARTUP_GRACE_SECONDS:-20}"
+WHATSAPP_CAPTURE_STATE=""
+WHATSAPP_CAPTURE_AGE_SECONDS=""
+WHATSAPP_CAPTURE_MAX_AGE_SECONDS=""
+WHATSAPP_CAPTURE_DETAIL=""
 
 usage() {
   cat <<'EOF'
@@ -61,6 +65,7 @@ refresh_endpoint_health() {
   if [[ "$LOCAL_HEALTH_CODE" == "200" ]]; then
     LOCAL_API_HEALTHY=1
   fi
+  refresh_whatsapp_capture_freshness
 
   : >"$PUBLIC_BODY_FILE"
   PUBLIC_HEALTH_CODE=""
@@ -71,6 +76,108 @@ refresh_endpoint_health() {
       PUBLIC_HEALTHY=1
     fi
   fi
+}
+
+refresh_whatsapp_capture_freshness() {
+  WHATSAPP_CAPTURE_STATE=""
+  WHATSAPP_CAPTURE_AGE_SECONDS=""
+  WHATSAPP_CAPTURE_MAX_AGE_SECONDS=""
+  WHATSAPP_CAPTURE_DETAIL=""
+
+  [[ -s "$LOCAL_BODY_FILE" ]] || return 0
+  local python_bin parsed
+  python_bin="$(mac_service_runtime_python)" || return 0
+  parsed="$("$python_bin" - "$LOCAL_BODY_FILE" <<'PY'
+import datetime as dt
+import json
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+capture = payload.get("whatsapp_capture") or {}
+state = str(capture.get("state") or "missing")
+try:
+    poll_seconds = max(5, int(capture.get("poll_seconds") or 30))
+except Exception:
+    poll_seconds = 30
+try:
+    max_age = max(60, int(os.environ.get("MAC_SERVICE_WHATSAPP_CAPTURE_MAX_AGE_SECONDS") or max(300, poll_seconds * 5)))
+except Exception:
+    max_age = max(300, poll_seconds * 5)
+age = ""
+stamp = str(capture.get("last_cycle_at") or "")
+if stamp:
+    try:
+        parsed_stamp = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if parsed_stamp.tzinfo is None:
+            parsed_stamp = parsed_stamp.replace(tzinfo=dt.timezone.utc)
+        age = str(max(0, int((dt.datetime.now(dt.timezone.utc) - parsed_stamp).total_seconds())))
+    except Exception:
+        pass
+detail = str(capture.get("last_error") or "").replace("\t", " ").replace("\n", " ")
+print("\t".join((state, age, str(max_age), detail)))
+PY
+)" || return 0
+  IFS=$'\t' read -r WHATSAPP_CAPTURE_STATE WHATSAPP_CAPTURE_AGE_SECONDS WHATSAPP_CAPTURE_MAX_AGE_SECONDS WHATSAPP_CAPTURE_DETAIL <<<"$parsed"
+}
+
+chat_export_sync_probe() {
+  local python_bin state_path interval_seconds
+  python_bin="$(mac_service_runtime_python)" || return 1
+  state_path="$MAC_SERVICE_STATE_DIR/chat-export-sync.json"
+  interval_seconds="${CHAT_EXPORT_SYNC_INTERVAL_SECONDS:-900}"
+  "$python_bin" - "$state_path" "$interval_seconds" <<'PY'
+import datetime as dt
+import json
+import pathlib
+import sys
+
+state_path = pathlib.Path(sys.argv[1])
+try:
+    interval = max(60, int(sys.argv[2]))
+except Exception:
+    interval = 900
+try:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+except Exception:
+    state = {}
+
+checked_at = str(state.get("last_checked_at") or "")
+age_seconds = None
+if checked_at:
+    try:
+        checked = dt.datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=dt.timezone.utc)
+        age_seconds = max(0, int((dt.datetime.now(dt.timezone.utc) - checked).total_seconds()))
+    except Exception:
+        pass
+
+source = ""
+for key in ("last_pending_fingerprint", "last_seen_fingerprint", "last_processed_fingerprint"):
+    value = state.get(key)
+    if isinstance(value, dict) and value.get("path"):
+        source = str(value["path"])
+        break
+
+if age_seconds is None or age_seconds > max(interval * 3, 1800):
+    action = "stale"
+elif str(state.get("last_error") or "").startswith("waiting for complete iCloud export:"):
+    action = "waiting_for_download"
+elif state.get("last_error"):
+    action = "error"
+elif state.get("last_processed_fingerprint"):
+    action = "processed"
+else:
+    action = "no_export_found"
+
+print(json.dumps({"action": action, "source": source, "age_seconds": age_seconds}, sort_keys=True))
+PY
 }
 
 service_status_row() {
@@ -96,6 +203,60 @@ service_status_row() {
     configured="false"
     state="not_configured"
     reason="$(sanitize_field "$(mac_service_whatsapp_capture_check_message)")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
+
+  if [[ "$name" == "chat_export_sync" ]]; then
+    if mac_service_launchd_loaded "$name"; then
+      launchd_loaded="true"
+    fi
+    if [[ "$launchd_loaded" != "true" ]]; then
+      state="unhealthy"
+      needs_repair="true"
+      reason="chat-export-sync LaunchAgent is not loaded"
+    else
+      local probe parsed action source
+      if probe="$(chat_export_sync_probe 2>&1)"; then
+        parsed="$(printf '%s' "$probe" | "$(mac_service_runtime_python)" -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    payload = {}
+print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or ""))))
+' 2>/dev/null || true)"
+        IFS=$'\t' read -r action source <<<"$parsed"
+        case "$action" in
+          unchanged_skip|no_export_found|processed)
+            state="healthy"
+            reason="chat-export-sync action=${action}"
+            ;;
+          would_process)
+            state="pending"
+            needs_repair="true"
+            reason="new chat export is waiting to be imported: ${source:-unknown source}"
+            ;;
+          waiting_for_download)
+            state="pending"
+            reason="chat export is waiting for iCloud to download: ${source:-unknown source}"
+            ;;
+          *)
+            state="unhealthy"
+            needs_repair="true"
+            reason="chat-export-sync returned an unexpected result: ${probe:0:300}"
+            ;;
+        esac
+      else
+        state="unhealthy"
+        needs_repair="true"
+        reason="chat-export-sync probe failed: ${probe:0:300}"
+      fi
+    fi
+    reason="$(sanitize_field "$reason")"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
     return 0
@@ -145,8 +306,29 @@ service_status_row() {
       ;;
     whatsapp_capture)
       if [[ "$running" == "true" ]]; then
-        state="healthy"
-        reason="whatsapp_capture pid is running"
+        if [[ "$WHATSAPP_CAPTURE_STATE" == "login_required" ]]; then
+          state="blocked"
+          reason="WhatsApp Web login is required; scan the QR code in the capture Chrome profile"
+        elif [[ "$WHATSAPP_CAPTURE_STATE" == "not_ready" ]]; then
+          state="blocked"
+          reason="WhatsApp Web is not ready; resolve the visible Chrome prompt in the capture profile"
+        elif [[ "$WHATSAPP_CAPTURE_STATE" == "ready" \
+          && "$WHATSAPP_CAPTURE_AGE_SECONDS" =~ ^[0-9]+$ \
+          && "$WHATSAPP_CAPTURE_MAX_AGE_SECONDS" =~ ^[0-9]+$ \
+          && "$WHATSAPP_CAPTURE_AGE_SECONDS" -le "$WHATSAPP_CAPTURE_MAX_AGE_SECONDS" ]]; then
+          state="healthy"
+          reason="whatsapp_capture cycle is fresh (${WHATSAPP_CAPTURE_AGE_SECONDS}s old)"
+        elif [[ "$WHATSAPP_CAPTURE_STATE" == "starting" ]] && pid_within_startup_grace "$pid"; then
+          state="starting"
+          reason="whatsapp_capture is within ${STARTUP_GRACE_SECONDS}s startup grace"
+        else
+          state="stale"
+          needs_repair="true"
+          reason="whatsapp_capture pid is running but capture state=${WHATSAPP_CAPTURE_STATE:-missing} last_cycle_age=${WHATSAPP_CAPTURE_AGE_SECONDS:-unknown}s"
+          if [[ -n "$WHATSAPP_CAPTURE_DETAIL" ]]; then
+            reason+=" error=${WHATSAPP_CAPTURE_DETAIL}"
+          fi
+        fi
       else
         state="unhealthy"
         needs_repair="true"
@@ -198,12 +380,13 @@ collect_statuses() {
   : >"$STATUS_FILE"
   service_status_row api >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
+  service_status_row chat_export_sync >>"$STATUS_FILE"
   service_status_row whatsapp_capture >>"$STATUS_FILE"
   service_status_row tunnel >>"$STATUS_FILE"
 }
 
 status_needs_attention() {
-  awk -F'\t' '$8=="true"{found=1} END{exit(found ? 0 : 1)}' "$STATUS_FILE"
+  awk -F'\t' '$7 != "healthy" && $7 != "not_configured" && $7 != "starting" && $7 != "pending" {found=1} END{exit(found ? 0 : 1)}' "$STATUS_FILE"
 }
 
 pending_repairs() {
@@ -339,6 +522,14 @@ run_repairs() {
     fi
   done < <(pending_repairs)
 
+  if [[ "$failed" -ne 0 ]]; then
+    return 1
+  fi
+  if [[ "$repaired" -eq 0 ]]; then
+    status_needs_attention && return 1
+    return 0
+  fi
+
   local _i
   for _i in 1 2 3 4 5 6; do
     refresh_endpoint_health
@@ -349,7 +540,7 @@ run_repairs() {
     sleep 2
   done
 
-  if [[ "$failed" -ne 0 ]]; then
+  if [[ "$failed" -ne 0 ]] || status_needs_attention; then
     return 1
   fi
   if [[ "$repaired" -ne 0 ]]; then

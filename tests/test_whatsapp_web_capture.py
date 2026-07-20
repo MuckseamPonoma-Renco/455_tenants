@@ -331,3 +331,88 @@ def test_parse_attachment_manifest_supports_legacy_placeholder():
     assert parsed["source"] == "legacy_string"
     assert parsed["items"][0]["kind"] == "image"
     assert parsed["items"][0]["status"] == "placeholder"
+
+
+def test_capture_config_uses_a_bounded_default_login_wait(monkeypatch):
+    monkeypatch.setenv("INGEST_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_CAPTURE_CHAT_NAMES", "455 Tenants")
+    monkeypatch.delenv("WHATSAPP_CAPTURE_LOGIN_TIMEOUT_SECONDS", raising=False)
+
+    config = web_capture.capture_config_from_env()
+
+    assert config.login_timeout_seconds == 120
+
+
+def test_startup_login_requirement_is_reported_without_waiting(monkeypatch, tmp_path):
+    config = WhatsAppCaptureConfig(
+        chat_names=("455 Tenants",),
+        ingest_token="test-token",
+        api_bases=("http://127.0.0.1:8000",),
+        headless=True,
+        poll_seconds=30,
+        message_limit=5,
+        max_scroll_pages=1,
+        user_data_dir=tmp_path / "profile",
+        state_path=tmp_path / "state.json",
+        status_path=tmp_path / "status.json",
+        media_dir=tmp_path / "media",
+        browser_channel="chrome",
+        login_timeout_seconds=120,
+        prime_visible_messages=False,
+    )
+    statuses = []
+
+    monkeypatch.setattr(web_capture, "_is_ready", lambda _page: False)
+    monkeypatch.setattr(web_capture, "_is_login_required", lambda _page: True)
+    monkeypatch.setattr(web_capture, "read_capture_status", lambda _path: {})
+    monkeypatch.setattr(web_capture, "_capture_status", lambda _config, **updates: statuses.append(updates))
+    monkeypatch.setattr(web_capture, "append_audit_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        web_capture,
+        "wait_for_whatsapp_ready",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not wait for a QR login")),
+    )
+
+    assert web_capture._ensure_session_ready(object(), config, startup=True) is False
+    assert statuses[-1]["state"] == "login_required"
+    assert statuses[-1]["login_required"] is True
+
+
+def test_login_prompt_appearing_after_navigation_is_not_reported_as_a_timeout(monkeypatch, tmp_path):
+    config = WhatsAppCaptureConfig(
+        chat_names=("455 Tenants",),
+        ingest_token="test-token",
+        api_bases=("http://127.0.0.1:8000",),
+        headless=True,
+        poll_seconds=30,
+        message_limit=5,
+        max_scroll_pages=1,
+        user_data_dir=tmp_path / "profile",
+        state_path=tmp_path / "state.json",
+        status_path=tmp_path / "status.json",
+        media_dir=tmp_path / "media",
+        browser_channel="chrome",
+        login_timeout_seconds=120,
+        prime_visible_messages=False,
+    )
+    statuses = []
+    login_states = iter((False, False, True))
+
+    class Page:
+        def __init__(self):
+            self.gotos = 0
+
+        def goto(self, *_args, **_kwargs):
+            self.gotos += 1
+
+    page = Page()
+    monkeypatch.setattr(web_capture, "_is_ready", lambda _page: False)
+    monkeypatch.setattr(web_capture, "_is_login_required", lambda _page: next(login_states))
+    monkeypatch.setattr(web_capture, "read_capture_status", lambda _path: {})
+    monkeypatch.setattr(web_capture, "_capture_status", lambda _config, **updates: statuses.append(updates))
+    monkeypatch.setattr(web_capture, "append_audit_event", lambda *_args, **_kwargs: None)
+
+    assert web_capture._ensure_session_ready(page, config) is False
+    assert page.gotos == 1
+    assert statuses[-1]["state"] == "login_required"
+    assert statuses[-1]["login_required"] is True

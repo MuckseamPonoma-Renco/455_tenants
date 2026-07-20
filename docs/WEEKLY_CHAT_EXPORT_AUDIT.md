@@ -18,7 +18,7 @@ Recommended iCloud inbox:
 mkdir -p "$HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
 ```
 
-From iPhone, save the WhatsApp export ZIP into `iCloud Drive/455 Tenant Chat Exports`. The Mac puller copies the newest file from there into `incoming/chat_exports/`.
+From iPhone, save the WhatsApp export ZIP into `iCloud Drive/455 Tenant Chat Exports`. The Mac puller copies the newest file from there into `incoming/chat_exports/`. It also recognizes a root-level iCloud Drive file named like `WhatsApp Chat - ...zip`, so a normal Share Sheet save cannot silently miss the inbox folder.
 
 For a one-off Codex run, it is also fine to give Codex a private Dropbox/Google Drive/iCloud download link, but a local synced file is more reliable than browser upload for a 196 MB ZIP.
 
@@ -46,7 +46,7 @@ To audit without importing first:
 
 ## Automatic Mac Pull
 
-The Mac-side puller watches the iCloud inbox and the active runtime inbox. Manual repo runs stage into `incoming/chat_exports/`; the installed LaunchAgent stages into `$HOME/.local/share/tenant-issue-os/runtime/incoming/chat_exports/`. It skips an export if that exact file was already processed, imports new messages, audits decisions since the cutoff, and resyncs Sheets through the normal app path.
+The Mac-side puller watches the dedicated iCloud inbox and scans both that folder and the iCloud Drive root on its regular run. Manual repo runs stage into `incoming/chat_exports/`; the installed LaunchAgent stages into `$HOME/.local/share/tenant-issue-os/runtime/incoming/chat_exports/`. It skips an export if that exact file was already processed, imports new messages, audits decisions since the cutoff, and resyncs Sheets through the normal app path.
 
 Install the LaunchAgent:
 
@@ -54,7 +54,7 @@ Install the LaunchAgent:
 ./scripts/install_chat_export_sync_launch_agent.sh
 ```
 
-Default schedule is every 6 hours plus once when the agent loads. That is more reliable than weekly-only because it catches the next upload after the Mac wakes, while the unchanged-file state prevents repeated work.
+Default schedule is every 15 minutes, once when the agent loads, and immediately when the dedicated iCloud inbox changes. Root-level Share Sheet saves are picked up on the next scheduled scan, avoiding a high-churn watch over all of iCloud Drive. That gives a short catch-up path after the Mac wakes, while the unchanged-file state prevents repeated imports.
 
 Run the same pull manually:
 
@@ -140,6 +140,6 @@ Avoid coordinate-tap Voice Control or Switch Control recipes for this. They can 
 
 ## Reliability Notes
 
-This does not require leaving a fragile long-running Codex task alive. It is a batch import and audit. If the Mac is asleep or off, run it when the Mac is back; the latest full export is idempotently deduped against messages already stored.
+This does not require leaving a fragile long-running Codex task alive. It is a batch import and audit. If the Mac is asleep or off, it cannot process new data while it has no power, but the LaunchAgent runs a catch-up check after it is awake again; the latest full export is idempotently deduped against messages already stored. A truly real-time path while the Mac is off needs a separate cloud upload receiver, not an iCloud-to-Mac workflow.
 
 This does not replace live capture. If the Mac-side WhatsApp watcher is stalled, the weekly full export is the backstop that finds missed messages and decision errors.

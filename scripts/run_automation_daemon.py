@@ -71,6 +71,15 @@ def _public_tenant_log_qa() -> dict[str, object]:
         daily_hash_chain()
         return meta
 
+    # A failed live read is not evidence that the rendered sheet is wrong.
+    # Retrying a full sync in that state only adds write pressure and can turn a
+    # temporary Google Sheets quota error into a sustained repair loop.
+    if result.get("live_read_error"):
+        deferred = {**meta, "repair_skipped": "live_read_error"}
+        append_audit_event("PUBLIC_TENANT_LOG_QA_DEFERRED", None, deferred)
+        daily_hash_chain()
+        return deferred
+
     append_audit_event("PUBLIC_TENANT_LOG_QA_MISMATCH", None, meta)
     repaired = run_public_tenant_log_audit(days=days, resync=True, retries=5, retry_sleep=8.0, limit=5)
     repair_meta = {

@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.audit_whatsapp_export_decisions import DEFAULT_SINCE, EXPORT_EXTENSIONS
-
-ICLOUD_CHAT_EXPORT_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
+ICLOUD_DRIVE_ROOT = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"
+ICLOUD_CHAT_EXPORT_DIR = ICLOUD_DRIVE_ROOT / "455 Tenant Chat Exports"
 LOCAL_CHAT_EXPORT_DIR = ROOT / "incoming" / "chat_exports"
 DEFAULT_STATE_PATH = Path.home() / ".local" / "state" / "tenant-issue-os" / "chat-export-sync.json"
+DEFAULT_SINCE = "2026-06-05"
+EXPORT_EXTENSIONS = {".zip", ".txt"}
 
 
 def _split_source_dirs(value: str | None) -> list[Path]:
@@ -33,26 +35,46 @@ def default_source_dirs() -> list[Path]:
         return configured
     explicit_icloud = os.environ.get("CHAT_EXPORT_ICLOUD_DIR")
     sources = [Path(explicit_icloud).expanduser()] if explicit_icloud else [ICLOUD_CHAT_EXPORT_DIR]
+    # iOS Share Sheet saves often land at the top level of iCloud Drive even when
+    # the intended inbox folder was created. Scan that level safely for WhatsApp
+    # exports so a correct export is not silently missed.
+    if ICLOUD_DRIVE_ROOT not in sources:
+        sources.append(ICLOUD_DRIVE_ROOT)
     sources.append(LOCAL_CHAT_EXPORT_DIR)
     return sources
 
 
-def export_candidates(source_dirs: list[Path]) -> list[Path]:
+def _looks_like_whatsapp_chat_export(path: Path) -> bool:
+    name = path.name.casefold()
+    return "whatsapp" in name and "chat" in name and path.suffix.casefold() in EXPORT_EXTENSIONS
+
+
+def _source_paths(source_dir: Path) -> list[Path]:
+    """Return candidate paths without recursively walking all of iCloud Drive."""
+    if source_dir == ICLOUD_DRIVE_ROOT:
+        return list(source_dir.glob("*"))
+    return list(source_dir.rglob("*"))
+
+
+def _export_paths(source_dirs: list[Path]) -> list[Path]:
     candidates: list[Path] = []
     seen: set[Path] = set()
     for source_dir in source_dirs:
+        if source_dir != ICLOUD_DRIVE_ROOT:
+            try:
+                source_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
         try:
-            source_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            continue
-        try:
-            paths = list(source_dir.rglob("*"))
+            paths = _source_paths(source_dir)
         except OSError:
             continue
         for path in paths:
             if not path.is_file() or path.name.startswith("."):
                 continue
             if path.suffix.casefold() not in EXPORT_EXTENSIONS:
+                continue
+            if source_dir == ICLOUD_DRIVE_ROOT and not _looks_like_whatsapp_chat_export(path):
                 continue
             resolved = path.resolve()
             if resolved in seen:
@@ -62,11 +84,42 @@ def export_candidates(source_dirs: list[Path]) -> list[Path]:
     return candidates
 
 
+def _is_ready_export(path: Path) -> bool:
+    try:
+        if path.stat().st_size <= 0:
+            return False
+        if path.suffix.casefold() == ".zip":
+            return zipfile.is_zipfile(path)
+    except OSError:
+        return False
+    return True
+
+
+def export_candidates(source_dirs: list[Path]) -> list[Path]:
+    return [path for path in _export_paths(source_dirs) if _is_ready_export(path)]
+
+
 def newest_export(source_dirs: list[Path]) -> Path | None:
     candidates = export_candidates(source_dirs)
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def newest_pending_export(source_dirs: list[Path], *, ignored_dir: Path | None = None) -> Path | None:
+    ignored = ignored_dir.resolve() if ignored_dir is not None else None
+    pending: list[Path] = []
+    for path in _export_paths(source_dirs):
+        try:
+            if ignored is not None and path.resolve().is_relative_to(ignored):
+                continue
+        except OSError:
+            continue
+        if not _is_ready_export(path):
+            pending.append(path)
+    if not pending:
+        return None
+    return max(pending, key=lambda path: path.stat().st_mtime)
 
 
 def file_fingerprint(path: Path) -> dict[str, Any]:
@@ -87,6 +140,23 @@ def load_state(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _discard_invalid_processed_state(state: dict[str, Any]) -> None:
+    fingerprint = state.get("last_processed_fingerprint")
+    if not isinstance(fingerprint, dict):
+        return
+    try:
+        size = int(fingerprint.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size > 0:
+        return
+    for key in ("last_processed_at", "last_processed_fingerprint", "last_result", "last_staged_export"):
+        state.pop(key, None)
+    seen = state.get("last_seen_fingerprint")
+    if seen == fingerprint:
+        state.pop("last_seen_fingerprint", None)
+
+
 def save_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -102,6 +172,8 @@ def _safe_destination(dest_dir: Path, source: Path) -> Path:
         existing_fp = file_fingerprint(candidate)
     except OSError:
         existing_fp = {}
+    if existing_fp.get("size", 0) <= 0 or not _is_ready_export(candidate):
+        return candidate
     if source_fp.get("size") == existing_fp.get("size") and source_fp.get("mtime_ns") == existing_fp.get("mtime_ns"):
         return candidate
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -112,7 +184,18 @@ def stage_export(source: Path, dest_dir: Path) -> Path:
     dest = _safe_destination(dest_dir, source)
     if dest.resolve() == source.resolve():
         return source
-    shutil.copy2(source, dest)
+    temporary = dest.with_name(f".{dest.name}.{os.getpid()}.partial")
+    try:
+        shutil.copy2(source, temporary)
+        if not _is_ready_export(temporary):
+            raise OSError(f"copied export is incomplete: {temporary}")
+        os.replace(temporary, dest)
+    except Exception:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return dest
 
 
@@ -139,8 +222,32 @@ def sync_once(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     state = load_state(state_path)
+    _discard_invalid_processed_state(state)
+    state["last_checked_at"] = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
     source = newest_export(source_dirs)
+    pending = newest_pending_export(source_dirs, ignored_dir=dest_dir)
+    pending_is_newest = source is None
+    if pending is not None and source is not None:
+        try:
+            pending_is_newest = pending.stat().st_mtime >= source.stat().st_mtime
+        except OSError:
+            pending_is_newest = True
+    if pending is not None and pending_is_newest:
+        fingerprint = file_fingerprint(pending)
+        state["last_pending_fingerprint"] = fingerprint
+        state["last_error"] = f"waiting for complete iCloud export: {pending}"
+        save_state(state_path, state)
+        return {
+            "ok": True,
+            "action": "waiting_for_download",
+            "source": str(pending),
+            "fingerprint": fingerprint,
+            "state_path": str(state_path),
+        }
     if source is None:
+        state.pop("last_pending_fingerprint", None)
+        state["last_error"] = ""
+        save_state(state_path, state)
         return {
             "ok": True,
             "action": "no_export_found",
@@ -149,8 +256,12 @@ def sync_once(
         }
 
     fingerprint = file_fingerprint(source)
+    state["last_seen_fingerprint"] = fingerprint
     previous = state.get("last_processed_fingerprint")
     if not force and previous == fingerprint:
+        state.pop("last_pending_fingerprint", None)
+        state["last_error"] = ""
+        save_state(state_path, state)
         return {
             "ok": True,
             "action": "unchanged_skip",
@@ -170,12 +281,21 @@ def sync_once(
             "state_path": str(state_path),
         }
 
-    staged = stage_export(source, dest_dir)
-    result = run_import_and_audit(staged, since=since)
+    try:
+        staged = stage_export(source, dest_dir)
+        result = run_import_and_audit(staged, since=since)
+    except Exception as exc:
+        state["last_attempt_at"] = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        state["last_error"] = str(exc)[:1000]
+        save_state(state_path, state)
+        raise
+
     state["last_processed_at"] = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
     state["last_processed_fingerprint"] = fingerprint
     state["last_staged_export"] = str(staged)
     state["last_result"] = result
+    state.pop("last_pending_fingerprint", None)
+    state["last_error"] = ""
     save_state(state_path, state)
     return {
         "ok": True,

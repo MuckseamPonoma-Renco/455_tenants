@@ -7,6 +7,7 @@ MAC_SERVICE_STATE_DIR="${HOME}/.local/state/tenant-issue-os"
 MAC_SERVICE_LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 MAC_SERVICE_LABEL_PREFIX="tenant-issue-os"
 MAC_SERVICE_UID="$(id -u)"
+MAC_SERVICE_RUNTIME_ROOT="${HOME}/.local/share/tenant-issue-os/runtime"
 
 mac_service_runtime_python() {
   if [[ -x "$MAC_SERVICE_REPO_ROOT/.venv/bin/python" ]]; then
@@ -33,7 +34,14 @@ mac_service_install_in_progress() {
 }
 
 mac_service_service_label() {
-  printf '%s.%s\n' "$MAC_SERVICE_LABEL_PREFIX" "$1"
+  case "$1" in
+    chat_export_sync)
+      printf '%s\n' "$MAC_SERVICE_LABEL_PREFIX.chat-export-sync"
+      ;;
+    *)
+      printf '%s.%s\n' "$MAC_SERVICE_LABEL_PREFIX" "$1"
+      ;;
+  esac
 }
 
 mac_service_service_target() {
@@ -57,6 +65,9 @@ mac_service_service_script() {
     watchdog)
       printf '%s/scripts/check_mac_services.sh\n' "$MAC_SERVICE_REPO_ROOT"
       ;;
+    chat_export_sync)
+      printf '%s/scripts/run_chat_export_inbox_sync.sh\n' "$MAC_SERVICE_REPO_ROOT"
+      ;;
     *)
       return 1
       ;;
@@ -64,10 +75,18 @@ mac_service_service_script() {
 }
 
 mac_service_service_stdout_log() {
+  if [[ "$1" == "chat_export_sync" ]]; then
+    printf '%s/chat-export-sync.out.log\n' "$MAC_SERVICE_LOG_DIR"
+    return 0
+  fi
   printf '%s/%s.out.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
 }
 
 mac_service_service_stderr_log() {
+  if [[ "$1" == "chat_export_sync" ]]; then
+    printf '%s/chat-export-sync.err.log\n' "$MAC_SERVICE_LOG_DIR"
+    return 0
+  fi
   printf '%s/%s.err.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
 }
 
@@ -249,6 +268,30 @@ mac_service_stop_residual_processes() {
       kill -9 "$pid" 2>/dev/null || true
     fi
   done < <(pgrep -f "$pattern" 2>/dev/null || true)
+
+  if [[ "$name" == "whatsapp_capture" ]]; then
+    while IFS= read -r pid; do
+      mac_service_valid_pid "$pid" || continue
+      kill "$pid" 2>/dev/null || true
+      local _i
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if ! mac_service_pid_alive "$pid"; then
+          break
+        fi
+        sleep 1
+      done
+      if mac_service_pid_alive "$pid"; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    done < <(pgrep -f "$MAC_SERVICE_RUNTIME_ROOT/whatsapp_capture/chrome_profile" 2>/dev/null || true)
+
+    if ! pgrep -f "$MAC_SERVICE_RUNTIME_ROOT/whatsapp_capture/chrome_profile" >/dev/null 2>&1; then
+      rm -f \
+        "$MAC_SERVICE_RUNTIME_ROOT/whatsapp_capture/chrome_profile/SingletonCookie" \
+        "$MAC_SERVICE_RUNTIME_ROOT/whatsapp_capture/chrome_profile/SingletonLock" \
+        "$MAC_SERVICE_RUNTIME_ROOT/whatsapp_capture/chrome_profile/SingletonSocket"
+    fi
+  fi
 }
 
 mac_service_start_manual_service() {

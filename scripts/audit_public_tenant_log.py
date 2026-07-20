@@ -310,7 +310,8 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
         time.sleep(retry_sleep)
 
     expected_values = _expected_values()
-    expected_rows = _recent(_public_rows(expected_values), days=days)
+    all_expected_rows = _public_rows(expected_values)
+    expected_rows = _recent(all_expected_rows, days=days)
 
     live_values: list[list[object]] = []
     last_error = ""
@@ -337,7 +338,11 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
         if row.row.key not in live_keys and not any(_public_row_covers_source_row(live_row, row.row) for live_row in live_rows)
     ]
 
-    expected_latest = expected_rows[0].issue if expected_rows else ""
+    # The activity window may be quiet while the public sheet correctly retains
+    # an older latest update. Compare that summary metric against the complete
+    # current renderer, not only the recent slice, so a quiet week cannot cause
+    # an unnecessary write/repair loop.
+    expected_latest = all_expected_rows[0].issue if all_expected_rows else ""
     live_latest = _metric(live_values, "Latest update") if live_values else ""
     latest_ok = _normalize_text(expected_latest) == _normalize_text(live_latest)
     ok = not last_error and not missing and not unexpected and not missing_source and latest_ok

@@ -1,3 +1,4 @@
+import scripts.audit_public_tenant_log as public_audit
 from scripts.audit_public_tenant_log import PublicRow, SourcePublicRow, _dedupe_source_rows, _public_row_covers_source_row
 
 
@@ -110,3 +111,32 @@ def test_source_public_rows_drop_matching_updates_inside_duplicate_window():
     )
 
     assert _dedupe_source_rows([first, second]) == [second]
+
+
+def test_quiet_audit_window_keeps_the_rendered_latest_update_as_the_truth(monkeypatch):
+    values = [
+        ["Latest update", "Both elevators working"],
+        ["Public update log"],
+        ["Updated", "Issue", "Category", "311", "Status", "Evidence", "Summary"],
+        [
+            "2026-06-27 08:46 AM",
+            "Both elevators working",
+            "Elevator",
+            "",
+            "",
+            "",
+            "Both elevators were reported working.",
+        ],
+        ["311 case watch"],
+    ]
+    monkeypatch.setattr(public_audit, "_expected_values", lambda: values)
+    monkeypatch.setattr(public_audit, "_live_values", lambda: values)
+    monkeypatch.setattr(public_audit, "_source_public_rows", lambda *, days: [])
+
+    result = public_audit.run_audit(days=7, resync=False, retries=1, retry_sleep=0, limit=5)
+
+    assert result["expected_recent_rows"] == 0
+    assert result["live_recent_rows"] == 0
+    assert result["expected_latest_update"] == "Both elevators working"
+    assert result["latest_update_ok"] is True
+    assert result["ok"] is True

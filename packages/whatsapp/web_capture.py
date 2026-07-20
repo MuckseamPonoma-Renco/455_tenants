@@ -18,7 +18,7 @@ from playwright.sync_api import BrowserContext, Download, Error as PlaywrightErr
 from packages.audit import append_audit_event
 from packages.timeutil import NY, epoch_to_iso, parse_ts_to_epoch
 from packages.whatsapp.attachments import build_attachment_manifest, make_attachment_item, strip_reply_context_from_text
-from packages.whatsapp.status import default_status_path, write_capture_status
+from packages.whatsapp.status import default_status_path, read_capture_status, write_capture_status
 
 WHATSAPP_WEB_URL = "https://web.whatsapp.com/"
 DEFAULT_CAPTURE_ROOT = Path.home() / ".local" / "share" / "tenant-issue-os" / "whatsapp_capture"
@@ -52,6 +52,10 @@ OPEN_MEDIA_SELECTORS = (
     "[data-icon='document']",
     "[data-testid*='media-viewer']",
 )
+
+
+class WhatsAppLoginRequiredError(RuntimeError):
+    pass
 
 
 def _log(message: str) -> None:
@@ -358,7 +362,7 @@ def capture_config_from_env(
         status_path=Path(status_path or os.environ.get("WHATSAPP_CAPTURE_STATUS_PATH") or _default_status_path()).expanduser(),
         media_dir=Path(media_dir or os.environ.get("WHATSAPP_CAPTURE_MEDIA_DIR") or _default_media_dir()).expanduser(),
         browser_channel=_clean(browser_channel or os.environ.get("WHATSAPP_CAPTURE_BROWSER_CHANNEL") or "chrome"),
-        login_timeout_seconds=max(0, login_timeout_seconds if login_timeout_seconds is not None else _int_env("WHATSAPP_CAPTURE_LOGIN_TIMEOUT_SECONDS", 0)),
+        login_timeout_seconds=max(0, login_timeout_seconds if login_timeout_seconds is not None else _int_env("WHATSAPP_CAPTURE_LOGIN_TIMEOUT_SECONDS", 120)),
         prime_visible_messages=_bool_env("WHATSAPP_CAPTURE_PRIME_VISIBLE", True) if prime_visible_messages is None else prime_visible_messages,
     )
 
@@ -404,6 +408,24 @@ def _chat_locator(page: Page, chat_name: str) -> Locator | None:
     return None
 
 
+def _dismiss_blocking_dialog(page: Page) -> None:
+    try:
+        if page.locator("[role=dialog][aria-modal=true]").count() > 0:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+    except Exception:
+        pass
+
+
+def _click_chat(page: Page, locator: Locator) -> None:
+    _dismiss_blocking_dialog(page)
+    try:
+        locator.click(timeout=5_000)
+    except PlaywrightError:
+        _dismiss_blocking_dialog(page)
+        locator.click(timeout=5_000)
+
+
 def _clear_editable(locator: Locator) -> None:
     locator.click(timeout=5_000)
     locator.press("Meta+A")
@@ -413,7 +435,7 @@ def _clear_editable(locator: Locator) -> None:
 def _open_chat(page: Page, chat_name: str) -> None:
     direct = _chat_locator(page, chat_name)
     if direct is not None:
-        direct.click(timeout=5_000)
+        _click_chat(page, direct)
         page.wait_for_timeout(700)
         return
 
@@ -429,7 +451,7 @@ def _open_chat(page: Page, chat_name: str) -> None:
     if direct is None:
         raise RuntimeError(f'WhatsApp chat "{chat_name}" was not found in Chrome')
 
-    direct.click(timeout=5_000)
+    _click_chat(page, direct)
     page.wait_for_timeout(900)
 
 
@@ -582,7 +604,10 @@ def _is_login_required(page: Page) -> bool:
     body_text = _body_text(page).casefold()
     phrases = (
         "scan the qr code",
+        "scan qr code",
         "log into whatsapp web",
+        "log in to whatsapp",
+        "link a device",
         "keep your phone connected",
         "use whatsapp on your phone",
     )
@@ -601,6 +626,15 @@ def _capture_status(config: WhatsAppCaptureConfig, **updates: Any) -> dict[str, 
     return write_capture_status(config.status_path, **updates)
 
 
+def _mark_login_required(config: WhatsAppCaptureConfig) -> bool:
+    previous = read_capture_status(config.status_path)
+    _capture_status(config, state="login_required", login_required=True, last_error="")
+    if previous.get("state") != "login_required" or not previous.get("login_required"):
+        append_audit_event("WHATSAPP_WEB_CAPTURE_LOGIN_REQUIRED", None, {"chat_names": list(config.chat_names)})
+        _log("WhatsApp Web needs a fresh login. Scan the QR code in the Chrome profile and the watcher will resume.")
+    return False
+
+
 def wait_for_whatsapp_ready(page: Page, *, timeout_seconds: int = 0) -> None:
     deadline = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
     login_notice_shown = False
@@ -610,6 +644,9 @@ def wait_for_whatsapp_ready(page: Page, *, timeout_seconds: int = 0) -> None:
                 return
         except Exception:
             pass
+
+        if _is_login_required(page):
+            raise WhatsAppLoginRequiredError("WhatsApp Web login is required")
 
         if not login_notice_shown:
             _log("Waiting for WhatsApp Web in Chrome. If the QR code is visible, scan it once and leave this Chrome profile signed in.")
@@ -626,14 +663,7 @@ def _ensure_session_ready(page: Page, config: WhatsAppCaptureConfig, *, startup:
         return True
 
     if _is_login_required(page):
-        if startup:
-            wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
-            _capture_status(config, state="ready", login_required=False, last_ready_at=epoch_to_iso(int(time.time())))
-            return True
-        _capture_status(config, state="login_required", login_required=True)
-        append_audit_event("WHATSAPP_WEB_CAPTURE_LOGIN_REQUIRED", None, {"chat_names": list(config.chat_names)})
-        _log("WhatsApp Web needs a fresh login. Scan the QR code in the Chrome profile and the watcher will resume.")
-        return False
+        return _mark_login_required(config)
 
     try:
         page.goto(WHATSAPP_WEB_URL, wait_until="domcontentloaded", timeout=120_000)
@@ -642,16 +672,16 @@ def _ensure_session_ready(page: Page, config: WhatsAppCaptureConfig, *, startup:
         raise
 
     if _is_login_required(page):
-        if startup:
-            wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
-            _capture_status(config, state="ready", login_required=False, last_ready_at=epoch_to_iso(int(time.time())))
-            return True
-        _capture_status(config, state="login_required", login_required=True)
-        append_audit_event("WHATSAPP_WEB_CAPTURE_LOGIN_REQUIRED", None, {"chat_names": list(config.chat_names)})
-        _log("WhatsApp Web needs a fresh login. Scan the QR code in the Chrome profile and the watcher will resume.")
-        return False
+        return _mark_login_required(config)
 
-    wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
+    try:
+        wait_for_whatsapp_ready(page, timeout_seconds=config.login_timeout_seconds)
+    except WhatsAppLoginRequiredError:
+        return _mark_login_required(config)
+    except Exception as exc:
+        _capture_status(config, state="not_ready", login_required=False, last_error=str(exc)[:500])
+        _log(f"WhatsApp Web is not ready yet: {exc}")
+        return False
     _capture_status(config, state="ready", login_required=False, last_ready_at=epoch_to_iso(int(time.time())))
     return True
 
@@ -1165,21 +1195,22 @@ def run_capture_loop(config: WhatsAppCaptureConfig, *, once: bool = False) -> di
             poll_seconds=config.poll_seconds,
             chat_names=list(config.chat_names),
         )
-        _ensure_session_ready(page, config, startup=True)
-        _log(
-            "WhatsApp Web capture running "
-            f"headless={config.headless} chats={list(config.chat_names)} poll_seconds={config.poll_seconds}"
-        )
-        append_audit_event(
-            "WHATSAPP_WEB_CAPTURE_STARTED",
-            None,
-            {
-                "headless": config.headless,
-                "poll_seconds": config.poll_seconds,
-                "chat_names": list(config.chat_names),
-                "api_bases": list(config.api_bases),
-            },
-        )
+        startup_ready = _ensure_session_ready(page, config, startup=True)
+        if startup_ready:
+            _log(
+                "WhatsApp Web capture running "
+                f"headless={config.headless} chats={list(config.chat_names)} poll_seconds={config.poll_seconds}"
+            )
+            append_audit_event(
+                "WHATSAPP_WEB_CAPTURE_STARTED",
+                None,
+                {
+                    "headless": config.headless,
+                    "poll_seconds": config.poll_seconds,
+                    "chat_names": list(config.chat_names),
+                    "api_bases": list(config.api_bases),
+                },
+            )
 
         last_cycle: dict[str, Any] = {"ok": True, "results": []}
         while True:
@@ -1192,6 +1223,7 @@ def run_capture_loop(config: WhatsAppCaptureConfig, *, once: bool = False) -> di
 
             cycle_results: list[dict[str, Any]] = []
             cycle_captured = 0
+            cycle_errors: list[str] = []
             for chat_name in config.chat_names:
                 try:
                     result = capture_chat_once(page, chat_name=chat_name, state=state, client=client, config=config)
@@ -1204,14 +1236,15 @@ def run_capture_loop(config: WhatsAppCaptureConfig, *, once: bool = False) -> di
                 except Exception as exc:
                     append_audit_event("WHATSAPP_WEB_CAPTURE_ERROR", None, {"chat_name": chat_name, "error": str(exc)[:500]})
                     cycle_results.append({"chat_name": chat_name, "error": str(exc)})
+                    cycle_errors.append(str(exc))
                     _log(f'WhatsApp Web capture error for "{chat_name}": {exc}')
 
             last_cycle = {"ok": True, "results": cycle_results}
             status_updates: dict[str, Any] = {
-                "state": "ready",
+                "state": "degraded" if cycle_errors else "ready",
                 "login_required": False,
                 "last_cycle_at": epoch_to_iso(int(time.time())),
-                "last_error": "",
+                "last_error": cycle_errors[0][:500] if cycle_errors else "",
             }
             if cycle_captured:
                 status_updates["last_capture_at"] = epoch_to_iso(int(time.time()))
