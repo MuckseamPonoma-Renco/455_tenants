@@ -17,12 +17,19 @@ jobs:
     timeout-minutes: 3
     env:
       PUBLIC_HEALTH_URL: https://api.455tenants.com/health
+      REQUIRE_CLOUD_EXPORT_RECEIVER: ${{ vars.REQUIRE_CLOUD_EXPORT_RECEIVER || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - name: Check public API, Neon, automation, host storage, WhatsApp capture, and iCloud import heartbeat
-        run: >-
-          python3 scripts/check_public_health.py
-          --url "$PUBLIC_HEALTH_URL"
-          --max-capture-age-seconds 600
-          --max-automation-age-seconds 1200
-          --max-import-age-seconds 3600
+        shell: bash
+        run: |
+          args=(
+            --url "$PUBLIC_HEALTH_URL"
+            --max-capture-age-seconds 600
+            --max-automation-age-seconds 1200
+            --max-import-age-seconds 3600
+          )
+          if [[ "${REQUIRE_CLOUD_EXPORT_RECEIVER,,}" == "true" ]]; then
+            args+=(--require-cloud-export-receiver)
+          fi
+          python3 scripts/check_public_health.py "${args[@]}"

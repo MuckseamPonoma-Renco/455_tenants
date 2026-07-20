@@ -157,7 +157,7 @@ This does not replace live capture. If the Mac-side WhatsApp watcher is stalled,
 
 This is an outage detector, not a cloud receiver. A failed check means the Mac or tunnel needs attention; it cannot unlock a FileVault-protected Mac, restore power, or import a new iCloud file while the Mac is unavailable.
 
-After the private Cloudflare receiver is deployed, run `scripts/check_public_health.py --require-cloud-export-receiver` from CI or an operator shell to make a missing Mac-off intake fail loudly instead of reading as a fully green system.
+After the private Cloudflare receiver is deployed, set the GitHub repository variable `REQUIRE_CLOUD_EXPORT_RECEIVER=true` or run `scripts/check_public_health.py --require-cloud-export-receiver` from an operator shell. That makes a missing Mac-off intake fail loudly instead of reading as a fully green system.
 
 ## Optional Cloud Recovery
 
