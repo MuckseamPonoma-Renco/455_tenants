@@ -1,0 +1,22 @@
+name = "tenant-chat-export-receiver"
+main = "worker.js"
+compatibility_date = "2026-07-20"
+workers_dev = true
+
+[vars]
+# Copy this file to wrangler.toml only after the private bucket exists.
+R2_ACCOUNT_ID = "replace-with-cloudflare-account-id"
+R2_BUCKET_NAME = "replace-with-private-bucket-name"
+MAX_UPLOAD_BYTES = "536870912"
+PRESIGN_TTL_SECONDS = "900"
+
+[[r2_buckets]]
+binding = "EXPORTS"
+bucket_name = "replace-with-private-bucket-name"
+
+# Set these through the Cloudflare dashboard or `wrangler secret put`.
+# Never put their values in this file or in Git:
+# - UPLOAD_AUTH_TOKEN
+# - PULL_AUTH_TOKEN
+# - R2_ACCESS_KEY_ID
+# - R2_SECRET_ACCESS_KEY

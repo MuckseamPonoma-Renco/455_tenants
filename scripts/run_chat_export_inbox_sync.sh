@@ -9,4 +9,5 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 
 cd "$REPO_ROOT"
+"$PYTHON_BIN" "$REPO_ROOT/scripts/sync_cloud_chat_export_inbox.py"
 exec "$PYTHON_BIN" "$REPO_ROOT/scripts/sync_chat_export_inbox.py" "$@"

@@ -301,6 +301,12 @@ print(json.dumps({"action": action, "source": source, "age_seconds": age_seconds
 PY
 }
 
+cloud_export_receiver_probe() {
+  local python_bin
+  python_bin="$(mac_service_runtime_python)" || return 1
+  "$python_bin" "$REPO_ROOT/scripts/sync_cloud_chat_export_inbox.py" --probe
+}
+
 service_status_row() {
   local name="$1"
   local configured="true"
@@ -376,6 +382,45 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
         needs_repair="true"
         reason="chat-export-sync probe failed: ${probe:0:300}"
       fi
+    fi
+    reason="$(sanitize_field "$reason")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
+
+  if [[ "$name" == "cloud_export_receiver" ]]; then
+    local probe parsed action pending
+    if probe="$(cloud_export_receiver_probe 2>&1)"; then
+      parsed="$(printf '%s' "$probe" | "$(mac_service_runtime_python)" -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    payload = {}
+print("\t".join((str(payload.get("action") or ""), str(payload.get("pending_exports") or ""))))
+' 2>/dev/null || true)"
+      IFS=$'\t' read -r action pending <<<"$parsed"
+      case "$action" in
+        not_configured)
+          configured="false"
+          state="not_configured"
+          reason="private cloud chat-export receiver is not configured"
+          ;;
+        ready)
+          state="healthy"
+          reason="private cloud receiver and authenticated export listing are ready; pending_exports=${pending:-0}"
+          ;;
+        *)
+          state="unhealthy"
+          reason="cloud export receiver returned an unexpected result: ${probe:0:300}"
+          ;;
+      esac
+    else
+      state="unhealthy"
+      reason="cloud export receiver probe failed: ${probe:0:300}"
     fi
     reason="$(sanitize_field "$reason")"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -545,6 +590,7 @@ collect_statuses() {
   service_status_row storage >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
   service_status_row chat_export_sync >>"$STATUS_FILE"
+  service_status_row cloud_export_receiver >>"$STATUS_FILE"
   service_status_row whatsapp_capture >>"$STATUS_FILE"
   service_status_row tunnel >>"$STATUS_FILE"
 }
