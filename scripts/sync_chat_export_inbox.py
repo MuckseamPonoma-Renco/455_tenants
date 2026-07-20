@@ -196,6 +196,29 @@ def _safe_destination(dest_dir: Path, source: Path) -> Path:
     return dest_dir / f"{source.stem}-{stamp}{source.suffix}"
 
 
+def _buffered_copy_export(source: Path, temporary: Path, source_fingerprint: dict[str, Any]) -> None:
+    """Copy without macOS fcopyfile, which can deadlock on an iCloud placeholder."""
+    with source.open("rb") as source_file, temporary.open("wb") as destination_file:
+        shutil.copyfileobj(source_file, destination_file, length=1024 * 1024)
+        destination_file.flush()
+        os.fsync(destination_file.fileno())
+    mtime_ns = int(source_fingerprint["mtime_ns"])
+    os.utime(temporary, ns=(mtime_ns, mtime_ns))
+
+
+def _copy_export(source: Path, temporary: Path, source_fingerprint: dict[str, Any]) -> None:
+    try:
+        shutil.copy2(source, temporary)
+    except OSError as exc:
+        deadlock_errno = getattr(errno, "EDEADLK", None)
+        if exc.errno != deadlock_errno:
+            raise
+        # shutil.copy2 uses fcopyfile on macOS. Fall back to buffered I/O once
+        # before sleeping and retrying so EDEADLK does not strand a valid export.
+        temporary.unlink(missing_ok=True)
+        _buffered_copy_export(source, temporary, source_fingerprint)
+
+
 def stage_export(source: Path, dest_dir: Path) -> Path:
     dest = _safe_destination(dest_dir, source)
     if dest.resolve() == source.resolve():
@@ -206,7 +229,7 @@ def stage_export(source: Path, dest_dir: Path) -> Path:
         for attempt in range(1, STAGE_COPY_ATTEMPTS + 1):
             try:
                 temporary.unlink(missing_ok=True)
-                shutil.copy2(source, temporary)
+                _copy_export(source, temporary, source_fingerprint)
                 copied_fingerprint = file_fingerprint(temporary)
                 if copied_fingerprint["size"] != source_fingerprint["size"] or not _is_ready_export(temporary):
                     raise OSError(f"copied export is incomplete: {temporary}")

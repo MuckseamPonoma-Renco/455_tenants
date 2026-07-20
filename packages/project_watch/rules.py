@@ -323,9 +323,11 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
         select(Incident).where(Incident.category == "elevator", Incident.status != "closed")
     ).all()
     active_one_elevator_incident_ids: set[str] = set()
+    active_both_elevator_incident_ids: set[str] = set()
     for incident in open_elevator_incidents:
         age_hours = ((now_epoch - int(incident.start_ts_epoch or incident.last_ts_epoch or now_epoch)) / 3600.0)
         if incident.asset == "elevator_both":
+            active_both_elevator_incident_ids.add(incident.incident_id)
             actions.append(
                 ensure_action(
                     session,
@@ -356,6 +358,11 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
         session,
         "active_phase_one_elevator_down",
         keep_related_incident_ids=active_one_elevator_incident_ids,
+    )
+    _complete_open_actions(
+        session,
+        "both_elevators_down",
+        keep_related_incident_ids=active_both_elevator_incident_ids,
     )
 
     latest_change_epoch = max((parse_ts_to_epoch(row.last_changed_at) or 0 for row in records), default=0)

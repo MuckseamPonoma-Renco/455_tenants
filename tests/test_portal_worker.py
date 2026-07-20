@@ -1,7 +1,8 @@
+import json
 from datetime import datetime, timedelta, timezone
 
-from packages.db import FilingJob, ServiceRequestCase, get_session
-from packages.nyc311.planner import claim_next_job
+from packages.db import FilingJob, Incident, ServiceRequestCase, get_session
+from packages.nyc311.planner import claim_next_job, ensure_filing_job_for_incident
 from packages.nyc311.portal import (
     NY,
     PortalSubmissionResult,
@@ -19,6 +20,94 @@ from packages.nyc311.portal_worker import run_portal_filing_once
 
 def auth_headers():
     return {'Authorization': 'Bearer test-token'}
+
+
+def _elevator_incident(incident_id, *, timestamp):
+    return Incident(
+        incident_id=incident_id,
+        category="elevator",
+        asset="elevator_south",
+        severity=4,
+        status="open",
+        start_ts=datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
+        start_ts_epoch=timestamp,
+        last_ts_epoch=timestamp,
+        title="South elevator outage",
+        summary="South elevator not working.",
+        proof_refs="",
+        report_count=1,
+        witness_count=1,
+        confidence=80,
+        needs_review=False,
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def test_equivalent_incident_alias_is_skipped_before_a_second_311_job(client):
+    now_epoch = int(datetime.now(timezone.utc).timestamp()) - 24 * 60 * 60
+    with get_session() as session:
+        first_incident = _elevator_incident("south-live", timestamp=now_epoch)
+        session.add(first_incident)
+        session.flush()
+        first_job = ensure_filing_job_for_incident(session, first_incident)
+        assert first_job is not None
+        assert first_job.state == "pending"
+        session.flush()
+        first_job.state = "submitted"
+        first_job.completed_at = datetime.fromtimestamp(now_epoch, timezone.utc).isoformat()
+        first_job.updated_at = first_job.completed_at
+
+        alias_incident = _elevator_incident("south-export-alias", timestamp=now_epoch)
+        session.add(alias_incident)
+        skipped_job = ensure_filing_job_for_incident(session, alias_incident)
+        assert skipped_job is not None
+        assert skipped_job.state == "skipped"
+        assert f"{first_job.job_id}" in (skipped_job.notes or "")
+        session.commit()
+
+
+def test_claim_next_job_skips_pending_alias_after_equivalent_submission(client, monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps({"description": "South elevator dead.", "incident": {"asset": "elevator_south"}})
+    with get_session() as session:
+        session.add_all([
+            Incident(incident_id="submitted-incident", category="elevator", title="Submitted outage"),
+            Incident(incident_id="pending-alias", category="elevator", title="Pending outage"),
+        ])
+        session.flush()
+        session.add_all([
+            FilingJob(
+                dedupe_key="311:submitted-incident",
+                incident_id="submitted-incident",
+                state="submitted",
+                complaint_type="Elevator or Escalator Complaint",
+                form_target="elevator_not_working",
+                payload_json=payload,
+                created_at=now,
+                updated_at=now,
+                completed_at=now,
+            ),
+            FilingJob(
+                dedupe_key="311:pending-alias",
+                incident_id="pending-alias",
+                state="pending",
+                complaint_type="Elevator or Escalator Complaint",
+                form_target="elevator_not_working",
+                payload_json=payload,
+                created_at=now,
+                updated_at=now,
+            ),
+        ])
+        session.commit()
+
+    monkeypatch.setattr("packages.nyc311.planner.incident_is_auto_eligible", lambda _incident: True)
+    with get_session() as session:
+        job, skipped = claim_next_job(session)
+        assert job is None
+        assert skipped == 1
+        alias_job = session.query(FilingJob).filter_by(dedupe_key="311:pending-alias").one()
+        assert alias_job.state == "skipped"
+        assert "submitted-incident" in (alias_job.notes or "")
 
 
 def test_pick_best_address_match_prefers_exact_zip():

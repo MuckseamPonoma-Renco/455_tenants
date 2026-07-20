@@ -111,7 +111,6 @@ def test_sync_replaces_an_empty_staged_file_after_icloud_finishes(tmp_path, monk
     ("error_number", "message"),
     [
         (errno.EAGAIN, "Resource temporarily unavailable"),
-        (getattr(errno, "EDEADLK", errno.EAGAIN), "Resource deadlock avoided"),
     ],
 )
 def test_stage_export_retries_transient_icloud_lock(tmp_path, monkeypatch, error_number, message):
@@ -136,6 +135,28 @@ def test_stage_export_retries_transient_icloud_lock(tmp_path, monkeypatch, error
 
     assert len(attempts) == 2
     assert staged.exists()
+    assert zipfile.is_zipfile(staged)
+
+
+def test_stage_export_uses_buffered_copy_after_icloud_deadlock(tmp_path, monkeypatch):
+    source = tmp_path / "WhatsApp Chat - 455 Tenants 11.zip"
+    dest_dir = tmp_path / "incoming"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("WhatsApp Chat - 455 Tenants.txt", "[6/5/26, 9:00:00 AM] Karen: North lift dead\n")
+
+    attempts = []
+
+    def deadlocking_copy(source_arg, destination_arg):
+        attempts.append((source_arg, destination_arg))
+        raise OSError(getattr(errno, "EDEADLK", errno.EAGAIN), "Resource deadlock avoided")
+
+    monkeypatch.setattr(inbox_sync.shutil, "copy2", deadlocking_copy)
+
+    staged = inbox_sync.stage_export(source, dest_dir)
+
+    assert len(attempts) == 1
+    assert staged.exists()
+    assert staged.stat().st_size == source.stat().st_size
     assert zipfile.is_zipfile(staged)
 
 

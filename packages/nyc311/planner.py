@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,8 @@ from packages.nyc311.drafts import build_filing_draft
 
 
 ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
+EQUIVALENT_JOB_STATES = frozenset({"pending", "claimed", "submitted"})
+CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"claimed", "submitted"})
 
 
 ELEVATOR_ACTIONABLE_COMPLAINT_RE = re.compile(
@@ -143,6 +146,106 @@ def _dedupe_key(inc: Incident) -> str:
     return f"311:{inc.incident_id}"
 
 
+def _normalized_filing_text(value: object) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _filing_signature(
+    complaint_type: str | None,
+    form_target: str | None,
+    payload_json: str | None,
+) -> tuple[str, str, str, str, str] | None:
+    try:
+        payload = json.loads(payload_json or "{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    incident = payload.get("incident")
+    asset = incident.get("asset") if isinstance(incident, dict) else ""
+    start_ts = _parse_iso(incident.get("start_ts")) if isinstance(incident, dict) else None
+    description = _normalized_filing_text(payload.get("description"))
+    if not description:
+        return None
+    return (
+        _normalized_filing_text(complaint_type),
+        _normalized_filing_text(form_target),
+        _normalized_filing_text(asset),
+        description,
+        str(int(start_ts.timestamp()) // 900) if start_ts else "",
+    )
+
+
+def _job_filing_signature(job: FilingJob) -> tuple[str, str, str, str, str] | None:
+    return _filing_signature(job.complaint_type, job.form_target, job.payload_json)
+
+
+def _equivalent_job_blocks_filing(
+    job: FilingJob,
+    *,
+    signature: tuple[str, str, str, str, str],
+    now: datetime,
+) -> bool:
+    if job.state in {"pending", "claimed"}:
+        return True
+    if job.state != "submitted":
+        return False
+
+    # A matching observed-event bucket means the same event was already filed,
+    # even if a weekly export reaches the system days later.
+    if signature[-1]:
+        return True
+
+    duplicate_window_minutes = _env_int("AUTO_FILE_EQUIVALENT_DUPLICATE_MINUTES", 180)
+    if duplicate_window_minutes <= 0:
+        return True
+    submitted_at = _parse_iso(job.completed_at) or _parse_iso(job.updated_at) or _parse_iso(job.created_at)
+    if submitted_at is None:
+        return True
+    return submitted_at >= now - timedelta(minutes=duplicate_window_minutes)
+
+
+def _find_equivalent_filing_job(
+    session,
+    signature: tuple[str, str, str, str, str] | None,
+    *,
+    states: frozenset[str],
+    exclude: FilingJob | None = None,
+) -> FilingJob | None:
+    if signature is None:
+        return None
+    candidates = [
+        row
+        for row in session.new
+        if isinstance(row, FilingJob) and row.state in states
+    ]
+    candidates.extend(session.scalars(select(FilingJob).where(FilingJob.state.in_(states))).all())
+
+    seen: set[tuple[str, object]] = set()
+    now = datetime.now(tz=timezone.utc)
+    for candidate in candidates:
+        if candidate is exclude:
+            continue
+        identity = ("job", candidate.job_id) if candidate.job_id is not None else ("object", id(candidate))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if _job_filing_signature(candidate) != signature:
+            continue
+        if _equivalent_job_blocks_filing(candidate, signature=signature, now=now):
+            return candidate
+    return None
+
+
+def _append_job_note(existing: str | None, note: str) -> str:
+    return f"{existing} | {note}"[:2000] if existing else note
+
+
+def _equivalent_job_note(job: FilingJob) -> str:
+    reference = str(job.job_id) if job.job_id is not None else job.dedupe_key
+    return f"auto-skipped equivalent 311 filing job {reference} ({job.dedupe_key})"
+
+
 def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
     if not incident_is_auto_eligible(inc):
         return None
@@ -164,6 +267,32 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
     if not draft:
         return None
 
+    payload_json = draft.payload_json()
+    equivalent_job = _find_equivalent_filing_job(
+        session,
+        _filing_signature(draft.complaint_type, draft.form_target, payload_json),
+        states=EQUIVALENT_JOB_STATES,
+    )
+    created_at = now_iso()
+    if equivalent_job is not None:
+        job = FilingJob(
+            dedupe_key=dedupe_key,
+            incident_id=inc.incident_id,
+            job_type="nyc311_file",
+            state="skipped",
+            priority=max(1, 100 - int(inc.severity or 0) * 10),
+            filing_channel="portal_playwright",
+            complaint_type=draft.complaint_type,
+            form_target=draft.form_target,
+            payload_json=payload_json,
+            notes=_append_job_note(draft.description[:1800], _equivalent_job_note(equivalent_job)),
+            attempts=0,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        session.add(job)
+        return job
+
     job = FilingJob(
         dedupe_key=dedupe_key,
         incident_id=inc.incident_id,
@@ -173,11 +302,11 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         filing_channel="portal_playwright",
         complaint_type=draft.complaint_type,
         form_target=draft.form_target,
-        payload_json=draft.payload_json(),
+        payload_json=payload_json,
         notes=draft.description[:2000],
         attempts=0,
-        created_at=now_iso(),
-        updated_at=now_iso(),
+        created_at=created_at,
+        updated_at=created_at,
     )
     session.add(job)
     return job
@@ -224,7 +353,19 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
             row.state = "skipped"
             row.updated_at = now_iso()
             note = "auto-skipped because incident is no longer auto-eligible"
-            row.notes = f"{row.notes} | {note}"[:2000] if row.notes else note
+            row.notes = _append_job_note(row.notes, note)
+            skipped += 1
+            continue
+        equivalent_job = _find_equivalent_filing_job(
+            session,
+            _job_filing_signature(row),
+            states=CLAIM_BLOCKING_EQUIVALENT_JOB_STATES,
+            exclude=row,
+        )
+        if equivalent_job is not None:
+            row.state = "skipped"
+            row.updated_at = now_iso()
+            row.notes = _append_job_note(row.notes, _equivalent_job_note(equivalent_job))
             skipped += 1
             continue
         row.state = "claimed"

@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import datetime as dt
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from packages.whatsapp.status import read_capture_status
 
 router = APIRouter()
 DEFAULT_MIN_FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024
+DEFAULT_CHAT_EXPORT_SYNC_MAX_AGE_SECONDS = 3600
 
 
 def _truthy(name: str, default: str = '0') -> bool:
@@ -43,6 +45,10 @@ def _positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
 
 
 def _storage_health_path() -> Path:
@@ -101,6 +107,19 @@ def _chat_export_sync_state_path() -> Path:
     return Path.home() / '.local' / 'state' / 'tenant-issue-os' / 'chat-export-sync.json'
 
 
+def _chat_export_sync_is_stale(last_checked_at: str | None) -> bool:
+    if not last_checked_at:
+        return False
+    try:
+        checked_at = dt.datetime.fromisoformat(last_checked_at.replace('Z', '+00:00'))
+    except ValueError:
+        return True
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=dt.UTC)
+    max_age_seconds = _positive_int(os.environ.get('CHAT_EXPORT_SYNC_MAX_AGE_SECONDS')) or DEFAULT_CHAT_EXPORT_SYNC_MAX_AGE_SECONDS
+    return (_utcnow() - checked_at).total_seconds() > max_age_seconds
+
+
 def _public_chat_export_sync_status() -> dict[str, Any]:
     path = _chat_export_sync_state_path()
     if not path.exists():
@@ -113,7 +132,11 @@ def _public_chat_export_sync_status() -> dict[str, Any]:
         return {'state': 'unreadable', 'has_error': True}
 
     error = _text(state.get('last_error'))
-    if error and error.startswith('waiting for complete iCloud export:'):
+    last_checked_at = _text(state.get('last_checked_at'))
+    stale = _chat_export_sync_is_stale(last_checked_at)
+    if stale:
+        status = 'stale'
+    elif error and error.startswith('waiting for complete iCloud export:'):
         status = 'waiting_for_download'
     elif error:
         status = 'error'
@@ -126,9 +149,9 @@ def _public_chat_export_sync_status() -> dict[str, Any]:
 
     return {
         'state': status,
-        'last_checked_at': _text(state.get('last_checked_at')),
+        'last_checked_at': last_checked_at,
         'last_processed_at': _text(state.get('last_processed_at')),
-        'has_error': bool(error and status == 'error'),
+        'has_error': bool(stale or (error and status == 'error')),
     }
 
 

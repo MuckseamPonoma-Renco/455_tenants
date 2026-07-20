@@ -541,6 +541,58 @@ def test_existing_311_case_suppresses_tenant_visible_elevator_action(client):
         assert action.status == "completed"
 
 
+def test_closed_both_elevator_action_is_completed_while_current_outage_stays_open(client):
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="closed-both-elevators",
+                category="elevator",
+                asset="elevator_both",
+                severity=5,
+                status="closed",
+                title="Both elevators previously down",
+            ),
+            Incident(
+                incident_id="current-both-elevators",
+                category="elevator",
+                asset="elevator_both",
+                severity=5,
+                status="open",
+                title="Both elevators currently down",
+            ),
+        ])
+        session.flush()
+        session.add_all([
+            WatchdogAction(
+                action_type="both_elevators_down",
+                severity="critical",
+                title="Stale elevator action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="closed-both-elevators",
+                created_at="2026-05-01T00:00:00Z",
+                updated_at="2026-05-01T00:00:00Z",
+            ),
+            WatchdogAction(
+                action_type="both_elevators_down",
+                severity="critical",
+                title="Current elevator action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="current-both-elevators",
+                created_at="2026-05-01T00:00:00Z",
+                updated_at="2026-05-01T00:00:00Z",
+            ),
+        ])
+        evaluate_project_rules(session)
+        session.commit()
+
+        stale_action = session.query(WatchdogAction).filter_by(related_incident_id="closed-both-elevators").one()
+        current_action = session.query(WatchdogAction).filter_by(related_incident_id="current-both-elevators").one()
+        assert stale_action.status == "completed"
+        assert current_action.status == "open"
+
+
 def test_report_still_ingests_elevator_outage_and_restore_events(client):
     out = client.post("/report/submit", data={"reporter": "16F", "kind": "elevator_out", "asset": "elevator_north", "note": ""})
     restore = client.post("/report/submit", data={"reporter": "16F", "kind": "elevator_restore", "asset": "elevator_north", "note": ""})

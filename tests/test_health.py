@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ def test_health_includes_safe_whatsapp_and_chat_sync_status(client, monkeypatch,
     monkeypatch.setenv("WHATSAPP_CAPTURE_STATUS_PATH", str(status_path))
     monkeypatch.setenv("CHAT_EXPORT_SYNC_STATE_PATH", str(sync_path))
     monkeypatch.setenv("AUTOMATION_STATUS_PATH", str(automation_status_path))
+    monkeypatch.setattr(health_router, "_utcnow", lambda: dt.datetime(2026, 7, 20, 1, 55, tzinfo=dt.UTC))
     monkeypatch.setattr(health_router.shutil, "disk_usage", lambda _path: SimpleNamespace(free=20 * 1024 * 1024 * 1024))
     monkeypatch.setattr(health_router, "database_is_ready", lambda: True)
     write_capture_status(status_path, state="login_required", login_required=True, chat_names=["455 Tenants"])
@@ -53,6 +55,32 @@ def test_health_includes_safe_whatsapp_and_chat_sync_status(client, monkeypatch,
         "poll_seconds": 60,
         "updated_at": payload["automation"]["updated_at"],
         "has_error": False,
+    }
+
+
+def test_health_marks_stale_chat_export_sync_as_an_error(client, monkeypatch, tmp_path):
+    sync_path = tmp_path / "chat-export-sync.json"
+    monkeypatch.setenv("CHAT_EXPORT_SYNC_STATE_PATH", str(sync_path))
+    monkeypatch.setattr(health_router, "_utcnow", lambda: dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC))
+    sync_path.write_text(
+        json.dumps(
+            {
+                "last_checked_at": "2026-07-20T00:00:00Z",
+                "last_processed_at": "2026-07-20T00:00:00Z",
+                "last_processed_fingerprint": {"name": "WhatsApp Chat - 455 Tenants.zip"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["chat_export_sync"] == {
+        "state": "stale",
+        "last_checked_at": "2026-07-20T00:00:00Z",
+        "last_processed_at": "2026-07-20T00:00:00Z",
+        "has_error": True,
     }
 
 
