@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from packages.llm.openai_client import llm_enabled
 from packages.whatsapp.status import read_capture_status
 
 router = APIRouter()
+DEFAULT_MIN_FREE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024
 
 
 def _truthy(name: str, default: str = '0') -> bool:
@@ -39,6 +41,30 @@ def _positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _storage_health_path() -> Path:
+    configured = _text(os.environ.get('HEALTH_STORAGE_PATH'))
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home()
+
+
+def _minimum_free_storage_bytes() -> int:
+    return _positive_int(os.environ.get('HEALTH_MIN_FREE_STORAGE_BYTES')) or DEFAULT_MIN_FREE_STORAGE_BYTES
+
+
+def _public_storage_status() -> dict[str, Any]:
+    try:
+        free_bytes = shutil.disk_usage(_storage_health_path()).free
+    except OSError:
+        return {'state': 'unavailable', 'low_disk': False}
+
+    low_disk = free_bytes < _minimum_free_storage_bytes()
+    return {
+        'state': 'low_disk' if low_disk else 'ready',
+        'low_disk': low_disk,
+    }
 
 
 def _public_capture_status(status: dict[str, Any]) -> dict[str, Any] | None:
@@ -107,4 +133,5 @@ def health():
         'sheets_configured': bool((os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID') or '').strip()) and _sheets_creds_present(),
         'whatsapp_capture': whatsapp_capture,
         'chat_export_sync': _public_chat_export_sync_status(),
+        'storage': _public_storage_status(),
     }

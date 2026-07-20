@@ -29,6 +29,8 @@ WHATSAPP_CAPTURE_STATE=""
 WHATSAPP_CAPTURE_AGE_SECONDS=""
 WHATSAPP_CAPTURE_MAX_AGE_SECONDS=""
 WHATSAPP_CAPTURE_DETAIL=""
+STORAGE_STATE=""
+STORAGE_LOW_DISK=""
 
 usage() {
   cat <<'EOF'
@@ -68,6 +70,7 @@ refresh_endpoint_health() {
     LOCAL_API_HEALTHY=1
   fi
   refresh_whatsapp_capture_freshness
+  refresh_storage_health
 
   : >"$PUBLIC_BODY_FILE"
   PUBLIC_HEALTH_CODE=""
@@ -78,6 +81,37 @@ refresh_endpoint_health() {
       PUBLIC_HEALTHY=1
     fi
   fi
+}
+
+refresh_storage_health() {
+  STORAGE_STATE=""
+  STORAGE_LOW_DISK=""
+
+  [[ -s "$LOCAL_BODY_FILE" ]] || return 0
+  local python_bin parsed
+  python_bin="$(mac_service_runtime_python)" || return 0
+  parsed="$("$python_bin" - "$LOCAL_BODY_FILE" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+storage = payload.get("storage") or {}
+state = str(storage.get("state") or "missing")
+if storage.get("low_disk") is True:
+    low_disk = "true"
+elif storage.get("low_disk") is False:
+    low_disk = "false"
+else:
+    low_disk = "unknown"
+print("\t".join((state, low_disk)))
+PY
+)" || return 0
+  IFS=$'\t' read -r STORAGE_STATE STORAGE_LOW_DISK <<<"$parsed"
 }
 
 refresh_whatsapp_capture_freshness() {
@@ -264,6 +298,23 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
     return 0
   fi
 
+  if [[ "$name" == "storage" ]]; then
+    if [[ "$STORAGE_STATE" == "ready" && "$STORAGE_LOW_DISK" == "false" ]]; then
+      state="healthy"
+      reason="host free storage is above the configured safety threshold"
+    elif [[ "$STORAGE_STATE" == "low_disk" || "$STORAGE_LOW_DISK" == "true" ]]; then
+      state="low_disk"
+      reason="host free storage is below the configured safety threshold; no automatic evidence or WhatsApp-session deletion is performed"
+    else
+      state="unhealthy"
+      reason="host storage health is ${STORAGE_STATE:-missing}"
+    fi
+    reason="$(sanitize_field "$reason")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
+
   if mac_service_launchd_loaded "$name"; then
     launchd_loaded="true"
   fi
@@ -381,6 +432,7 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
 collect_statuses() {
   : >"$STATUS_FILE"
   service_status_row api >>"$STATUS_FILE"
+  service_status_row storage >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
   service_status_row chat_export_sync >>"$STATUS_FILE"
   service_status_row whatsapp_capture >>"$STATUS_FILE"

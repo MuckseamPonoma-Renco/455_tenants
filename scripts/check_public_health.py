@@ -50,6 +50,15 @@ def validate_health(
     if payload.get('sheets_disabled') is True or payload.get('sheets_configured') is not True:
         failures.append('Google Sheets sync is not configured and enabled')
 
+    storage = payload.get('storage')
+    if not isinstance(storage, dict):
+        failures.append('host storage health is missing')
+    else:
+        storage_state = storage.get('state')
+        details['storage_state'] = storage_state
+        if storage_state != 'ready' or storage.get('low_disk') is not False:
+            failures.append(f"host storage is {storage_state or 'unknown'}")
+
     capture = payload.get('whatsapp_capture')
     if not isinstance(capture, dict):
         failures.append('WhatsApp capture health is missing')

@@ -150,6 +150,6 @@ This does not replace live capture. If the Mac-side WhatsApp watcher is stalled,
 
 ## Independent Availability Monitor
 
-`.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and every 15 minutes. It validates that the API is reachable, the database and Sheets are configured, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. It sends no chat export, message text, file name, or spreadsheet data to GitHub.
+`.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and every 15 minutes. It validates that the API is reachable, the database and Sheets are configured, host free storage is above the 10 GiB safety threshold, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. It sends no chat export, message text, file name, or spreadsheet data to GitHub.
 
 This is an outage detector, not a cloud receiver. A failed check means the Mac or tunnel needs attention; it cannot unlock a FileVault-protected Mac, restore power, or import a new iCloud file while the Mac is unavailable.

@@ -19,7 +19,7 @@ jobs:
       PUBLIC_HEALTH_URL: https://api.455tenants.com/health
     steps:
       - uses: actions/checkout@v4
-      - name: Check public API, WhatsApp capture, and iCloud import heartbeat
+      - name: Check public API, host storage, WhatsApp capture, and iCloud import heartbeat
         run: >-
           python3 scripts/check_public_health.py
           --url "$PUBLIC_HEALTH_URL"
