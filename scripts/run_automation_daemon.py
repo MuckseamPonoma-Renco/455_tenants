@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,8 +16,9 @@ from packages.local_env import load_local_env_file
 load_local_env_file()
 
 from packages.audit import append_audit_event, daily_hash_chain
+from packages.automation_status import write_automation_status
 from packages.nyc311.portal_worker import run_portal_filing_once
-from packages.worker_jobs import process_pending_messages, resync_replacement_watchdog, sync_311_statuses
+from packages.worker_jobs import full_resync_sheets, process_pending_messages, resync_replacement_watchdog, sync_311_statuses
 from scripts.audit_public_tenant_log import run_audit as run_public_tenant_log_audit
 
 
@@ -38,14 +40,44 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _record_audit_event(kind: str, message_id: str | None, meta: dict) -> None:
+    try:
+        append_audit_event(kind, message_id, meta)
+        daily_hash_chain()
+    except Exception as exc:
+        # Audit storage must not turn a recoverable dependency outage into a
+        # permanently stalled automation daemon.
+        _log(f"audit persistence error: {exc}")
+
+
+def _write_automation_status(*, state: str, poll_seconds: int, last_error: str = "") -> None:
+    try:
+        write_automation_status(
+            state=state,
+            poll_seconds=poll_seconds,
+            last_cycle_at=_now_iso(),
+            last_error=last_error,
+        )
+    except Exception as exc:
+        _log(f"automation status write error: {exc}")
+
+
 def _run_step(label: str, func):
     try:
         return func()
     except Exception as exc:
-        append_audit_event("AUTOMATION_STEP_ERROR", None, {"step": label, "error": str(exc)[:500]})
-        daily_hash_chain()
+        _record_audit_event("AUTOMATION_STEP_ERROR", None, {"step": label, "error": str(exc)[:500]})
         _log(f"{label} error: {exc}")
         return None
+
+
+def _run_work_step(label: str, func, *, poll_seconds: int):
+    _write_automation_status(state="working", poll_seconds=poll_seconds)
+    return _run_step(label, func)
 
 
 def _public_tenant_log_qa() -> dict[str, object]:
@@ -67,8 +99,7 @@ def _public_tenant_log_qa() -> dict[str, object]:
         "live_latest_update": result.get("live_latest_update"),
     }
     if result.get("ok"):
-        append_audit_event("PUBLIC_TENANT_LOG_QA_OK", None, meta)
-        daily_hash_chain()
+        _record_audit_event("PUBLIC_TENANT_LOG_QA_OK", None, meta)
         return meta
 
     # A failed live read is not evidence that the rendered sheet is wrong.
@@ -76,11 +107,10 @@ def _public_tenant_log_qa() -> dict[str, object]:
     # temporary Google Sheets quota error into a sustained repair loop.
     if result.get("live_read_error"):
         deferred = {**meta, "repair_skipped": "live_read_error"}
-        append_audit_event("PUBLIC_TENANT_LOG_QA_DEFERRED", None, deferred)
-        daily_hash_chain()
+        _record_audit_event("PUBLIC_TENANT_LOG_QA_DEFERRED", None, deferred)
         return deferred
 
-    append_audit_event("PUBLIC_TENANT_LOG_QA_MISMATCH", None, meta)
+    _record_audit_event("PUBLIC_TENANT_LOG_QA_MISMATCH", None, meta)
     repaired = run_public_tenant_log_audit(days=days, resync=True, retries=5, retry_sleep=8.0, limit=5)
     repair_meta = {
         **meta,
@@ -91,12 +121,11 @@ def _public_tenant_log_qa() -> dict[str, object]:
         "repair_source_recent_rows": repaired.get("source_recent_rows"),
         "repair_live_latest_update": repaired.get("live_latest_update"),
     }
-    append_audit_event(
+    _record_audit_event(
         "PUBLIC_TENANT_LOG_QA_REPAIRED" if repaired.get("ok") else "PUBLIC_TENANT_LOG_QA_REPAIR_FAILED",
         None,
         repair_meta,
     )
-    daily_hash_chain()
     return repair_meta
 
 
@@ -140,6 +169,8 @@ def main() -> None:
     between_jobs_seconds = max(0, args.between_jobs_seconds or _env_int("AUTOMATION_BETWEEN_JOBS_SECONDS", 5))
     startup_catchup_limit = max(0, args.startup_catchup_limit if args.startup_catchup_limit is not None else _env_int("AUTOMATION_STARTUP_CATCHUP_LIMIT", 200))
 
+    _write_automation_status(state="starting", poll_seconds=poll_seconds)
+
     _log(
         "automation loop starting "
         f"headless={headless} verify_lookup={verify_lookup} poll_seconds={poll_seconds} "
@@ -147,7 +178,7 @@ def main() -> None:
         f"public_tenant_log_audit_seconds={public_tenant_log_audit_seconds} burst_size={burst_size} "
         f"startup_catchup_limit={startup_catchup_limit}"
     )
-    append_audit_event(
+    _record_audit_event(
         "AUTOMATION_LOOP_STARTED",
         None,
         {
@@ -161,12 +192,17 @@ def main() -> None:
             "startup_catchup_limit": startup_catchup_limit,
         },
     )
-    daily_hash_chain()
 
     if startup_catchup_limit > 0:
-        catchup = process_pending_messages(limit=startup_catchup_limit, resync_sheets=True)
-        if catchup.get("pending_selected") or catchup.get("errors_total"):
+        catchup = _run_step("startup catch-up", lambda: process_pending_messages(limit=startup_catchup_limit, resync_sheets=False))
+        if catchup and (catchup.get("pending_selected") or catchup.get("errors_total")):
             _log(f"startup catch-up result: {catchup}")
+        if catchup and (catchup.get("processed_total") or catchup.get("queued_jobs")):
+            _run_work_step("startup sheets sync", full_resync_sheets, poll_seconds=poll_seconds)
+
+    # A restart with no new messages is ready before the first periodic audit.
+    # Long-running scheduled steps refresh their own working heartbeat below.
+    _write_automation_status(state="ready", poll_seconds=poll_seconds)
 
     next_status_sync_at = time.monotonic() if status_sync_seconds > 0 else None
     next_public_record_sync_at = time.monotonic() if public_record_sync_seconds > 0 else None
@@ -177,21 +213,21 @@ def main() -> None:
         try:
             now = time.monotonic()
             if next_public_tenant_log_audit_at is not None and now >= next_public_tenant_log_audit_at:
-                result = _run_step("public Tenant Log QA", _public_tenant_log_qa)
+                result = _run_work_step("public Tenant Log QA", _public_tenant_log_qa, poll_seconds=poll_seconds)
                 if result is not None:
                     _log(f"public Tenant Log QA result: {result}")
                     did_work = True
                 next_public_tenant_log_audit_at = time.monotonic() + public_tenant_log_audit_seconds
 
             if next_public_record_sync_at is not None and now >= next_public_record_sync_at:
-                result = _run_step("replacement watchdog sync", resync_replacement_watchdog)
+                result = _run_work_step("replacement watchdog sync", resync_replacement_watchdog, poll_seconds=poll_seconds)
                 if result is not None:
                     _log(f"replacement watchdog sync result: {result}")
                     did_work = True
                 next_public_record_sync_at = time.monotonic() + public_record_sync_seconds
 
             if next_status_sync_at is not None and now >= next_status_sync_at:
-                result = _run_step("status sync", sync_311_statuses)
+                result = _run_work_step("status sync", sync_311_statuses, poll_seconds=poll_seconds)
                 if result is not None:
                     _log(f"status sync result: {result}")
                     did_work = True
@@ -199,9 +235,10 @@ def main() -> None:
 
             processed = 0
             while processed < burst_size:
-                result = _run_step(
+                result = _run_work_step(
                     "portal filing",
                     lambda: run_portal_filing_once(headless=headless, verify_lookup=verify_lookup),
+                    poll_seconds=poll_seconds,
                 )
                 if result is None:
                     break
@@ -216,16 +253,17 @@ def main() -> None:
                 if processed < burst_size and between_jobs_seconds:
                     time.sleep(between_jobs_seconds)
         except KeyboardInterrupt:
-            append_audit_event("AUTOMATION_LOOP_STOPPED", None, {"reason": "keyboard_interrupt"})
-            daily_hash_chain()
+            _record_audit_event("AUTOMATION_LOOP_STOPPED", None, {"reason": "keyboard_interrupt"})
+            _write_automation_status(state="stopped", poll_seconds=poll_seconds)
             raise
         except Exception as exc:
-            append_audit_event("AUTOMATION_LOOP_ERROR", None, {"error": str(exc)[:500]})
-            daily_hash_chain()
+            _record_audit_event("AUTOMATION_LOOP_ERROR", None, {"error": str(exc)[:500]})
+            _write_automation_status(state="error", poll_seconds=poll_seconds, last_error=str(exc)[:500])
             _log(f"automation error: {exc}")
             time.sleep(error_sleep_seconds)
             continue
 
+        _write_automation_status(state="ready", poll_seconds=poll_seconds)
         time.sleep(poll_seconds if not did_work else max(5, min(poll_seconds, between_jobs_seconds or poll_seconds)))
 
 

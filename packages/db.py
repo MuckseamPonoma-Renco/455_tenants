@@ -17,6 +17,16 @@ engine = create_engine(DATABASE_URL, connect_args=CONNECT_ARGS, **ENGINE_KWARGS)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
+def database_is_ready() -> bool:
+    """Return whether the configured database accepts a minimal query right now."""
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
 class Base(DeclarativeBase):
     pass
 

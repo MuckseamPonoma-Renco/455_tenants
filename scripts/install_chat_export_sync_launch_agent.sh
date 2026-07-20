@@ -55,7 +55,8 @@ import plistlib
 import sys
 
 plist_path, label, program, repo_root, stdout_log, stderr_log, interval, throttle_interval = sys.argv[1:9]
-icloud_inbox = pathlib.Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
+icloud_root = pathlib.Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"
+icloud_inbox = icloud_root / "455 Tenant Chat Exports"
 body = {
     "Label": label,
     "ProgramArguments": [program],
@@ -63,7 +64,10 @@ body = {
     "RunAtLoad": True,
     "StartInterval": int(interval),
     "ThrottleInterval": int(throttle_interval),
-    "WatchPaths": [str(icloud_inbox)],
+    # iOS saves may land in either the dedicated inbox or iCloud Drive's root.
+    # ThrottleInterval prevents unrelated iCloud churn from invoking the audit
+    # more than once every two minutes.
+    "WatchPaths": [str(icloud_inbox), str(icloud_root)],
     "StandardOutPath": stdout_log,
     "StandardErrorPath": stderr_log,
 }
@@ -86,6 +90,6 @@ echo "  interval_seconds: $START_INTERVAL_SECONDS"
 echo "  throttle_interval_seconds: $THROTTLE_INTERVAL_SECONDS"
 echo "  runtime: $RUNTIME_ROOT"
 echo "  iCloud scan sources: $HOME/Library/Mobile Documents/com~apple~CloudDocs and $HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
-echo "  immediate watch path: $HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
+echo "  immediate watch paths: $HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports and $HOME/Library/Mobile Documents/com~apple~CloudDocs"
 echo "  stdout: $STDOUT_LOG"
 echo "  stderr: $STDERR_LOG"

@@ -6,6 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from packages.automation_status import read_automation_status
+from packages.db import database_is_ready
 from packages.llm.openai_client import llm_enabled
 from packages.whatsapp.status import read_capture_status
 
@@ -82,6 +84,16 @@ def _public_capture_status(status: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _public_automation_status(status: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'state': _text(status.get('state')) or 'missing',
+        'last_cycle_at': _text(status.get('last_cycle_at')),
+        'poll_seconds': _positive_int(status.get('poll_seconds')),
+        'updated_at': _text(status.get('updated_at')),
+        'has_error': bool(_text(status.get('last_error'))),
+    }
+
+
 def _chat_export_sync_state_path() -> Path:
     configured = _text(os.environ.get('CHAT_EXPORT_SYNC_STATE_PATH'))
     if configured:
@@ -123,15 +135,18 @@ def _public_chat_export_sync_status() -> dict[str, Any]:
 @router.get('/health')
 def health():
     whatsapp_capture = _public_capture_status(read_capture_status())
+    database_configured = bool((os.environ.get('DATABASE_URL') or '').strip())
     return {
         'ok': True,
         'process_inline': _truthy('PROCESS_INLINE'),
         'llm_enabled': llm_enabled(),
         'sheets_disabled': _truthy('DISABLE_SHEETS_SYNC'),
-        'database_configured': bool((os.environ.get('DATABASE_URL') or '').strip()),
+        'database_configured': database_configured,
+        'database_ready': database_configured and database_is_ready(),
         'redis_configured': bool((os.environ.get('REDIS_URL') or '').strip()),
         'sheets_configured': bool((os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID') or '').strip()) and _sheets_creds_present(),
         'whatsapp_capture': whatsapp_capture,
+        'automation': _public_automation_status(read_automation_status()),
         'chat_export_sync': _public_chat_export_sync_status(),
         'storage': _public_storage_status(),
     }

@@ -75,19 +75,37 @@ mac_service_service_script() {
 }
 
 mac_service_service_stdout_log() {
-  if [[ "$1" == "chat_export_sync" ]]; then
-    printf '%s/chat-export-sync.out.log\n' "$MAC_SERVICE_LOG_DIR"
-    return 0
-  fi
-  printf '%s/%s.out.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
+  case "$1" in
+    api|automation|whatsapp_capture|tunnel)
+      printf '%s/%s.launchd.out.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
+      ;;
+    chat_export_sync)
+      printf '%s/chat-export-sync.out.log\n' "$MAC_SERVICE_LOG_DIR"
+      ;;
+    watchdog)
+      printf '%s/watchdog.out.log\n' "$MAC_SERVICE_LOG_DIR"
+      ;;
+    *)
+      printf '%s/%s.out.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
+      ;;
+  esac
 }
 
 mac_service_service_stderr_log() {
-  if [[ "$1" == "chat_export_sync" ]]; then
-    printf '%s/chat-export-sync.err.log\n' "$MAC_SERVICE_LOG_DIR"
-    return 0
-  fi
-  printf '%s/%s.err.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
+  case "$1" in
+    api|automation|whatsapp_capture|tunnel)
+      printf '%s/%s.launchd.err.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
+      ;;
+    chat_export_sync)
+      printf '%s/chat-export-sync.err.log\n' "$MAC_SERVICE_LOG_DIR"
+      ;;
+    watchdog)
+      printf '%s/watchdog.err.log\n' "$MAC_SERVICE_LOG_DIR"
+      ;;
+    *)
+      printf '%s/%s.err.log\n' "$MAC_SERVICE_LOG_DIR" "$1"
+      ;;
+  esac
 }
 
 mac_service_service_pid_file() {

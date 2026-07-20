@@ -36,6 +36,7 @@ def validate_health(
     *,
     now: dt.datetime,
     max_capture_age_seconds: int,
+    max_automation_age_seconds: int,
     max_import_age_seconds: int,
 ) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
@@ -47,6 +48,8 @@ def validate_health(
         failures.append('health endpoint did not report ok=true')
     if payload.get('database_configured') is not True:
         failures.append('database is not configured')
+    if payload.get('database_ready') is not True:
+        failures.append('database is not reachable')
     if payload.get('sheets_disabled') is True or payload.get('sheets_configured') is not True:
         failures.append('Google Sheets sync is not configured and enabled')
 
@@ -58,6 +61,22 @@ def validate_health(
         details['storage_state'] = storage_state
         if storage_state != 'ready' or storage.get('low_disk') is not False:
             failures.append(f"host storage is {storage_state or 'unknown'}")
+
+    automation = payload.get('automation')
+    if not isinstance(automation, dict):
+        failures.append('automation health is missing')
+    else:
+        automation_state = automation.get('state')
+        if automation_state not in {'ready', 'starting', 'working'}:
+            failures.append(f"automation is {automation_state or 'unknown'}")
+        if automation.get('has_error') is True:
+            failures.append('automation has an error')
+        automation_age = _age_seconds(automation.get('last_cycle_at'), now)
+        details['automation_age_seconds'] = automation_age
+        if automation_age is None:
+            failures.append('automation has no valid last_cycle_at timestamp')
+        elif automation_age > max_automation_age_seconds:
+            failures.append(f'automation is stale ({automation_age}s old)')
 
     capture = payload.get('whatsapp_capture')
     if not isinstance(capture, dict):
@@ -108,6 +127,7 @@ def main() -> int:
     parser.add_argument('--url', required=True, help='Public /health URL to validate.')
     parser.add_argument('--timeout-seconds', type=int, default=20)
     parser.add_argument('--max-capture-age-seconds', type=int, default=600)
+    parser.add_argument('--max-automation-age-seconds', type=int, default=1200)
     parser.add_argument('--max-import-age-seconds', type=int, default=3600)
     args = parser.parse_args()
 
@@ -117,6 +137,7 @@ def main() -> int:
             payload,
             now=dt.datetime.now(dt.UTC),
             max_capture_age_seconds=max(1, args.max_capture_age_seconds),
+            max_automation_age_seconds=max(1, args.max_automation_age_seconds),
             max_import_age_seconds=max(1, args.max_import_age_seconds),
         )
     except (OSError, RuntimeError, urllib.error.URLError, json.JSONDecodeError) as exc:

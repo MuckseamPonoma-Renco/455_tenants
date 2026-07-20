@@ -31,6 +31,11 @@ WHATSAPP_CAPTURE_MAX_AGE_SECONDS=""
 WHATSAPP_CAPTURE_DETAIL=""
 STORAGE_STATE=""
 STORAGE_LOW_DISK=""
+DATABASE_READY=""
+AUTOMATION_STATE=""
+AUTOMATION_AGE_SECONDS=""
+AUTOMATION_MAX_AGE_SECONDS=""
+AUTOMATION_HAS_ERROR=""
 
 usage() {
   cat <<'EOF'
@@ -71,6 +76,8 @@ refresh_endpoint_health() {
   fi
   refresh_whatsapp_capture_freshness
   refresh_storage_health
+  refresh_database_health
+  refresh_automation_freshness
 
   : >"$PUBLIC_BODY_FILE"
   PUBLIC_HEALTH_CODE=""
@@ -81,6 +88,84 @@ refresh_endpoint_health() {
       PUBLIC_HEALTHY=1
     fi
   fi
+}
+
+refresh_database_health() {
+  DATABASE_READY=""
+
+  [[ -s "$LOCAL_BODY_FILE" ]] || return 0
+  local python_bin parsed
+  python_bin="$(mac_service_runtime_python)" || return 0
+  parsed="$("$python_bin" - "$LOCAL_BODY_FILE" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+if payload.get("database_ready") is True:
+    print("true")
+elif payload.get("database_ready") is False:
+    print("false")
+else:
+    print("unknown")
+PY
+)" || return 0
+  DATABASE_READY="$parsed"
+}
+
+refresh_automation_freshness() {
+  AUTOMATION_STATE=""
+  AUTOMATION_AGE_SECONDS=""
+  AUTOMATION_MAX_AGE_SECONDS=""
+  AUTOMATION_HAS_ERROR=""
+
+  [[ -s "$LOCAL_BODY_FILE" ]] || return 0
+  local python_bin parsed
+  python_bin="$(mac_service_runtime_python)" || return 0
+  parsed="$("$python_bin" - "$LOCAL_BODY_FILE" <<'PY'
+import datetime as dt
+import json
+import os
+import pathlib
+import sys
+
+try:
+    payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+automation = payload.get("automation") or {}
+state = str(automation.get("state") or "missing")
+if automation.get("has_error") is True:
+    has_error = "true"
+elif automation.get("has_error") is False:
+    has_error = "false"
+else:
+    has_error = "unknown"
+try:
+    poll_seconds = max(10, int(automation.get("poll_seconds") or 60))
+except Exception:
+    poll_seconds = 60
+try:
+    max_age = max(300, int(os.environ.get("MAC_SERVICE_AUTOMATION_MAX_AGE_SECONDS") or max(900, poll_seconds * 15)))
+except Exception:
+    max_age = max(900, poll_seconds * 15)
+age = ""
+stamp = str(automation.get("last_cycle_at") or "")
+if stamp:
+    try:
+        parsed_stamp = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if parsed_stamp.tzinfo is None:
+            parsed_stamp = parsed_stamp.replace(tzinfo=dt.timezone.utc)
+        age = str(max(0, int((dt.datetime.now(dt.timezone.utc) - parsed_stamp).total_seconds())))
+    except Exception:
+        pass
+print("\t".join((state, age, str(max_age), has_error)))
+PY
+)" || return 0
+  IFS=$'\t' read -r AUTOMATION_STATE AUTOMATION_AGE_SECONDS AUTOMATION_MAX_AGE_SECONDS AUTOMATION_HAS_ERROR <<<"$parsed"
 }
 
 refresh_storage_health() {
@@ -327,9 +412,12 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
 
   case "$name" in
     api)
-      if [[ "$running" == "true" && "$LOCAL_API_HEALTHY" -eq 1 ]]; then
+      if [[ "$running" == "true" && "$LOCAL_API_HEALTHY" -eq 1 && "$DATABASE_READY" == "true" ]]; then
         state="healthy"
-        reason="local /health returned 200"
+        reason="local /health returned 200 and database is reachable"
+      elif [[ "$LOCAL_API_HEALTHY" -eq 1 && "$DATABASE_READY" != "true" ]]; then
+        state="blocked"
+        reason="local /health returned 200 but database health is ${DATABASE_READY:-unknown}"
       elif [[ "$running" == "false" && "$LOCAL_API_HEALTHY" -eq 1 ]]; then
         state="orphaned"
         needs_repair="true"
@@ -349,8 +437,30 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
       ;;
     automation)
       if [[ "$running" == "true" ]]; then
-        state="healthy"
-        reason="automation pid is running"
+        if [[ "$DATABASE_READY" != "true" ]]; then
+          state="blocked"
+          reason="automation is waiting for database health=${DATABASE_READY:-unknown}"
+        elif [[ "$STORAGE_STATE" == "low_disk" || "$STORAGE_LOW_DISK" == "true" ]]; then
+          state="blocked"
+          reason="automation is waiting for host storage recovery"
+        elif [[ ( "$AUTOMATION_STATE" == "ready" || "$AUTOMATION_STATE" == "working" ) \
+          && "$AUTOMATION_HAS_ERROR" == "false" \
+          && "$AUTOMATION_AGE_SECONDS" =~ ^[0-9]+$ \
+          && "$AUTOMATION_MAX_AGE_SECONDS" =~ ^[0-9]+$ \
+          && "$AUTOMATION_AGE_SECONDS" -le "$AUTOMATION_MAX_AGE_SECONDS" ]]; then
+          state="healthy"
+          reason="automation ${AUTOMATION_STATE} heartbeat is fresh (${AUTOMATION_AGE_SECONDS}s old)"
+        elif [[ "$AUTOMATION_STATE" == "starting" \
+          && "$AUTOMATION_AGE_SECONDS" =~ ^[0-9]+$ \
+          && "$AUTOMATION_MAX_AGE_SECONDS" =~ ^[0-9]+$ \
+          && "$AUTOMATION_AGE_SECONDS" -le "$AUTOMATION_MAX_AGE_SECONDS" ]]; then
+          state="starting"
+          reason="automation startup heartbeat is fresh (${AUTOMATION_AGE_SECONDS}s old)"
+        else
+          state="stale"
+          needs_repair="true"
+          reason="automation pid is running but state=${AUTOMATION_STATE:-missing} last_cycle_age=${AUTOMATION_AGE_SECONDS:-unknown}s"
+        fi
       else
         state="unhealthy"
         needs_repair="true"

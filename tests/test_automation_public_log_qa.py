@@ -31,3 +31,12 @@ def test_public_log_qa_does_not_resync_after_a_live_read_error(monkeypatch):
     assert calls[0]["resync"] is False
     assert result["repair_skipped"] == "live_read_error"
     assert events[0][0] == "PUBLIC_TENANT_LOG_QA_DEFERRED"
+
+
+def test_run_step_survives_audit_persistence_failure(monkeypatch):
+    monkeypatch.setattr(automation, "append_audit_event", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk unavailable")))
+    monkeypatch.setattr(automation, "daily_hash_chain", lambda: None)
+
+    result = automation._run_step("test", lambda: (_ for _ in ()).throw(RuntimeError("worker failed")))
+
+    assert result is None
