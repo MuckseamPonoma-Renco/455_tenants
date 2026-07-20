@@ -4,6 +4,7 @@ from pathlib import Path
 
 from packages.audit import compute_message_id, sender_hash
 from packages.db import MessageDecision, RawMessage, get_session
+from packages.whatsapp.export import parse_export_path
 from scripts.audit_whatsapp_export_decisions import iter_export_messages, run_audit
 
 
@@ -18,6 +19,21 @@ def test_iter_export_messages_reads_all_txt_files_in_zip(tmp_path):
     assert len(messages) == 1
     assert messages[0].chat_name == "455 Tenants"
     assert messages[0].text == "North lift dead"
+
+
+def test_parse_export_path_reads_zip_entries_without_loading_the_archive_bytes(tmp_path, monkeypatch):
+    export_path = tmp_path / "all_chats.zip"
+    with zipfile.ZipFile(export_path, "w") as archive:
+        archive.writestr("WhatsApp Chat - 455 Tenants.txt", "[6/5/26, 9:00:00 AM] Karen: North lift dead\n")
+        archive.writestr("evidence/video.mp4", b"x" * 1024)
+
+    monkeypatch.setattr(Path, "read_bytes", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not read the whole ZIP")))
+
+    parsed = parse_export_path(export_path)
+
+    assert parsed.is_zip is True
+    assert len(parsed.messages) == 1
+    assert parsed.messages[0].text == "North lift dead"
 
 
 def test_run_audit_creates_review_roster_for_missing_and_review_rows(client, tmp_path):

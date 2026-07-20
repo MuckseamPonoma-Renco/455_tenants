@@ -310,6 +310,19 @@ def test_export_ingest_imports_all_chat_txt_files_in_zip(client, tmp_path):
         assert chat_names == {'455 Tenants', 'Building Lobby'}
 
 
+def test_export_ingest_rejects_uploads_over_the_configured_limit(client, monkeypatch):
+    monkeypatch.setenv('INGEST_EXPORT_MAX_BYTES', '16')
+
+    response = client.post(
+        '/ingest/export',
+        headers=auth_headers(),
+        files={'file': ('too-large.txt', b'[6/5/26, 9:00:00 AM] Karen: North lift dead\n', 'text/plain')},
+    )
+
+    assert response.status_code == 413
+    assert 'upload limit' in response.json()['detail']
+
+
 def test_export_ingest_dedupes_matching_tasker_message_even_when_chat_name_differs(client, tmp_path):
     client.post('/ingest/tasker', headers=auth_headers(), json={
         'chat_name': '455 Tenants',

@@ -28,6 +28,22 @@ def _txt_names(archive: zipfile.ZipFile) -> list[str]:
     return sorted(name for name in archive.namelist() if name.casefold().endswith(".txt"))
 
 
+def _parse_zip_archive(archive: zipfile.ZipFile, *, default_chat_name: str) -> ParsedExport:
+    messages: list[ParsedMessage] = []
+    chat_files: list[str] = []
+    names = _txt_names(archive)
+    if not names:
+        raise ValueError("ZIP does not contain a .txt chat export")
+    for name in names:
+        content = archive.read(name).decode("utf-8", errors="replace")
+        parsed = parse_export_text(content, chat_name=chat_name_from_export_filename(name, default_chat_name))
+        if not parsed:
+            continue
+        messages.extend(parsed)
+        chat_files.append(name)
+    return ParsedExport(messages=messages, chat_files=chat_files, is_zip=True)
+
+
 def parse_export_payload(
     filename: str,
     raw: bytes,
@@ -42,23 +58,27 @@ def parse_export_payload(
         from io import BytesIO
 
         with zipfile.ZipFile(BytesIO(raw)) as archive:
-            names = _txt_names(archive)
-            if not names:
-                raise ValueError("ZIP does not contain a .txt chat export")
-            for name in names:
-                content = archive.read(name).decode("utf-8", errors="replace")
-                parsed = parse_export_text(content, chat_name=chat_name_from_export_filename(name, default_chat_name))
-                if not parsed:
-                    continue
-                messages.extend(parsed)
-                chat_files.append(name)
-        return ParsedExport(messages=messages, chat_files=chat_files, is_zip=True)
+            return _parse_zip_archive(archive, default_chat_name=default_chat_name)
 
     content = raw.decode("utf-8", errors="replace")
     parsed = parse_export_text(content, chat_name=chat_name_from_export_filename(filename, default_chat_name))
     return ParsedExport(messages=parsed, chat_files=[filename] if parsed else [], is_zip=False)
 
 
-def parse_export_path(path: str | Path, *, default_chat_name: str = "Tenants WhatsApp") -> ParsedExport:
+def parse_export_path(
+    path: str | Path,
+    *,
+    default_chat_name: str = "Tenants WhatsApp",
+    filename: str | None = None,
+) -> ParsedExport:
     export_path = Path(path)
-    return parse_export_payload(export_path.name, export_path.read_bytes(), default_chat_name=default_chat_name)
+    export_filename = filename or export_path.name
+    with export_path.open("rb") as handle:
+        is_zip = handle.read(4) == b"PK\x03\x04"
+    if is_zip:
+        with zipfile.ZipFile(export_path) as archive:
+            return _parse_zip_archive(archive, default_chat_name=default_chat_name)
+
+    content = export_path.read_text(encoding="utf-8", errors="replace")
+    parsed = parse_export_text(content, chat_name=chat_name_from_export_filename(export_filename, default_chat_name))
+    return ParsedExport(messages=parsed, chat_files=[export_filename] if parsed else [], is_zip=False)

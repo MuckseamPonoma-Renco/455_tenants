@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import zipfile
+from pathlib import Path
+
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 from packages.audit import append_audit_event, compute_message_id, sender_hash
@@ -19,9 +23,11 @@ from packages.tasker_capture import (
 )
 from packages.timeutil import epoch_to_iso, parse_ts_to_epoch
 from packages.whatsapp.attachments import merge_attachment_manifests, strip_reply_context_from_text
-from packages.whatsapp.export import parse_export_payload
+from packages.whatsapp.export import parse_export_path
 
 router = APIRouter()
+EXPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
+DEFAULT_EXPORT_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
 
 
 class CapturePayload(BaseModel):
@@ -246,6 +252,38 @@ def _ingest_batch_capture(payload: CaptureBatchPayload, *, authorization: str | 
     }
 
 
+def _export_upload_max_bytes() -> int:
+    raw = (os.environ.get('INGEST_EXPORT_MAX_BYTES') or '').strip()
+    try:
+        configured = int(raw) if raw else DEFAULT_EXPORT_UPLOAD_MAX_BYTES
+    except ValueError:
+        configured = DEFAULT_EXPORT_UPLOAD_MAX_BYTES
+    return max(1, configured)
+
+
+def _export_upload_suffix(filename: str | None) -> str:
+    suffix = Path(filename or '').suffix.casefold()
+    return suffix if suffix in {'.zip', '.txt'} else '.upload'
+
+
+async def _stage_export_upload(file: UploadFile, *, max_bytes: int) -> Path:
+    staged_path: Path | None = None
+    received = 0
+    try:
+        with tempfile.NamedTemporaryFile(prefix='tenant-issue-export-', suffix=_export_upload_suffix(file.filename), delete=False) as staged:
+            staged_path = Path(staged.name)
+            while chunk := await file.read(EXPORT_UPLOAD_CHUNK_BYTES):
+                received += len(chunk)
+                if received > max_bytes:
+                    raise HTTPException(status_code=413, detail=f'Export exceeds the {max_bytes} byte upload limit')
+                staged.write(chunk)
+        return staged_path
+    except Exception:
+        if staged_path is not None:
+            staged_path.unlink(missing_ok=True)
+        raise
+
+
 @router.post('/tasker')
 def ingest_tasker(payload: TaskerPayload, authorization: str | None = Header(default=None)):
     return _ingest_single_capture(payload, authorization=authorization, source='tasker')
@@ -269,11 +307,16 @@ def ingest_whatsapp_web_batch(payload: CaptureBatchPayload, authorization: str |
 @router.post('/export')
 async def ingest_export(file: UploadFile = File(...), authorization: str | None = Header(default=None)):
     require_bearer_token(authorization)
-    raw = await file.read()
+    staged_path: Path | None = None
     try:
-        export = parse_export_payload(file.filename or "_chat.txt", raw)
+        staged_path = await _stage_export_upload(file, max_bytes=_export_upload_max_bytes())
+        export = parse_export_path(staged_path, filename=file.filename or "_chat.txt")
     except (ValueError, zipfile.BadZipFile) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if staged_path is not None:
+            staged_path.unlink(missing_ok=True)
+        await file.close()
     parsed = export.messages
     inserted = 0
     deduped = 0

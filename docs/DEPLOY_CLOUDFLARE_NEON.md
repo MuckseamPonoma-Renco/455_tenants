@@ -69,6 +69,8 @@ Check it:
 curl http://127.0.0.1:8000/health
 ```
 
+`POST /ingest/export` stages a WhatsApp ZIP/TXT upload in 1 MiB chunks and then parses the staged file, so the app does not keep a 196 MB export in Python memory. Its default `INGEST_EXPORT_MAX_BYTES` limit is 512 MiB. A future cloud receiver must still allow that request size end-to-end; do not proxy a full export through a provider with a smaller request-body cap.
+
 If you want to keep Redis + the separate worker later, the code still supports it. For now, inline mode is the lowest-friction production path.
 
 ## 4. Cloudflare Tunnel
