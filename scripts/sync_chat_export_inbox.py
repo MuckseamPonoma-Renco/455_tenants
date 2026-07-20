@@ -25,6 +25,18 @@ DEFAULT_SINCE = "2026-06-05"
 EXPORT_EXTENSIONS = {".zip", ".txt"}
 STAGE_COPY_ATTEMPTS = 5
 STAGE_COPY_RETRY_SECONDS = 2.0
+TRANSIENT_ICLOUD_COPY_ERRNOS = frozenset(
+    error_number
+    for error_number in (
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ETIMEDOUT,
+        errno.EINTR,
+        getattr(errno, "EDEADLK", None),
+        getattr(errno, "ESTALE", None),
+    )
+    if error_number is not None
+)
 
 
 def _split_source_dirs(value: str | None) -> list[Path]:
@@ -203,7 +215,7 @@ def stage_export(source: Path, dest_dir: Path) -> Path:
                 break
             except OSError as exc:
                 temporary.unlink(missing_ok=True)
-                retryable = exc.errno in {errno.EAGAIN, errno.EBUSY, errno.ETIMEDOUT}
+                retryable = exc.errno in TRANSIENT_ICLOUD_COPY_ERRNOS
                 if retryable and attempt < STAGE_COPY_ATTEMPTS:
                     time.sleep(STAGE_COPY_RETRY_SECONDS * attempt)
                     continue

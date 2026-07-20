@@ -18,6 +18,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 JSON_MODE=0
 REPAIR_MODE=0
+QUIET_MODE=0
 PUBLIC_BASE_URL=""
 LOCAL_HEALTH_CODE="000"
 PUBLIC_HEALTH_CODE=""
@@ -36,6 +37,7 @@ Usage:
   ./scripts/check_mac_services.sh --json
   ./scripts/check_mac_services.sh --repair
   ./scripts/check_mac_services.sh --json --repair
+  ./scripts/check_mac_services.sh --repair --quiet
 
 Exit codes:
   0   Healthy, no repair needed
@@ -393,6 +395,22 @@ pending_repairs() {
   awk -F'\t' '$8=="true"{print $1}' "$STATUS_FILE"
 }
 
+rotate_service_logs() {
+  local python_bin output
+  python_bin="$(mac_service_runtime_python)" || return 0
+  if ! output="$("$python_bin" "$REPO_ROOT/scripts/rotate_mac_service_logs.py" \
+    --log-dir "$MAC_SERVICE_LOG_DIR" \
+    --max-bytes "${MAC_SERVICE_LOG_MAX_BYTES:-25165824}" \
+    --retain-bytes "${MAC_SERVICE_LOG_RETAIN_BYTES:-8388608}" \
+    --quiet 2>&1)"; then
+    printf 'Service-log rotation failed: %s\n' "${output:0:500}" >>"$ACTIONS_FILE"
+    return 0
+  fi
+  if [[ -n "$output" ]]; then
+    printf 'Service logs rotated: %s\n' "$output" >>"$ACTIONS_FILE"
+  fi
+}
+
 render_human() {
   while IFS=$'\t' read -r name configured launchd_loaded pid pid_source running state _needs_repair reason; do
     local line
@@ -557,6 +575,9 @@ while [[ $# -gt 0 ]]; do
     --repair)
       REPAIR_MODE=1
       ;;
+    --quiet)
+      QUIET_MODE=1
+      ;;
     --help|-h)
       usage
       exit 0
@@ -571,6 +592,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 mac_service_ensure_dirs
+
+if [[ "$REPAIR_MODE" -eq 1 ]]; then
+  rotate_service_logs
+fi
 
 if [[ "$REPAIR_MODE" -eq 1 ]] && mac_service_install_in_progress; then
   if [[ "$JSON_MODE" -eq 1 ]]; then
@@ -612,6 +637,11 @@ fi
 
 if [[ "$JSON_MODE" -eq 1 ]]; then
   render_json "$OUTCOME" "$EXIT_CODE"
+elif [[ "$QUIET_MODE" -eq 1 ]]; then
+  if [[ "$OUTCOME" != "healthy" || -s "$ACTIONS_FILE" ]]; then
+    printf 'watchdog outcome=%s\n' "$OUTCOME"
+    sed -n '1,40p' "$ACTIONS_FILE"
+  fi
 else
   render_human
 fi

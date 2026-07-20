@@ -158,9 +158,9 @@ The LaunchAgents are:
 - `tenant-issue-os.api`
 - `tenant-issue-os.automation`
 - `tenant-issue-os.tunnel` when tunnel auth is configured
-- `tenant-issue-os.watchdog`, which runs every 5 minutes and calls `check_mac_services.sh --repair`
+- `tenant-issue-os.watchdog`, which runs every 5 minutes and calls `check_mac_services.sh --repair --quiet`
 
-This gives you auto-start after login, crash restart via `KeepAlive`, and periodic health-based repair when a process is alive but unhealthy.
+This gives you auto-start after login, crash restart via `KeepAlive`, and periodic health-based repair when a process is alive but unhealthy. Each repair pass also caps service logs at 24 MiB while retaining the newest 8 MiB in place, so open launchd file descriptors keep writing to the bounded file rather than an orphaned old log.
 
 `install_mac_launch_agents.sh` also stages a launchd-safe runtime copy under `~/.local/share/tenant-issue-os/runtime` so the agents do not have to execute directly from a Desktop-hosted repo. Re-run the installer after code changes so the staged runtime stays current.
 

@@ -2,6 +2,8 @@ import errno
 import json
 import zipfile
 
+import pytest
+
 import scripts.sync_chat_export_inbox as inbox_sync
 from scripts.sync_chat_export_inbox import newest_export, sync_once
 
@@ -105,7 +107,14 @@ def test_sync_replaces_an_empty_staged_file_after_icloud_finishes(tmp_path, monk
     assert calls == [(staged, "2026-06-05")]
 
 
-def test_stage_export_retries_transient_icloud_lock(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("error_number", "message"),
+    [
+        (errno.EAGAIN, "Resource temporarily unavailable"),
+        (getattr(errno, "EDEADLK", errno.EAGAIN), "Resource deadlock avoided"),
+    ],
+)
+def test_stage_export_retries_transient_icloud_lock(tmp_path, monkeypatch, error_number, message):
     source = tmp_path / "WhatsApp Chat - 455 Tenants 11.zip"
     dest_dir = tmp_path / "incoming"
     with zipfile.ZipFile(source, "w") as archive:
@@ -117,7 +126,7 @@ def test_stage_export_retries_transient_icloud_lock(tmp_path, monkeypatch):
     def flaky_copy(source_arg, destination_arg):
         attempts.append((source_arg, destination_arg))
         if len(attempts) == 1:
-            raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+            raise OSError(error_number, message)
         return original_copy(source_arg, destination_arg)
 
     monkeypatch.setattr(inbox_sync.shutil, "copy2", flaky_copy)

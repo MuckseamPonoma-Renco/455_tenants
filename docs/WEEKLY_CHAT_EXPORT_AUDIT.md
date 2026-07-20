@@ -144,6 +144,6 @@ Avoid coordinate-tap Voice Control or Switch Control recipes for this. They can 
 
 ## Reliability Notes
 
-This does not require leaving a fragile long-running Codex task alive. It is a batch import and audit. If the Mac is asleep or off, it cannot process new data while it has no power, but the LaunchAgent runs a catch-up check after it is awake again; the latest full export is idempotently deduped against messages already stored. A truly real-time path while the Mac is off needs a separate cloud upload receiver, not an iCloud-to-Mac workflow.
+This does not require leaving a fragile long-running Codex task alive. It is a batch import and audit. The staging step retries temporary iCloud file locks, including macOS's `Resource deadlock avoided` error, before treating an export as failed. If the Mac is asleep or off, it cannot process new data while it has no power, but the LaunchAgent runs a catch-up check after it is awake again; the latest full export is idempotently deduped against messages already stored. A truly real-time path while the Mac is off needs a separate cloud upload receiver, not an iCloud-to-Mac workflow.
 
 This does not replace live capture. If the Mac-side WhatsApp watcher is stalled, the weekly full export is the backstop that finds missed messages and decision errors.

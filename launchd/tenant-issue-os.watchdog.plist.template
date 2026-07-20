@@ -8,6 +8,7 @@
   <array>
     <string>__REPO_ROOT__/scripts/check_mac_services.sh</string>
     <string>--repair</string>
+    <string>--quiet</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__REPO_ROOT__</string>
