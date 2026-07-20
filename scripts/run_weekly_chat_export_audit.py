@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import subprocess
 import sys
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.audit_whatsapp_export_decisions import DEFAULT_SINCE, EXPORT_EXTENSIONS, run_audit
+from scripts.reconcile_cross_source_duplicates import run_reconciliation
 
 
 def newest_export(inbox: Path) -> Path:
@@ -44,9 +46,18 @@ def main() -> None:
     args = parser.parse_args()
 
     export_path = Path(args.export).expanduser().resolve() if args.export else newest_export(Path(args.inbox))
+    out_dir = (
+        Path(args.out_dir).expanduser().resolve()
+        if args.out_dir
+        else ROOT / "exports" / "message_decision_audits" / dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    )
     if not args.skip_import:
         import_export(export_path)
-    summary = run_audit(export_path, since=args.since, out_dir=Path(args.out_dir) if args.out_dir else None)
+    reconciliation = run_reconciliation(out_dir=out_dir)
+    summary = run_audit(export_path, since=args.since, out_dir=out_dir)
+    summary["cross_source_reconciliation"] = reconciliation
+    summary_path = out_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 

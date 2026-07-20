@@ -54,6 +54,12 @@ fi
 
 mkdir -p "$STAGING_BASE"
 
+if [[ ! -f "$RUNTIME_ROOT/.env" ]]; then
+  echo "Missing runtime configuration: $RUNTIME_ROOT/.env" >&2
+  echo "Refusing to copy .env from the working tree. Provision the runtime config once, then rerun this installer." >&2
+  exit 1
+fi
+
 stage_runtime_copy() {
   rsync -a --delete \
     --exclude '.git/' \
@@ -62,9 +68,15 @@ stage_runtime_copy() {
     --exclude '.test_audit/' \
     --exclude '.audit/' \
     --exclude '.local/' \
+    --exclude '.env' \
+    --exclude '.venv/' \
+    --exclude '.venv.badmove/' \
+    --exclude 'secrets/' \
     --exclude '.vscode/' \
     --exclude '__pycache__/' \
     --exclude 'exports/' \
+    --exclude 'incoming/' \
+    --exclude 'whatsapp_capture/' \
     --exclude 'e2e_test.sqlite3' \
     --exclude 'smoke_test.sqlite3' \
     --exclude 'tmp_debug.sqlite3' \

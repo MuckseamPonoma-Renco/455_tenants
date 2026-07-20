@@ -23,6 +23,12 @@ mac_service_ensure_dirs
 mkdir -p "$HOME/Library/Mobile Documents/com~apple~CloudDocs/455 Tenant Chat Exports"
 mkdir -p "$STAGING_BASE"
 
+if [[ ! -f "$RUNTIME_ROOT/.env" ]]; then
+  echo "Missing runtime configuration: $RUNTIME_ROOT/.env" >&2
+  echo "Refusing to copy .env from the working tree. Provision the runtime config once, then rerun this installer." >&2
+  exit 1
+fi
+
 if ! command -v rsync >/dev/null 2>&1; then
   echo "install_chat_export_sync_launch_agent.sh requires rsync" >&2
   exit 1
@@ -35,10 +41,15 @@ rsync -a --delete \
   --exclude '.test_audit/' \
   --exclude '.audit/' \
   --exclude '.local/' \
+  --exclude '.env' \
+  --exclude '.venv/' \
+  --exclude '.venv.badmove/' \
+  --exclude 'secrets/' \
   --exclude '.vscode/' \
   --exclude '__pycache__/' \
   --exclude 'exports/' \
   --exclude 'incoming/' \
+  --exclude 'whatsapp_capture/' \
   --exclude 'e2e_test.sqlite3' \
   --exclude 'smoke_test.sqlite3' \
   --exclude 'tmp_debug.sqlite3' \

@@ -75,10 +75,13 @@ The script then writes:
 
 - `exports/message_decision_audits/<timestamp>/all_messages.csv`
 - `exports/message_decision_audits/<timestamp>/review_roster.csv`
+- `exports/message_decision_audits/<timestamp>/cross_source_duplicate_reconciliation.csv`
 - `exports/message_decision_audits/<timestamp>/summary.md`
 - `exports/message_decision_audits/<timestamp>/summary.json`
 
-For messages with the same normalized text within two minutes, the importer also dedupes a weekly archive against live WhatsApp capture even when WhatsApp changes the visible sender or timestamp. If the archive arrives first, the later live capture promotes that stored row to the live metadata and reprocesses it. The audit prefers the live capture and records any historical disagreement as `cross_source_decision_conflict` in the private review roster. Short messages are not merged this way by default.
+For meaningful messages with the same normalized text within two minutes, the importer also dedupes a weekly archive against live WhatsApp capture even when WhatsApp changes the visible sender or timestamp. If the archive arrives first, the later live capture promotes that stored row to the live metadata and reprocesses it. The floor is 16 characters, which catches concise status updates such as `South lift out again.` while leaving trivial replies alone.
+
+Each weekly run also creates the private cross-source reconciliation roster. It automatically repairs an alias only when both copies were already classified as an issue and linked to incidents; lower-impact exact aliases remain in that private roster for review instead of being bulk-deleted. When a repair touches incidents or submitted 311 cases, it keeps both real case records and filing history, relinks them to one internal incident, and never submits, closes, or deletes a 311 case. The audit still records any remaining decision disagreement as `cross_source_decision_conflict` in the private review roster.
 
 Security-access incidents that require review, including their follow-up messages, are held out of the public Tenant Log until they are resolved through the private review process.
 

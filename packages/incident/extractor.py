@@ -31,6 +31,7 @@ LLM_MODE = os.environ.get("LLM_MODE", "uncertain").lower().strip()
 BUILDING_TZ = ZoneInfo(os.environ.get("BUILDING_TIMEZONE", "America/New_York"))
 VALID_CATEGORIES = {"elevator", "heat_hot_water", "leaks_water_damage", "pests", "security_access", "other"}
 NONISSUE_GUARDRAIL_CONFIDENCE = int(os.environ.get("NONISSUE_GUARDRAIL_CONFIDENCE", "85"))
+AUTHORITATIVE_RULE_EVENT_TYPES = {"outage", "still_out", "restore"}
 SOURCE_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)")
 SOURCE_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 SOURCE_UNIT_LINE_RE = re.compile(r"^(?:apt\.?|apartment|unit)?\s*\d{1,3}[A-Z]?(?:\s+here)?\.?$", re.IGNORECASE)
@@ -798,6 +799,40 @@ def _prune_incident_if_unreferenced(session, incident_id: str | None) -> None:
         session.delete(incident)
 
 
+def _lock_authoritative_rule_state(rule_choice: dict | None, choice: dict | None) -> tuple[dict | None, bool]:
+    """Do not let a model reframe an explicit outage, continuation, or restore."""
+    if not rule_choice or not rule_choice.get("is_issue"):
+        return choice, False
+
+    rule_event_type = str(rule_choice.get("event_type") or "")
+    if rule_event_type not in AUTHORITATIVE_RULE_EVENT_TYPES:
+        return choice, False
+
+    if not choice or not choice.get("is_issue"):
+        locked = dict(rule_choice)
+        locked["needs_review"] = True
+        return locked, True
+
+    locked = dict(choice)
+    rule_closes_incident = bool(rule_choice.get("close_incident")) or rule_event_type == "restore"
+    changed = (
+        str(locked.get("event_type") or "") != rule_event_type
+        or bool(locked.get("close_incident")) != rule_closes_incident
+    )
+    locked["event_type"] = rule_event_type
+    locked["close_incident"] = rule_closes_incident
+    if changed:
+        # Preserve the rule's state, but surface the disagreement for the
+        # private roster instead of silently trusting the model's override.
+        locked["needs_review"] = True
+    return locked, changed
+
+
+def _with_rule_state_lock(rule_choice: dict | None, choice: dict | None, source: str) -> tuple[dict | None, str]:
+    locked, changed = _lock_authoritative_rule_state(rule_choice, choice)
+    return locked, f"{source}_rule_state" if changed else source
+
+
 def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[dict | None, str]:
     if rule_choice and llm_choice and llm_choice.get("is_issue"):
         if rule_choice.get("category") == llm_choice.get("category"):
@@ -810,17 +845,17 @@ def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[d
             merged["summary"] = llm_choice.get("summary") or rule_choice.get("summary")
             merged["close_incident"] = bool(rule_choice.get("close_incident") or llm_choice.get("close_incident"))
             merged["needs_review"] = bool(rule_choice.get("needs_review") or llm_choice.get("needs_review"))
-            return merged, "hybrid"
+            return _with_rule_state_lock(rule_choice, merged, "hybrid")
 
         if llm_choice.get("refers_to_open_incident") and int(llm_choice.get("confidence", 0)) >= 70:
             preferred = dict(llm_choice)
             preferred["needs_review"] = bool(preferred.get("needs_review", False))
-            return preferred, "hybrid_open_incident_context"
+            return _with_rule_state_lock(rule_choice, preferred, "hybrid_open_incident_context")
 
         preferred = llm_choice if int(llm_choice.get("confidence", 0)) >= 90 else rule_choice
         preferred = dict(preferred)
         preferred["needs_review"] = True
-        return preferred, "hybrid_disagreement"
+        return _with_rule_state_lock(rule_choice, preferred, "hybrid_disagreement")
 
     if rule_choice and llm_choice and not llm_choice.get("is_issue"):
         if (
@@ -834,20 +869,20 @@ def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[d
             blocked["event_type"] = "non_issue"
             blocked["close_incident"] = False
             blocked["needs_review"] = True
-            return blocked, "guardrail_non_issue"
+            return _with_rule_state_lock(rule_choice, blocked, "guardrail_non_issue")
         chosen = dict(rule_choice)
         chosen["needs_review"] = True
-        return chosen, "rules_with_llm_disagreement"
+        return _with_rule_state_lock(rule_choice, chosen, "rules_with_llm_disagreement")
 
     if llm_choice and llm_choice.get("is_issue"):
         chosen = dict(llm_choice)
         chosen["needs_review"] = bool(chosen.get("needs_review", False) or int(chosen.get("confidence", 0)) < 80)
-        return chosen, "llm"
+        return _with_rule_state_lock(rule_choice, chosen, "llm")
 
     if rule_choice:
-        return dict(rule_choice), "rules"
+        return _with_rule_state_lock(rule_choice, dict(rule_choice), "rules")
 
-    return None, "none"
+    return _with_rule_state_lock(rule_choice, None, "none")
 
 
 def _normalize_choice(choice: dict | None) -> dict | None:
@@ -1019,10 +1054,11 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
                 review_choice.get("needs_review", False) or int(review_choice.get("confidence", 0)) < 80
             )
             review_choice = _normalize_choice(review_choice)
+            review_choice, rule_state_locked = _lock_authoritative_rule_state(rule_choice, review_choice)
             guarded_choice, guarded_source = _non_issue_guardrail(rm.text or "", rule_choice, llm_choice, review_choice)
             if guarded_choice is not None:
                 return guarded_choice, rules, llm_choice, guarded_source or "guardrail_non_issue"
-            return review_choice, rules, llm_choice, "review"
+            return review_choice, rules, llm_choice, "review_rule_state" if rule_state_locked else "review"
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
     chosen = _normalize_choice(chosen)

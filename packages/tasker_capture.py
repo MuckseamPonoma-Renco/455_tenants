@@ -70,7 +70,10 @@ def cross_source_duplicate_min_text_chars() -> int:
     try:
         return max(1, int(raw))
     except Exception:
-        return 40
+        # Archive and live capture use different sender/chat labels, so an
+        # exact text match close in time is the identity signal. Keep a small
+        # floor to avoid collapsing routine replies such as "yes" or "thanks".
+        return 16
 
 
 def normalize_tasker_capture(chat_name: str | None, sender: str | None, text: str | None) -> NormalizedTaskerCapture:
@@ -133,7 +136,7 @@ def _recent_duplicate_candidates(
     return candidates.all()
 
 
-def _cross_source_text_signature(text: str | None) -> str:
+def cross_source_text_signature(text: str | None) -> str:
     clean = _clean(text).translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'}))
     return re.sub(r"\s+", " ", clean).casefold()
 
@@ -147,7 +150,7 @@ def find_recent_cross_source_duplicate(
 ) -> RawMessage | None:
     if ts_epoch is None:
         return None
-    target = _cross_source_text_signature(text)
+    target = cross_source_text_signature(text)
     if len(target) < cross_source_duplicate_min_text_chars():
         return None
     window = cross_source_duplicate_window_seconds()
@@ -160,7 +163,7 @@ def find_recent_cross_source_duplicate(
         window_seconds=window,
     )
     for row in sorted(candidates, key=lambda item: abs(int(item.ts_epoch or 0) - int(ts_epoch))):
-        if _cross_source_text_signature(row.text) == target:
+        if cross_source_text_signature(row.text) == target:
             return row
     return None
 
