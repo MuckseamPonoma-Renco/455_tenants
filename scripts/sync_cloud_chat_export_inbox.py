@@ -27,6 +27,7 @@ LOCAL_CLOUD_EXPORT_DIR = ROOT / "incoming" / "cloud_chat_exports"
 DEFAULT_STATE_PATH = Path.home() / ".local" / "state" / "tenant-issue-os" / "cloud-chat-export-sync.json"
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_EXPORTS = 5
+DEFAULT_MAX_LIST_PAGES = 100
 SAFE_AUDIT_KEYS = (
     "parsed_messages",
     "audited_messages",
@@ -117,19 +118,44 @@ def _is_valid_export_record(value: Any, *, max_bytes: int) -> bool:
     return isinstance(size_bytes, int) and 0 < size_bytes <= max_bytes
 
 
-def pending_exports(client: httpx.Client, config: ReceiverConfig, *, max_bytes: int) -> list[dict[str, Any]]:
-    try:
-        response = client.get(f"{config.base_url}/v1/exports", headers=_authorized_headers(config))
-    except httpx.HTTPError as exc:
-        raise CloudReceiverError("cloud receiver export listing failed") from exc
-    data = _json(response, "export listing")
-    exports = data.get("exports")
-    if not isinstance(exports, list):
-        raise CloudReceiverError("cloud receiver export listing is missing exports")
-    records = [record for record in exports if _is_valid_export_record(record, max_bytes=max_bytes)]
-    if len(records) != len(exports):
-        raise CloudReceiverError("cloud receiver returned an invalid export record")
-    return sorted(records, key=lambda record: (str(record.get("uploaded_at") or ""), str(record["key"])))
+def pending_exports(
+    client: httpx.Client,
+    config: ReceiverConfig,
+    *,
+    max_bytes: int,
+    max_pages: int = DEFAULT_MAX_LIST_PAGES,
+) -> list[dict[str, Any]]:
+    if max_pages <= 0:
+        raise ValueError("max_pages must be positive")
+    records: list[dict[str, Any]] = []
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    for _page in range(max_pages):
+        try:
+            response = client.get(
+                f"{config.base_url}/v1/exports",
+                headers=_authorized_headers(config),
+                params={"cursor": cursor} if cursor else None,
+            )
+        except httpx.HTTPError as exc:
+            raise CloudReceiverError("cloud receiver export listing failed") from exc
+        data = _json(response, "export listing")
+        exports = data.get("exports")
+        if not isinstance(exports, list):
+            raise CloudReceiverError("cloud receiver export listing is missing exports")
+        page_records = [record for record in exports if _is_valid_export_record(record, max_bytes=max_bytes)]
+        if len(page_records) != len(exports):
+            raise CloudReceiverError("cloud receiver returned an invalid export record")
+        records.extend(page_records)
+
+        if data.get("truncated") is not True:
+            return sorted(records, key=lambda record: (str(record.get("uploaded_at") or ""), str(record["key"])))
+        next_cursor = data.get("cursor")
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            raise CloudReceiverError("cloud receiver pagination cursor is invalid")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    raise CloudReceiverError(f"cloud receiver export listing exceeded {max_pages} pages")
 
 
 def _target_path(dest_dir: Path, record: dict[str, Any]) -> Path:

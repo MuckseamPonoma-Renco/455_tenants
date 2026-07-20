@@ -36,4 +36,4 @@ Set `R2_ACCOUNT_ID` and `R2_BUCKET_NAME` as Worker variables. The `wrangler.toml
 
 It returns `upload_url` and the exact `Content-Type` header required for the direct `PUT`.
 
-`GET /v1/exports` and `POST /v1/exports/ack` require `Authorization: Bearer <PULL_AUTH_TOKEN>` and are used only by `scripts/sync_cloud_chat_export_inbox.py`.
+`GET /v1/exports` and `POST /v1/exports/ack` require `Authorization: Bearer <PULL_AUTH_TOKEN>` and are used only by `scripts/sync_cloud_chat_export_inbox.py`. The listing is paginated with an opaque `cursor`; the recovery client follows it so exports beyond the first 1,000 cannot be silently skipped.

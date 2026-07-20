@@ -265,7 +265,13 @@ async function uploadIntent(request, env) {
 async function pendingExports(request, env) {
   requireBucket(env);
   requireBearer(request, env.PULL_AUTH_TOKEN);
-  const listing = await env.EXPORTS.list({ prefix: PENDING_PREFIX, limit: 1000 });
+  const url = new URL(request.url);
+  const cursor = url.searchParams.get("cursor");
+  const listOptions = { prefix: PENDING_PREFIX, limit: 1000 };
+  if (cursor) {
+    listOptions.cursor = cursor;
+  }
+  const listing = await env.EXPORTS.list(listOptions);
   const exports = [];
   for (const object of listing.objects) {
     if (await env.EXPORTS.head(await receiptKeyFor(object.key))) {
@@ -279,7 +285,11 @@ async function pendingExports(request, env) {
       download_url: await presignObjectRequest(env, "GET", object.key),
     });
   }
-  return json({ exports, truncated: Boolean(listing.truncated) });
+  return json({
+    exports,
+    truncated: Boolean(listing.truncated),
+    cursor: listing.truncated && typeof listing.cursor === "string" ? listing.cursor : null,
+  });
 }
 
 async function acknowledgeExport(request, env) {

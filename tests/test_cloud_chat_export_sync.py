@@ -123,6 +123,48 @@ def test_run_once_recovers_a_saved_acknowledgement_before_listing(tmp_path):
     assert json.loads(state_path.read_text(encoding="utf-8"))["pending_acknowledgements"] == {}
 
 
+def test_pending_exports_follows_cloud_receiver_pagination():
+    first = _record(_zip_bytes())
+    first["key"] = "pending/20260720T030405Z-0123456789abcdef0123456789abcdef-WhatsApp Chat - 455 Tenants 12.zip"
+    second = _record(_zip_bytes())
+    second["key"] = "pending/20260720T040405Z-fedcba9876543210fedcba9876543210-WhatsApp Chat - 455 Tenants 13.zip"
+    second["filename"] = "WhatsApp Chat - 455 Tenants 13.zip"
+    second["uploaded_at"] = "2026-07-20T04:04:05Z"
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": [first], "truncated": True, "cursor": "page-two"})
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports?cursor=page-two"):
+            return httpx.Response(200, json={"exports": [second], "truncated": False, "cursor": None})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    records = cloud_sync.pending_exports(
+        _client(handler),
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+        max_bytes=cloud_sync.DEFAULT_MAX_BYTES,
+    )
+
+    assert [record["key"] for record in records] == [first["key"], second["key"]]
+    assert requests == [
+        "https://uploads.example.test/v1/exports",
+        "https://uploads.example.test/v1/exports?cursor=page-two",
+    ]
+
+
+def test_pending_exports_rejects_a_truncated_response_without_a_cursor():
+    def handler(request):
+        return httpx.Response(200, json={"exports": [], "truncated": True})
+
+    with pytest.raises(cloud_sync.CloudReceiverError, match="pagination cursor is invalid"):
+        cloud_sync.pending_exports(
+            _client(handler),
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            max_bytes=cloud_sync.DEFAULT_MAX_BYTES,
+        )
+
+
 def test_probe_checks_public_health_and_authenticated_listing():
     def handler(request):
         if request.url == httpx.URL("https://uploads.example.test/health"):
