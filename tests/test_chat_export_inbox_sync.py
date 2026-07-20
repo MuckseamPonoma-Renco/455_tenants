@@ -223,6 +223,42 @@ def test_sync_once_skips_unchanged_after_processing(tmp_path, monkeypatch):
     assert (dest_dir / export_path.name).exists()
 
 
+def test_sync_once_clears_stale_failure_state_after_unchanged_skip(tmp_path):
+    source_dir = tmp_path / "icloud"
+    dest_dir = tmp_path / "incoming"
+    state_path = tmp_path / "state.json"
+    source_dir.mkdir()
+    export_path = source_dir / "WhatsApp Chat - 455 Tenants.zip"
+    with zipfile.ZipFile(export_path, "w") as archive:
+        archive.writestr("WhatsApp Chat - 455 Tenants.txt", "[6/5/26, 9:00:00 AM] Karen: North lift dead\n")
+
+    fingerprint = inbox_sync.file_fingerprint(export_path)
+    state_path.write_text(
+        json.dumps(
+            {
+                "last_attempt_at": "2026-07-20T03:56:54Z",
+                "last_failed_at": "2026-07-20T03:56:54Z",
+                "last_error": "Resource deadlock avoided",
+                "last_processed_fingerprint": fingerprint,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = sync_once(
+        source_dirs=[source_dir],
+        dest_dir=dest_dir,
+        state_path=state_path,
+        since="2026-06-05",
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert result["action"] == "unchanged_skip"
+    assert state["last_error"] == ""
+    assert "last_attempt_at" not in state
+    assert "last_failed_at" not in state
+
+
 def test_sync_once_skips_staged_copy_with_the_same_export_identity(tmp_path, monkeypatch):
     source_dir = tmp_path / "icloud"
     dest_dir = tmp_path / "incoming"

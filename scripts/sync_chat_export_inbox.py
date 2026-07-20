@@ -196,6 +196,12 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _clear_failure_state(state: dict[str, Any]) -> None:
+    state.pop("last_attempt_at", None)
+    state.pop("last_failed_at", None)
+    state["last_error"] = ""
+
+
 def _safe_destination(dest_dir: Path, source: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     candidate = dest_dir / source.name
@@ -343,7 +349,7 @@ def sync_once(
         }
     if source is None:
         state.pop("last_pending_fingerprint", None)
-        state["last_error"] = ""
+        _clear_failure_state(state)
         save_state(state_path, state)
         return {
             "ok": True,
@@ -357,7 +363,7 @@ def sync_once(
     previous = state.get("last_processed_fingerprint")
     if not force and _same_export_identity(previous, fingerprint):
         state.pop("last_pending_fingerprint", None)
-        state["last_error"] = ""
+        _clear_failure_state(state)
         save_state(state_path, state)
         return {
             "ok": True,
@@ -382,7 +388,9 @@ def sync_once(
         staged = stage_export(source, dest_dir)
         result = run_import_and_audit(staged, since=since)
     except Exception as exc:
-        state["last_attempt_at"] = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        failed_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        state["last_attempt_at"] = failed_at
+        state["last_failed_at"] = failed_at
         state["last_error"] = str(exc)[:1000]
         save_state(state_path, state)
         raise
@@ -392,7 +400,7 @@ def sync_once(
     state["last_staged_export"] = str(staged)
     state["last_result"] = result
     state.pop("last_pending_fingerprint", None)
-    state["last_error"] = ""
+    _clear_failure_state(state)
     save_state(state_path, state)
     return {
         "ok": True,
