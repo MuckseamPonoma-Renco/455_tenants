@@ -14,6 +14,8 @@ def test_health_includes_safe_whatsapp_and_chat_sync_status(client, monkeypatch,
     monkeypatch.setenv("WHATSAPP_CAPTURE_STATUS_PATH", str(status_path))
     monkeypatch.setenv("CHAT_EXPORT_SYNC_STATE_PATH", str(sync_path))
     monkeypatch.setenv("AUTOMATION_STATUS_PATH", str(automation_status_path))
+    monkeypatch.delenv("CLOUD_EXPORT_RECEIVER_URL", raising=False)
+    monkeypatch.delenv("CLOUD_EXPORT_RECEIVER_PULL_TOKEN", raising=False)
     monkeypatch.setattr(health_router, "_utcnow", lambda: dt.datetime(2026, 7, 20, 1, 55, tzinfo=dt.UTC))
     monkeypatch.setattr(health_router.shutil, "disk_usage", lambda _path: SimpleNamespace(free=20 * 1024 * 1024 * 1024))
     monkeypatch.setattr(health_router, "database_is_ready", lambda: True)
@@ -48,6 +50,7 @@ def test_health_includes_safe_whatsapp_and_chat_sync_status(client, monkeypatch,
         "has_error": False,
     }
     assert payload["storage"] == {"state": "ready", "low_disk": False}
+    assert payload["cloud_export_receiver"] == {"state": "not_configured", "configured": False}
     assert payload["database_ready"] is True
     assert payload["automation"] == {
         "state": "ready",
@@ -56,6 +59,19 @@ def test_health_includes_safe_whatsapp_and_chat_sync_status(client, monkeypatch,
         "updated_at": payload["automation"]["updated_at"],
         "has_error": False,
     }
+
+
+def test_health_reports_cloud_export_receiver_configured_without_secret_values(client, monkeypatch):
+    monkeypatch.setenv("CLOUD_EXPORT_RECEIVER_URL", "https://uploads.example.test")
+    monkeypatch.setenv("CLOUD_EXPORT_RECEIVER_PULL_TOKEN", "secret-pull-token")
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cloud_export_receiver"] == {"state": "configured", "configured": True}
+    assert "uploads.example.test" not in json.dumps(payload)
+    assert "secret-pull-token" not in json.dumps(payload)
 
 
 def test_health_marks_stale_chat_export_sync_as_an_error(client, monkeypatch, tmp_path):

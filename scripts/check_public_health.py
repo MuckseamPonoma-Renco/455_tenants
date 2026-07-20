@@ -38,6 +38,7 @@ def validate_health(
     max_capture_age_seconds: int,
     max_automation_age_seconds: int,
     max_import_age_seconds: int,
+    require_cloud_export_receiver: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
     details: dict[str, Any] = {}
@@ -108,6 +109,17 @@ def validate_health(
         elif import_age > max_import_age_seconds:
             failures.append(f'chat export sync is stale ({import_age}s old)')
 
+    cloud_receiver = payload.get('cloud_export_receiver')
+    if isinstance(cloud_receiver, dict):
+        receiver_state = cloud_receiver.get('state')
+        receiver_configured = cloud_receiver.get('configured') is True
+        details['cloud_export_receiver_state'] = receiver_state
+        details['cloud_export_receiver_configured'] = receiver_configured
+        if require_cloud_export_receiver and not receiver_configured:
+            failures.append(f"cloud export receiver is {receiver_state or 'not_configured'}")
+    elif require_cloud_export_receiver:
+        failures.append('cloud export receiver health is missing')
+
     return failures, details
 
 
@@ -129,6 +141,7 @@ def main() -> int:
     parser.add_argument('--max-capture-age-seconds', type=int, default=600)
     parser.add_argument('--max-automation-age-seconds', type=int, default=1200)
     parser.add_argument('--max-import-age-seconds', type=int, default=3600)
+    parser.add_argument('--require-cloud-export-receiver', action='store_true')
     args = parser.parse_args()
 
     try:
@@ -139,6 +152,7 @@ def main() -> int:
             max_capture_age_seconds=max(1, args.max_capture_age_seconds),
             max_automation_age_seconds=max(1, args.max_automation_age_seconds),
             max_import_age_seconds=max(1, args.max_import_age_seconds),
+            require_cloud_export_receiver=args.require_cloud_export_receiver,
         )
     except (OSError, RuntimeError, urllib.error.URLError, json.JSONDecodeError) as exc:
         print(json.dumps({'ok': False, 'failures': [str(exc)]}, sort_keys=True))

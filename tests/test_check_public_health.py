@@ -27,6 +27,10 @@ def _payload():
             "last_checked_at": "2026-07-20T01:45:00Z",
             "has_error": False,
         },
+        "cloud_export_receiver": {
+            "state": "not_configured",
+            "configured": False,
+        },
     }
 
 
@@ -45,7 +49,57 @@ def test_validate_health_accepts_fresh_operational_state():
         "automation_age_seconds": 0,
         "whatsapp_capture_age_seconds": 0,
         "chat_export_sync_age_seconds": 900,
+        "cloud_export_receiver_state": "not_configured",
+        "cloud_export_receiver_configured": False,
     }
+
+
+def test_validate_health_accepts_missing_cloud_receiver_when_not_required():
+    payload = _payload()
+
+    failures, details = validate_health(
+        payload,
+        now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600,
+        max_automation_age_seconds=1200,
+        max_import_age_seconds=3600,
+    )
+
+    assert failures == []
+    assert details["cloud_export_receiver_configured"] is False
+
+
+def test_validate_health_rejects_missing_cloud_receiver_when_required():
+    payload = _payload()
+
+    failures, details = validate_health(
+        payload,
+        now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600,
+        max_automation_age_seconds=1200,
+        max_import_age_seconds=3600,
+        require_cloud_export_receiver=True,
+    )
+
+    assert "cloud export receiver is not_configured" in failures
+    assert details["cloud_export_receiver_configured"] is False
+
+
+def test_validate_health_accepts_required_configured_cloud_receiver():
+    payload = _payload()
+    payload["cloud_export_receiver"] = {"state": "configured", "configured": True}
+
+    failures, details = validate_health(
+        payload,
+        now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600,
+        max_automation_age_seconds=1200,
+        max_import_age_seconds=3600,
+        require_cloud_export_receiver=True,
+    )
+
+    assert failures == []
+    assert details["cloud_export_receiver_configured"] is True
 
 
 def test_validate_health_accepts_fresh_startup_and_working_automation():

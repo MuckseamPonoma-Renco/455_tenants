@@ -155,6 +155,14 @@ def _public_chat_export_sync_status() -> dict[str, Any]:
     }
 
 
+def _public_cloud_export_receiver_status() -> dict[str, Any]:
+    configured = bool(_text(os.environ.get('CLOUD_EXPORT_RECEIVER_URL')) and _text(os.environ.get('CLOUD_EXPORT_RECEIVER_PULL_TOKEN')))
+    return {
+        'state': 'configured' if configured else 'not_configured',
+        'configured': configured,
+    }
+
+
 @router.get('/health')
 def health():
     whatsapp_capture = _public_capture_status(read_capture_status())
@@ -171,5 +179,6 @@ def health():
         'whatsapp_capture': whatsapp_capture,
         'automation': _public_automation_status(read_automation_status()),
         'chat_export_sync': _public_chat_export_sync_status(),
+        'cloud_export_receiver': _public_cloud_export_receiver_status(),
         'storage': _public_storage_status(),
     }
