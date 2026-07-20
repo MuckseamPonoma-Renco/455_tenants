@@ -147,3 +147,9 @@ Avoid coordinate-tap Voice Control or Switch Control recipes for this. They can 
 This does not require leaving a fragile long-running Codex task alive. It is a batch import and audit. The staging step retries temporary iCloud file locks, including macOS's `Resource deadlock avoided` error, before treating an export as failed. If the Mac is asleep or off, it cannot process new data while it has no power, but the LaunchAgent runs a catch-up check after it is awake again; the latest full export is idempotently deduped against messages already stored. A truly real-time path while the Mac is off needs a separate cloud upload receiver, not an iCloud-to-Mac workflow.
 
 This does not replace live capture. If the Mac-side WhatsApp watcher is stalled, the weekly full export is the backstop that finds missed messages and decision errors.
+
+## Independent Availability Monitor
+
+`.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and every 15 minutes. It validates that the API is reachable, the database and Sheets are configured, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. It sends no chat export, message text, file name, or spreadsheet data to GitHub.
+
+This is an outage detector, not a cloud receiver. A failed check means the Mac or tunnel needs attention; it cannot unlock a FileVault-protected Mac, restore power, or import a new iCloud file while the Mac is unavailable.

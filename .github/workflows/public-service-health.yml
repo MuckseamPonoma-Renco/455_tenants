@@ -1,0 +1,27 @@
+name: Public service health
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      PUBLIC_HEALTH_URL: https://api.455tenants.com/health
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check public API, WhatsApp capture, and iCloud import heartbeat
+        run: >-
+          python3 scripts/check_public_health.py
+          --url "$PUBLIC_HEALTH_URL"
+          --max-capture-age-seconds 600
+          --max-import-age-seconds 3600

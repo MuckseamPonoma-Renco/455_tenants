@@ -98,7 +98,7 @@ The JSON health output should show:
 - `sheets_disabled` is `false`
 - `whatsapp_capture.state` is `ready`
 - `whatsapp_capture.login_required` is `false`
-- `whatsapp_capture.chat_names` includes `455 Tenants`
+- `chat_export_sync.state` is `ready`, `no_export`, or transiently `waiting_for_download`
 
 Only use the manual starter when the LaunchAgents are not installed yet or you are intentionally starting a fallback process:
 
@@ -119,6 +119,7 @@ If WhatsApp reports `login_required=true`, run the watcher headfully and scan th
 - Current target power shape: computer sleep off, display sleep on. Check it with `pmset -g custom`; on AC power, `sleep` should be `0` and `displaysleep` can be a low value like `5` or `10`.
 - If you have admin access and want the display to turn off sooner while the Mac stays awake, run `sudo pmset -c sleep 0 displaysleep 5 disksleep 10 powernap 1 womp 1 autorestart 1`.
 - After a full reboot, the per-user LaunchAgents start after the user session logs in. WhatsApp Web capture cannot reliably run at the macOS login screen because it depends on Chrome and the saved WhatsApp Web session.
+- The public `/health` endpoint deliberately reports only operational state. It does not expose watched chat names, local paths, or raw capture errors.
 - This watcher reads what WhatsApp Web currently exposes in the browser; it is not a historical backfill tool.
 - For older history, keep using `POST /ingest/export` with a WhatsApp export ZIP/TXT.
 - The old Android Tasker route is now legacy-only. Leave it off unless you need a temporary migration bridge.
