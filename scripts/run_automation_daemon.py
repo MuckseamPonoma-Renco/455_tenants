@@ -49,7 +49,7 @@ def _run_step(label: str, func):
 
 
 def _public_tenant_log_qa() -> dict[str, object]:
-    days = max(1, _env_int("AUTOMATION_PUBLIC_TENANT_LOG_AUDIT_DAYS", 7))
+    days = max(1, _env_int("AUTOMATION_PUBLIC_TENANT_LOG_AUDIT_DAYS", 30))
     result = run_public_tenant_log_audit(days=days, resync=False, retries=3, retry_sleep=5.0, limit=5)
     missing_count = len(result.get("missing_recent_rows") or [])
     unexpected_count = len(result.get("unexpected_recent_rows") or [])

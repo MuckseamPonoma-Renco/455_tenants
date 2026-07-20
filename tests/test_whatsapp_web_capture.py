@@ -228,6 +228,54 @@ def test_ingest_whatsapp_web_dedupes_against_tasker_capture(client):
         assert rows[0].source == "tasker"
 
 
+def test_ingest_whatsapp_web_promotes_recent_export_alias_and_reprocesses(client, monkeypatch):
+    text = "A resident reports the lobby door is too heavy to open when the doorman is away."
+    with get_session() as session:
+        session.add(
+            RawMessage(
+                message_id="export-alias",
+                chat_name="Tenants WhatsApp",
+                sender="~ Millie",
+                sender_hash="export-sender",
+                ts_iso="2026-07-13T14:04:37Z",
+                ts_epoch=1783951477,
+                text=text,
+                attachments=None,
+                source="zip_import",
+            )
+        )
+        session.commit()
+
+    process_calls = []
+
+    def fake_enqueue(message_id, *, sync_sheets=True):
+        process_calls.append((message_id, sync_sheets))
+        return "reprocess-job"
+
+    monkeypatch.setattr("apps.api.routers.ingest.enqueue_process_message", fake_enqueue)
+
+    response = client.post(
+        "/ingest/whatsapp_web",
+        headers=auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "text": text,
+            "sender": "+1 (917) 400-8504",
+            "ts_epoch": 1783951440,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deduped"] is True
+    assert response.json()["reprocessed"] is True
+    assert response.json()["message_id"] == "export-alias"
+    assert process_calls == [("export-alias", True)]
+    with get_session() as session:
+        row = session.query(RawMessage).one()
+        assert row.source == "whatsapp_web"
+        assert row.chat_name == "455 Tenants"
+        assert row.sender == "+1 (917) 400-8504"
+        assert row.ts_epoch == 1783951440
 def test_ingest_whatsapp_web_duplicate_can_fill_missing_attachments(client):
     first = client.post(
         "/ingest/whatsapp_web",
@@ -341,6 +389,28 @@ def test_capture_config_uses_a_bounded_default_login_wait(monkeypatch):
     config = web_capture.capture_config_from_env()
 
     assert config.login_timeout_seconds == 120
+
+
+def test_is_ready_accepts_modern_whatsapp_chat_list_without_an_open_chat():
+    class Locator:
+        def __init__(self, count):
+            self._count = count
+
+        def count(self):
+            return self._count
+
+    class Page:
+        selector_counts = {
+            "#pane-side": 1,
+            "#side": 1,
+            "#main": 0,
+            "[data-testid='wa-web-main-screen']": 1,
+        }
+
+        def locator(self, selector):
+            return Locator(self.selector_counts.get(selector, 0))
+
+    assert web_capture._is_ready(Page()) is True
 
 
 def test_startup_login_requirement_is_reported_without_waiting(monkeypatch, tmp_path):

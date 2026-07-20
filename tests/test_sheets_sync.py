@@ -1880,6 +1880,55 @@ def test_sync_public_updates_filters_stale_bad_decisions_and_preserves_real_upda
     assert entry_leak_row[6] == "Resident reported an under-sink leak and possible apartment entry while no one was home."
 
 
+def test_public_sync_excludes_sensitive_interpersonal_security_reports():
+    incident = Incident(
+        incident_id="inc-sensitive-security",
+        category="security_access",
+        severity=3,
+        status="open",
+        title="Unwanted close contact incident reported",
+        summary="Private review required.",
+        needs_review=True,
+    )
+    decision = MessageDecision(
+        message_id="msg-sensitive-security",
+        is_issue=True,
+        category="security_access",
+        event_type="new_issue",
+        needs_review=True,
+    )
+    sensitive = RawMessage(
+        message_id="msg-sensitive-security",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-sensitive",
+        text="A man tried walking up from behind me and squeezing himself next to me.",
+        source="whatsapp_web",
+    )
+    building_access = RawMessage(
+        message_id="msg-door-lock",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-door",
+        text="The lobby door lock is broken.",
+        source="whatsapp_web",
+    )
+
+    normal_access_incident = Incident(
+        incident_id="inc-door-lock",
+        category="security_access",
+        severity=2,
+        status="open",
+        title="Lobby door lock broken",
+        summary="Door hardware needs repair.",
+        needs_review=False,
+    )
+
+    assert sheets_sync._public_should_include_update(incident, sensitive, decision) is False
+    assert sheets_sync._public_should_include_update(incident, building_access, decision) is False
+    assert sheets_sync._public_should_include_update(normal_access_incident, building_access, decision) is True
+
+
 def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypatch, tmp_path):
     service = _FakeService()
     media_dir = tmp_path / "media"

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,8 @@ LOCAL_CHAT_EXPORT_DIR = ROOT / "incoming" / "chat_exports"
 DEFAULT_STATE_PATH = Path.home() / ".local" / "state" / "tenant-issue-os" / "chat-export-sync.json"
 DEFAULT_SINCE = "2026-06-05"
 EXPORT_EXTENSIONS = {".zip", ".txt"}
+STAGE_COPY_ATTEMPTS = 5
+STAGE_COPY_RETRY_SECONDS = 2.0
 
 
 def _split_source_dirs(value: str | None) -> list[Path]:
@@ -186,9 +190,24 @@ def stage_export(source: Path, dest_dir: Path) -> Path:
         return source
     temporary = dest.with_name(f".{dest.name}.{os.getpid()}.partial")
     try:
-        shutil.copy2(source, temporary)
-        if not _is_ready_export(temporary):
-            raise OSError(f"copied export is incomplete: {temporary}")
+        source_fingerprint = file_fingerprint(source)
+        for attempt in range(1, STAGE_COPY_ATTEMPTS + 1):
+            try:
+                temporary.unlink(missing_ok=True)
+                shutil.copy2(source, temporary)
+                copied_fingerprint = file_fingerprint(temporary)
+                if copied_fingerprint["size"] != source_fingerprint["size"] or not _is_ready_export(temporary):
+                    raise OSError(f"copied export is incomplete: {temporary}")
+                if file_fingerprint(source) != source_fingerprint:
+                    raise OSError(f"source export changed while staging: {source}")
+                break
+            except OSError as exc:
+                temporary.unlink(missing_ok=True)
+                retryable = exc.errno in {errno.EAGAIN, errno.EBUSY, errno.ETIMEDOUT}
+                if retryable and attempt < STAGE_COPY_ATTEMPTS:
+                    time.sleep(STAGE_COPY_RETRY_SECONDS * attempt)
+                    continue
+                raise
         os.replace(temporary, dest)
     except Exception:
         try:
@@ -200,6 +219,9 @@ def stage_export(source: Path, dest_dir: Path) -> Path:
 
 
 def run_import_and_audit(export_path: Path, *, since: str) -> dict[str, Any]:
+    audit_dir = ROOT / "exports" / "message_decision_audits" / (
+        dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%fZ") + f"-{os.getpid()}"
+    )
     cmd = [
         sys.executable,
         str(ROOT / "scripts" / "run_weekly_chat_export_audit.py"),
@@ -207,9 +229,25 @@ def run_import_and_audit(export_path: Path, *, since: str) -> dict[str, Any]:
         str(export_path),
         "--since",
         since,
+        "--out-dir",
+        str(audit_dir),
     ]
-    subprocess.run(cmd, cwd=ROOT, check=True)
-    return {"cmd": cmd, "export": str(export_path)}
+    completed = subprocess.run(cmd, cwd=ROOT, capture_output=True, stderr=subprocess.STDOUT, text=True)
+    if completed.returncode:
+        detail = completed.stdout[-2000:].strip()
+        raise RuntimeError(f"weekly chat export import/audit failed ({completed.returncode}): {detail}")
+    summary_path = audit_dir / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"weekly chat export audit did not create a readable summary: {summary_path}") from exc
+    if int(summary.get("parsed_messages") or 0) <= 0:
+        raise RuntimeError(f"weekly chat export audit parsed zero messages: {export_path}")
+    return {
+        "cmd": cmd,
+        "export": str(export_path),
+        "audit_summary": summary,
+    }
 
 
 def sync_once(

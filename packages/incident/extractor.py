@@ -87,6 +87,13 @@ SOURCE_ELEVATOR_AFFECTED_RE = re.compile(
     r"\b(out|down|broken|stuck|not\s+working|out\s+of\s+service|shutdown|shut\s*off)\b",
     re.IGNORECASE,
 )
+SENSITIVE_INTERPERSONAL_SECURITY_RE = re.compile(
+    r"\b(?:walk(?:ed|ing)?\s+(?:up\s+)?(?:from\s+)?behind|"
+    r"squeez(?:ed|ing)\s+(?:himself|herself|themselves|next\s+to)|"
+    r"follow(?:ed|ing)|stalk(?:ed|ing)|grop(?:ed|ing)|grab(?:bed|bing)|"
+    r"harass(?:ed|ment)|assault(?:ed)?|unwanted\s+(?:touch|contact))\b",
+    re.IGNORECASE,
+)
 CONTEXTUAL_ELEVATOR_RESTORE_RE = re.compile(
     r"\b(?:he|she|they|child|kid|person|passenger|guy)\b[^.!?\n]{0,80}\bout\s+now\b"
     r"|\bboth\s+(?:elevators?|lifts?)?\s*(?:are\s+|were\s+)?(?:working|functioning|operational|running)\b"
@@ -689,6 +696,12 @@ def _source_summary_needs_review(text: str | None, choice: dict | None) -> bool:
     return not (SOURCE_ELEVATOR_WORKING_RE.search(clean) or SOURCE_ELEVATOR_AFFECTED_RE.search(clean))
 
 
+def _sensitive_interpersonal_security_needs_review(text: str | None, choice: dict | None) -> bool:
+    if not isinstance(choice, dict) or not choice.get("is_issue") or choice.get("category") != "security_access":
+        return False
+    return bool(SENSITIVE_INTERPERSONAL_SECURITY_RE.search(_clean_source_text(text)))
+
+
 def _truncate_source_summary(value: str, *, limit: int = 320) -> str:
     clean = value.strip()
     if len(clean) <= limit:
@@ -1070,7 +1083,11 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
         confidence = int(chosen.get("confidence", 70))
         title = (chosen.get("title") or "Issue")[:240]
         summary = (chosen.get("summary") or "")[:2000]
-        needs_review = bool(chosen.get("needs_review", False) or _source_summary_needs_review(rm.text or "", chosen))
+        needs_review = bool(
+            chosen.get("needs_review", False)
+            or _source_summary_needs_review(rm.text or "", chosen)
+            or _sensitive_interpersonal_security_needs_review(rm.text or "", chosen)
+        )
         chosen["needs_review"] = needs_review
         close_incident = bool(chosen.get("close_incident")) or event_type == "restore"
 

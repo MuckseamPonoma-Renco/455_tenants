@@ -46,7 +46,7 @@ To audit without importing first:
 
 ## Automatic Mac Pull
 
-The Mac-side puller watches the dedicated iCloud inbox and scans both that folder and the iCloud Drive root on its regular run. Manual repo runs stage into `incoming/chat_exports/`; the installed LaunchAgent stages into `$HOME/.local/share/tenant-issue-os/runtime/incoming/chat_exports/`. It skips an export if that exact file was already processed, imports new messages, audits decisions since the cutoff, and resyncs Sheets through the normal app path.
+The Mac-side puller watches the dedicated iCloud inbox and scans both that folder and the iCloud Drive root on its regular run. Manual repo runs stage into `incoming/chat_exports/`; the installed LaunchAgent stages into `$HOME/.local/share/tenant-issue-os/runtime/incoming/chat_exports/`. It skips an export if that exact file was already processed, imports new messages, audits decisions since the cutoff, and resyncs Sheets through the normal app path. It only records an export as processed after the staged archive is valid and its audit parses at least one chat message.
 
 Install the LaunchAgent:
 
@@ -77,6 +77,10 @@ The script then writes:
 - `exports/message_decision_audits/<timestamp>/review_roster.csv`
 - `exports/message_decision_audits/<timestamp>/summary.md`
 - `exports/message_decision_audits/<timestamp>/summary.json`
+
+For messages with the same normalized text within two minutes, the importer also dedupes a weekly archive against live WhatsApp capture even when WhatsApp changes the visible sender or timestamp. If the archive arrives first, the later live capture promotes that stored row to the live metadata and reprocesses it. The audit prefers the live capture and records any historical disagreement as `cross_source_decision_conflict` in the private review roster. Short messages are not merged this way by default.
+
+Security-access incidents that require review, including their follow-up messages, are held out of the public Tenant Log until they are resolved through the private review process.
 
 ## Correction Loop
 

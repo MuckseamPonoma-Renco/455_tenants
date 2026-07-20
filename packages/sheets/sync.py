@@ -117,6 +117,13 @@ PUBLIC_APARTMENT_OCCUPANCY_ENTRY_RE = re.compile(
     r"|\b(?:apartment|apt|unit)\b[^.!?\n]{0,120}\b(?:while\s+(?:i\s+was(?:n['’]?t| not)|no\s+one|nobody)\s+(?:home|here|there))\b",
     re.IGNORECASE,
 )
+PUBLIC_SENSITIVE_INTERPERSONAL_SECURITY_RE = re.compile(
+    r"\b(?:walk(?:ed|ing)?\s+(?:up\s+)?(?:from\s+)?behind|"
+    r"squeez(?:ed|ing)\s+(?:himself|herself|themselves|next\s+to)|"
+    r"follow(?:ed|ing)|stalk(?:ed|ing)|grop(?:ed|ing)|grab(?:bed|bing)|"
+    r"harass(?:ed|ment)|assault(?:ed)?|unwanted\s+(?:touch|contact))\b",
+    re.IGNORECASE,
+)
 PUBLIC_UNDER_SINK_LEAK_RE = re.compile(r"\b(?:leak|leaking)\b[^.!?\n]{0,80}\b(?:under\s+(?:my|the)?\s*sink|sink)\b|(?:under\s+(?:my|the)?\s*sink|sink)[^.!?\n]{0,80}\b(?:leak|leaking)\b", re.IGNORECASE)
 PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"\b("
@@ -1903,6 +1910,10 @@ def _public_should_include_update(
         and decision_event == "restore"
     )
     if PUBLIC_RECORDKEEPING_DISCUSSION_RE.search(text) or PUBLIC_FORM_PROCESS_DISCUSSION_RE.search(text):
+        return False
+    if incident.category == "security_access" and incident.needs_review:
+        return False
+    if incident.category == "security_access" and PUBLIC_SENSITIVE_INTERPERSONAL_SECURITY_RE.search(text):
         return False
     if incident.category == "elevator" and PUBLIC_ELEVATOR_SAFETY_DISCUSSION_RE.search(text):
         return False

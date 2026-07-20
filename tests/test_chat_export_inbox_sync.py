@@ -1,3 +1,4 @@
+import errno
 import json
 import zipfile
 
@@ -102,6 +103,56 @@ def test_sync_replaces_an_empty_staged_file_after_icloud_finishes(tmp_path, monk
     assert staged.stat().st_size == source.stat().st_size
     assert zipfile.is_zipfile(staged)
     assert calls == [(staged, "2026-06-05")]
+
+
+def test_stage_export_retries_transient_icloud_lock(tmp_path, monkeypatch):
+    source = tmp_path / "WhatsApp Chat - 455 Tenants 11.zip"
+    dest_dir = tmp_path / "incoming"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("WhatsApp Chat - 455 Tenants.txt", "[6/5/26, 9:00:00 AM] Karen: North lift dead\n")
+
+    original_copy = inbox_sync.shutil.copy2
+    attempts = []
+
+    def flaky_copy(source_arg, destination_arg):
+        attempts.append((source_arg, destination_arg))
+        if len(attempts) == 1:
+            raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+        return original_copy(source_arg, destination_arg)
+
+    monkeypatch.setattr(inbox_sync.shutil, "copy2", flaky_copy)
+    monkeypatch.setattr(inbox_sync.time, "sleep", lambda _seconds: None)
+
+    staged = inbox_sync.stage_export(source, dest_dir)
+
+    assert len(attempts) == 2
+    assert staged.exists()
+    assert zipfile.is_zipfile(staged)
+
+
+def test_run_import_and_audit_rejects_zero_parsed_messages(tmp_path, monkeypatch):
+    export_path = tmp_path / "WhatsApp Chat - 455 Tenants 11.zip"
+    with zipfile.ZipFile(export_path, "w") as archive:
+        archive.writestr("WhatsApp Chat - 455 Tenants.txt", "not a parsed transcript")
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(cmd, *, cwd, capture_output, stderr, text):
+        audit_dir = __import__("pathlib").Path(cmd[cmd.index("--out-dir") + 1])
+        audit_dir.mkdir(parents=True)
+        (audit_dir / "summary.json").write_text('{"parsed_messages": 0}', encoding="utf-8")
+        return Completed()
+
+    monkeypatch.setattr(inbox_sync.subprocess, "run", fake_run)
+
+    try:
+        inbox_sync.run_import_and_audit(export_path, since="2026-06-05")
+    except RuntimeError as exc:
+        assert "parsed zero messages" in str(exc)
+    else:
+        raise AssertionError("zero-message exports must not be treated as processed")
 
 
 def test_sync_once_skips_unchanged_after_processing(tmp_path, monkeypatch):

@@ -8,6 +8,9 @@ from packages.auth import require_bearer_token
 from packages.db import RawMessage, get_session
 from packages.queue import enqueue_full_resync, enqueue_process_message
 from packages.tasker_capture import (
+    CROSS_SOURCE_DUPLICATE_SOURCES,
+    LIVE_CAPTURE_SOURCES,
+    find_recent_cross_source_duplicate,
     find_recent_duplicate,
     find_recent_live_capture_duplicate,
     is_noise_tasker_capture,
@@ -82,6 +85,24 @@ def _merge_duplicate_capture_attachments(existing: RawMessage | None, incoming_a
         existing.attachments = merged
 
 
+def _promote_live_capture_over_export(
+    existing: RawMessage,
+    prepared: dict[str, object],
+    *,
+    source: str,
+    incoming_attachments: str | None,
+) -> None:
+    """Keep the existing ID while replacing export aliases with live capture metadata."""
+    _merge_duplicate_capture_attachments(existing, incoming_attachments)
+    existing.chat_name = str(prepared["chat_name"] or existing.chat_name or "")
+    existing.sender = str(prepared["sender"] or existing.sender or "")
+    existing.sender_hash = str(prepared["sender_hash"] or existing.sender_hash)
+    existing.ts_iso = str(prepared["ts_iso"] or existing.ts_iso or "") or None
+    existing.ts_epoch = prepared["ts_epoch"] if isinstance(prepared["ts_epoch"], int) else existing.ts_epoch
+    existing.text = str(prepared["text"] or existing.text)
+    existing.source = source
+
+
 def _store_capture_payload(
     session,
     payload: CapturePayload,
@@ -118,6 +139,25 @@ def _store_capture_payload(
         prepared['message_id'] = recent_duplicate.message_id
         return prepared, False
 
+    export_duplicate = find_recent_cross_source_duplicate(
+        session,
+        text=prepared['text'],
+        ts_epoch=prepared['ts_epoch'],
+        sources=CROSS_SOURCE_DUPLICATE_SOURCES,
+    )
+    if export_duplicate:
+        previous_source = export_duplicate.source
+        _promote_live_capture_over_export(
+            export_duplicate,
+            prepared,
+            source=source,
+            incoming_attachments=payload.attachments,
+        )
+        prepared['message_id'] = export_duplicate.message_id
+        prepared['reprocess'] = True
+        prepared['promoted_from_source'] = previous_source
+        return prepared, False
+
     session.add(RawMessage(
         message_id=mid,
         chat_name=prepared['chat_name'],
@@ -144,7 +184,15 @@ def _ingest_single_capture(payload: CapturePayload, *, authorization: str | None
         session.commit()
 
     if not inserted:
-        return {'ok': True, 'deduped': True, 'message_id': prepared['message_id']}
+        message_id = str(prepared['message_id'])
+        if prepared.get('reprocess'):
+            append_audit_event('INGEST_RAW_SOURCE_PROMOTED', message_id, {
+                'source': source,
+                'previous_source': prepared.get('promoted_from_source') or '',
+            })
+            job_id = enqueue_process_message(message_id)
+            return {'ok': True, 'deduped': True, 'reprocessed': True, 'message_id': message_id, 'job_id': job_id}
+        return {'ok': True, 'deduped': True, 'message_id': message_id}
 
     message_id = str(prepared['message_id'])
     append_audit_event('INGEST_RAW', message_id, {'source': source})
@@ -160,6 +208,7 @@ def _ingest_batch_capture(payload: CaptureBatchPayload, *, authorization: str | 
         append_audit_event("LEGACY_TASKER_INGEST_USED", None, {"mode": "batch", "received": len(payload.items)})
 
     inserted_rows: list[dict[str, object]] = []
+    reprocess_rows: list[dict[str, object]] = []
     deduped = 0
     recent_rows: list[tuple[tuple[str, str, str], int | None, str]] = []
 
@@ -168,25 +217,31 @@ def _ingest_batch_capture(payload: CaptureBatchPayload, *, authorization: str | 
             prepared, inserted = _store_capture_payload(session, item, source=source, recent_rows=recent_rows)
             if inserted:
                 inserted_rows.append(prepared)
+            elif prepared.get('reprocess'):
+                reprocess_rows.append(prepared)
+                deduped += 1
             else:
                 deduped += 1
         session.commit()
 
-    job_ids = [enqueue_process_message(str(row['message_id']), sync_sheets=False) for row in inserted_rows]
-    if inserted_rows:
+    rows_to_process = inserted_rows + reprocess_rows
+    job_ids = [enqueue_process_message(str(row['message_id']), sync_sheets=False) for row in rows_to_process]
+    if rows_to_process:
         enqueue_full_resync()
     append_audit_event('INGEST_RAW_BATCH', None, {
         'source': source,
         'received': len(payload.items),
         'inserted': len(inserted_rows),
+        'reprocessed': len(reprocess_rows),
         'deduped': deduped,
     })
     return {
         'ok': True,
         'received': len(payload.items),
         'inserted': len(inserted_rows),
+        'reprocessed': len(reprocess_rows),
         'deduped': deduped,
-        'message_ids': [str(row['message_id']) for row in inserted_rows],
+        'message_ids': [str(row['message_id']) for row in rows_to_process],
         'job_ids': job_ids,
     }
 
@@ -239,6 +294,13 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
                 ts_epoch=ts_epoch,
                 require_chat_match=False,
             )
+            if duplicate is None:
+                duplicate = find_recent_cross_source_duplicate(
+                    session,
+                    text=msg.text,
+                    ts_epoch=ts_epoch,
+                    sources=LIVE_CAPTURE_SOURCES,
+                )
             if duplicate:
                 deduped += 1
                 continue

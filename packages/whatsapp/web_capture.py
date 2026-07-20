@@ -35,6 +35,11 @@ READY_SELECTORS = (
     "#side",
     "#main",
 )
+MODERN_READY_SELECTORS = (
+    "#pane-side",
+    "#side",
+    "[data-testid='wa-web-main-screen']",
+)
 LOGIN_REQUIRED_SELECTORS = (
     "canvas",
     "[data-testid='qrcode']",
@@ -584,13 +589,15 @@ def _candidate_from_row(chat_name: str, row: dict[str, Any]) -> WhatsAppCaptureC
 
 
 def _is_ready(page: Page) -> bool:
-    for selector in READY_SELECTORS:
+    # Current WhatsApp Web does not render #main until a chat is selected.
+    # Accept either its legacy layout or the signed-in modern chat-list shell.
+    for selectors in (READY_SELECTORS, MODERN_READY_SELECTORS):
         try:
-            if page.locator(selector).count() == 0:
-                return False
+            if all(page.locator(selector).count() > 0 for selector in selectors):
+                return True
         except PlaywrightError:
-            return False
-    return True
+            continue
+    return False
 
 
 def _body_text(page: Page) -> str:

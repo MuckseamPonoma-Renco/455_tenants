@@ -21,7 +21,7 @@ load_local_env_file(ROOT / ".env")
 from packages.audit import compute_message_id  # noqa: E402
 from packages.db import MessageDecision, RawMessage, get_session  # noqa: E402
 from packages.incident.rules import classify_rules  # noqa: E402
-from packages.tasker_capture import find_recent_duplicate  # noqa: E402
+from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate, find_recent_duplicate  # noqa: E402
 from packages.timeutil import parse_ts_to_epoch  # noqa: E402
 from packages.whatsapp.export import parse_export_path  # noqa: E402
 
@@ -39,6 +39,8 @@ CSV_FIELDS = [
     "matched_message_id",
     "match_method",
     "stored_source",
+    "cross_source_message_id",
+    "cross_source_source",
     "incident_id",
     "chosen_source",
     "is_issue",
@@ -161,11 +163,31 @@ def _suspect_reasons(
     return sorted(set(reasons))
 
 
-def _match_export_message(session, message: ExportMessage) -> tuple[RawMessage | None, str]:
+def _decision_signature(decision: MessageDecision | None) -> tuple[object, ...]:
+    if decision is None:
+        return (None, "", "", False)
+    return (
+        bool(decision.is_issue),
+        decision.category or "",
+        decision.event_type or "",
+        bool(decision.needs_review),
+    )
+
+
+def _match_export_message(session, message: ExportMessage) -> tuple[RawMessage | None, str, RawMessage | None]:
     message_id = compute_message_id(message.chat_name, message.sender, message.ts_iso or "", message.text)
-    raw = session.get(RawMessage, message_id)
-    if raw is not None:
-        return raw, "exact"
+    exact = session.get(RawMessage, message_id)
+    cross_source = find_recent_cross_source_duplicate(
+        session,
+        text=message.text,
+        ts_epoch=message.ts_epoch,
+        sources=LIVE_CAPTURE_SOURCES,
+    )
+    if cross_source is not None and cross_source.message_id != message_id:
+        if exact is None or exact.source in {"zip_import", "export"}:
+            return cross_source, "cross_source", exact
+    if exact is not None:
+        return exact, "exact", None
 
     duplicate = find_recent_duplicate(
         session,
@@ -176,17 +198,21 @@ def _match_export_message(session, message: ExportMessage) -> tuple[RawMessage |
         require_chat_match=False,
     )
     if duplicate is not None:
-        return duplicate, "near_duplicate"
+        return duplicate, "near_duplicate", None
 
-    return None, ""
+    return None, "", None
 
 
 def _row_from_message(session, message: ExportMessage) -> tuple[dict[str, Any], list[str]]:
-    raw, match_method = _match_export_message(session, message)
+    raw, match_method, alternate = _match_export_message(session, message)
     decision = session.get(MessageDecision, raw.message_id) if raw else None
     rules = classify_rules(message.text)
     decision_fields = _decision_row(decision)
     reasons = _suspect_reasons(raw=raw, decision=decision, rules=rules, decision_fields=decision_fields)
+    alternate_decision = session.get(MessageDecision, alternate.message_id) if alternate else None
+    if alternate is not None and _decision_signature(decision) != _decision_signature(alternate_decision):
+        reasons.append("cross_source_decision_conflict")
+    reasons = sorted(set(reasons))
     row = {
         "export_ordinal": message.export_ordinal,
         "export_file": message.export_file,
@@ -198,6 +224,8 @@ def _row_from_message(session, message: ExportMessage) -> tuple[dict[str, Any], 
         "matched_message_id": raw.message_id if raw else "",
         "match_method": match_method,
         "stored_source": raw.source if raw else "",
+        "cross_source_message_id": alternate.message_id if alternate else "",
+        "cross_source_source": alternate.source if alternate else "",
         "rule_kind": rules.get("kind") or "",
         "rule_category": rules.get("category") or "",
         "rule_asset": rules.get("asset") or "",

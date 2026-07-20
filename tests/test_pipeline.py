@@ -838,6 +838,44 @@ def test_ambiguous_only_lift_fragment_gets_clear_summary_and_review(client, monk
         assert 'Karen' not in incident.summary
 
 
+def test_sensitive_interpersonal_security_report_stays_in_review_queue(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def fake_llm(*_args, **_kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'security_access',
+            'asset': None,
+            'event_type': 'new_issue',
+            'severity': 3,
+            'confidence': 90,
+            'title': 'Unwanted close contact incident reported',
+            'summary': 'A resident reported an unwanted close-contact incident.',
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'A man tried walking up from behind me and squeezing himself next to me.',
+        'sender': 'Karen',
+        'ts_epoch': 1776802250,
+    })
+
+    assert response.status_code == 200, response.text
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        decision = session.query(MessageDecision).one()
+        final = json.loads(decision.final_json or '{}')
+
+        assert incident.needs_review is True
+        assert decision.needs_review is True
+        assert final['needs_review'] is True
+
+
 def test_followup_duplicate_summary_collapses_after_person_phrase_removed(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
 

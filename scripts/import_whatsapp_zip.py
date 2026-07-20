@@ -16,7 +16,7 @@ load_local_env_file(ROOT / ".env")
 from packages.whatsapp.export import parse_export_path
 from packages.db import get_session, RawMessage
 from packages.audit import compute_message_id, sender_hash
-from packages.tasker_capture import find_recent_duplicate
+from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate, find_recent_duplicate
 from packages.timeutil import parse_ts_to_epoch
 from packages.queue import enqueue_full_resync, enqueue_process_message
 
@@ -55,6 +55,13 @@ def main() -> None:
                 ts_epoch=ts_epoch,
                 require_chat_match=False,
             )
+            if duplicate is None:
+                duplicate = find_recent_cross_source_duplicate(
+                    s,
+                    text=m.text,
+                    ts_epoch=ts_epoch,
+                    sources=LIVE_CAPTURE_SOURCES,
+                )
             if duplicate:
                 deduped += 1
                 continue

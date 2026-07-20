@@ -12,6 +12,7 @@ CHAT_SENDER_RE = re.compile(r"^(?P<chat>.+?)(?: \((?:\d+) messages?\))?(?:: (?P<
 TEXT_SENDER_RE = re.compile(r"^(?:~\s*)?(?P<sender>[^:]{1,120}): (?P<text>.+)$")
 NEW_MESSAGES_RE = re.compile(r"^\d+\s+new messages?$", re.IGNORECASE)
 LIVE_CAPTURE_SOURCES = ("tasker", "whatsapp_web")
+CROSS_SOURCE_DUPLICATE_SOURCES = ("zip_import", "export")
 
 
 def _clean(value: str | None) -> str:
@@ -56,6 +57,22 @@ def tasker_duplicate_window_seconds() -> int:
         return 24 * 60 * 60
 
 
+def cross_source_duplicate_window_seconds() -> int:
+    raw = (os.environ.get("CROSS_SOURCE_DUPLICATE_WINDOW_SECONDS") or "").strip()
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 120
+
+
+def cross_source_duplicate_min_text_chars() -> int:
+    raw = (os.environ.get("CROSS_SOURCE_DUPLICATE_MIN_TEXT_CHARS") or "").strip()
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return 40
+
+
 def normalize_tasker_capture(chat_name: str | None, sender: str | None, text: str | None) -> NormalizedTaskerCapture:
     raw_chat = _clean(chat_name)
     raw_sender = _clean(sender)
@@ -95,18 +112,57 @@ def is_noise_tasker_capture(chat_name: str | None, sender: str | None, text: str
     return bool(NEW_MESSAGES_RE.fullmatch(normalized.text))
 
 
-def _recent_duplicate_candidates(session, *, ts_epoch: int, sources: tuple[str, ...] | None) -> list[RawMessage]:
+def _recent_duplicate_candidates(
+    session,
+    *,
+    ts_epoch: int,
+    sources: tuple[str, ...] | None,
+    window_seconds: int | None = None,
+) -> list[RawMessage]:
+    window = tasker_duplicate_window_seconds() if window_seconds is None else max(0, int(window_seconds))
     candidates = (
         session.query(RawMessage)
         .filter(
             RawMessage.ts_epoch.is_not(None),
-            RawMessage.ts_epoch >= int(ts_epoch) - tasker_duplicate_window_seconds(),
-            RawMessage.ts_epoch <= int(ts_epoch) + tasker_duplicate_window_seconds(),
+            RawMessage.ts_epoch >= int(ts_epoch) - window,
+            RawMessage.ts_epoch <= int(ts_epoch) + window,
         )
     )
     if sources:
         candidates = candidates.filter(RawMessage.source.in_(sources))
     return candidates.all()
+
+
+def _cross_source_text_signature(text: str | None) -> str:
+    clean = _clean(text).translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'}))
+    return re.sub(r"\s+", " ", clean).casefold()
+
+
+def find_recent_cross_source_duplicate(
+    session,
+    *,
+    text: str | None,
+    ts_epoch: int | None,
+    sources: tuple[str, ...],
+) -> RawMessage | None:
+    if ts_epoch is None:
+        return None
+    target = _cross_source_text_signature(text)
+    if len(target) < cross_source_duplicate_min_text_chars():
+        return None
+    window = cross_source_duplicate_window_seconds()
+    if window <= 0:
+        return None
+    candidates = _recent_duplicate_candidates(
+        session,
+        ts_epoch=int(ts_epoch),
+        sources=sources,
+        window_seconds=window,
+    )
+    for row in sorted(candidates, key=lambda item: abs(int(item.ts_epoch or 0) - int(ts_epoch))):
+        if _cross_source_text_signature(row.text) == target:
+            return row
+    return None
 
 
 def find_recent_duplicate(
