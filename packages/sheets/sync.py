@@ -5,6 +5,8 @@ import os
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import google_auth_httplib2
+import httplib2
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
@@ -257,6 +259,14 @@ def _creds_path() -> str:
     raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS not set or missing")
 
 
+def _http_timeout_seconds() -> int:
+    try:
+        configured = int(os.environ.get("GOOGLE_SHEETS_HTTP_TIMEOUT_SECONDS", "30"))
+    except ValueError:
+        configured = 30
+    return min(120, max(5, configured))
+
+
 def _env_first(*names: str, default: str | None = None) -> str | None:
     for name in names:
         value = os.environ.get(name)
@@ -270,7 +280,10 @@ def _service():
         raise RuntimeError("Sheets sync disabled")
     creds_path = _creds_path()
     creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
-    return build("sheets", "v4", credentials=creds)
+    # Google API requests otherwise inherit httplib2's unbounded socket timeout,
+    # which can stall the automation loop while Google Sheets is unavailable.
+    http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=_http_timeout_seconds()))
+    return build("sheets", "v4", http=http, cache_discovery=False)
 
 
 def _sheet_id():

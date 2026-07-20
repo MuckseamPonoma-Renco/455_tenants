@@ -101,6 +101,42 @@ class _LegacyPublicTabService(_FakeService):
         return _LegacyPublicTabSpreadsheets(calls)
 
 
+def test_service_uses_bounded_authorized_http(monkeypatch, tmp_path):
+    credentials_path = tmp_path / "sheets-service-account.json"
+    credentials_path.write_text("{}", encoding="utf-8")
+    credentials = object()
+    calls = {}
+
+    class FakeCredentials:
+        @staticmethod
+        def from_service_account_file(path, scopes):
+            calls["credentials"] = {"path": path, "scopes": scopes}
+            return credentials
+
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credentials_path))
+    monkeypatch.setenv("GOOGLE_SHEETS_HTTP_TIMEOUT_SECONDS", "999")
+    monkeypatch.setenv("DISABLE_SHEETS_SYNC", "0")
+    monkeypatch.setattr(sheets_sync, "Credentials", FakeCredentials)
+    monkeypatch.setattr(sheets_sync.httplib2, "Http", lambda *, timeout: {"timeout": timeout})
+    monkeypatch.setattr(
+        sheets_sync.google_auth_httplib2,
+        "AuthorizedHttp",
+        lambda supplied_credentials, *, http: {"credentials": supplied_credentials, "http": http},
+    )
+    monkeypatch.setattr(
+        sheets_sync,
+        "build",
+        lambda service, version, **kwargs: calls.update({"service": service, "version": version, **kwargs}) or "service",
+    )
+
+    assert sheets_sync._service() == "service"
+    assert calls["credentials"] == {"path": str(credentials_path), "scopes": sheets_sync.SCOPES}
+    assert calls["service"] == "sheets"
+    assert calls["version"] == "v4"
+    assert calls["http"] == {"credentials": credentials, "http": {"timeout": 120}}
+    assert calls["cache_discovery"] is False
+
+
 def test_replace_tab_values_writes_first_then_clears_stale_cells():
     service = _FakeService()
 

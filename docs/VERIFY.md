@@ -31,6 +31,10 @@ launchctl print "gui/$(id -u)/tenant-issue-os.watchdog"
 
 Re-run `./scripts/install_mac_launch_agents.sh` after repo-side code changes so the staged launchd runtime stays in sync.
 
+### Unattended reboot boundary
+
+`sleep 0` and LaunchAgent recovery keep the system active during normal AC-powered operation. They do not bypass FileVault: after a full restart, macOS must be unlocked before user LaunchAgents can run again. The private Cloudflare export receiver archives iPhone exports while the Mac is unavailable, but import, audit, Sheet updates, and WhatsApp capture resume only after that unlock.
+
 If the public hostname fails on this machine because local DNS is lagging, force Cloudflare resolution during checks:
 
 ```bash
