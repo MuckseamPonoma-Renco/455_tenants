@@ -148,6 +148,24 @@ def file_fingerprint(path: Path) -> dict[str, Any]:
     }
 
 
+def _export_identity(fingerprint: Any) -> tuple[str, int, int] | None:
+    if not isinstance(fingerprint, dict):
+        return None
+    try:
+        name = str(fingerprint["name"])
+        size = int(fingerprint["size"])
+        mtime_ns = int(fingerprint["mtime_ns"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (name, size, mtime_ns) if name and size > 0 and mtime_ns > 0 else None
+
+
+def _same_export_identity(left: Any, right: Any) -> bool:
+    left_identity = _export_identity(left)
+    right_identity = _export_identity(right)
+    return left_identity is not None and left_identity == right_identity
+
+
 def load_state(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -267,7 +285,13 @@ def run_import_and_audit(export_path: Path, *, since: str) -> dict[str, Any]:
         "--out-dir",
         str(audit_dir),
     ]
-    completed = subprocess.run(cmd, cwd=ROOT, capture_output=True, stderr=subprocess.STDOUT, text=True)
+    completed = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
     if completed.returncode:
         detail = completed.stdout[-2000:].strip()
         raise RuntimeError(f"weekly chat export import/audit failed ({completed.returncode}): {detail}")
@@ -331,7 +355,7 @@ def sync_once(
     fingerprint = file_fingerprint(source)
     state["last_seen_fingerprint"] = fingerprint
     previous = state.get("last_processed_fingerprint")
-    if not force and previous == fingerprint:
+    if not force and _same_export_identity(previous, fingerprint):
         state.pop("last_pending_fingerprint", None)
         state["last_error"] = ""
         save_state(state_path, state)
