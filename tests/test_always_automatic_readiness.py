@@ -2,7 +2,7 @@ import argparse
 import json
 
 import scripts.check_always_automatic_readiness as readiness
-from scripts.check_always_automatic_readiness import CommandResult, build_report
+from scripts.check_always_automatic_readiness import CommandResult, build_report, compact_report
 
 
 def _args(**overrides):
@@ -81,3 +81,20 @@ def test_readiness_report_passes_when_cloud_receiver_and_github_gate_are_configu
     assert report["ok"] is True
     assert report["next_required_action"] == ""
     assert {row["status"] for row in report["checks"]} <= {"pass", "warn"}
+
+
+def test_compact_report_keeps_verdict_without_raw_command_evidence(monkeypatch):
+    monkeypatch.setattr(readiness.platform, "system", lambda: "Darwin")
+    report = build_report(_args(), runner=_runner(cloud_ready=False, github_ready=False))
+
+    compact = compact_report(report)
+
+    assert compact["ok"] is False
+    assert compact["status_counts"] == {"pass": 2, "fail": 2, "warn": 1}
+    assert [row["name"] for row in compact["failed_checks"]] == [
+        "mac_off_intake_health",
+        "github_cloud_recovery_gate",
+    ]
+    assert compact["warnings"][0]["name"] == "filevault_boundary"
+    assert "checks" not in compact
+    assert "command" not in json.dumps(compact)

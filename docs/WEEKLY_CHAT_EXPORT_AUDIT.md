@@ -162,10 +162,10 @@ After the private Cloudflare receiver is deployed, set the GitHub repository var
 For a full read-only answer to "is everything truly automatic now?", run:
 
 ```bash
-.venv/bin/python scripts/check_always_automatic_readiness.py --include-public-sheet --include-watchdog-sync
+.venv/bin/python scripts/check_always_automatic_readiness.py --include-public-sheet --include-watchdog-sync --compact
 ```
 
-That command verifies Mac LaunchAgents, public `/health`, strict Mac-off intake, FileVault boundary, GitHub recovery secrets/variable, the live public Tenant Log, and the elevator replacement watchdog in one JSON report.
+That command verifies Mac LaunchAgents, public `/health`, strict Mac-off intake, FileVault boundary, GitHub recovery secrets/variable, the live public Tenant Log, and the elevator replacement watchdog in one JSON report. Omit `--compact` when raw command evidence is needed.
 
 ## Optional Cloud Recovery
 

@@ -289,17 +289,58 @@ def build_report(args: argparse.Namespace, *, runner: Runner = run_command) -> d
     }
 
 
+def compact_report(report: dict[str, Any]) -> dict[str, Any]:
+    checks = [row for row in report.get("checks", []) if isinstance(row, dict)]
+    status_counts: dict[str, int] = {}
+    for row in checks:
+        status = str(row.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    def summarize(row: dict[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "name": row.get("name"),
+            "status": row.get("status"),
+            "detail": row.get("detail"),
+        }
+        evidence = row.get("evidence")
+        if isinstance(evidence, dict):
+            payload = evidence.get("payload")
+            if isinstance(payload, dict) and payload.get("failures"):
+                summary["failures"] = payload.get("failures")
+            if evidence.get("cloud_export_receiver_state"):
+                summary["cloud_export_receiver_state"] = evidence.get("cloud_export_receiver_state")
+            if evidence.get("require_cloud_export_receiver") is not None:
+                summary["require_cloud_export_receiver"] = evidence.get("require_cloud_export_receiver")
+            configured = evidence.get("configured_recovery_secret_names")
+            if configured is not None:
+                summary["configured_recovery_secret_names"] = configured
+        return summary
+
+    failures = [summarize(row) for row in checks if row.get("ok") is not True and row.get("status") != "warn"]
+    warnings = [summarize(row) for row in checks if row.get("status") == "warn"]
+    return {
+        "ok": bool(report.get("ok")),
+        "status_counts": status_counts,
+        "failed_checks": failures,
+        "warnings": warnings,
+        "next_required_action": report.get("next_required_action") or "",
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="MuckseamPonoma-Renco/455_tenants", help="GitHub repo for recovery secret/variable checks.")
     parser.add_argument("--include-public-sheet", action="store_true", help="Run the live published Tenant Log source-vs-sheet audit.")
     parser.add_argument("--include-watchdog-sync", action="store_true", help="Run the live elevator replacement watchdog sync.")
+    parser.add_argument("--compact", action="store_true", help="Print a compact verdict without raw command evidence.")
     return parser.parse_args()
 
 
 def main() -> int:
-    report = build_report(parse_args())
-    print(json.dumps(report, indent=2, sort_keys=True))
+    args = parse_args()
+    report = build_report(args)
+    output = compact_report(report) if args.compact else report
+    print(json.dumps(output, indent=2, sort_keys=True))
     return 0 if report["ok"] else 1
 
 
