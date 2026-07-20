@@ -159,6 +159,14 @@ This is an outage detector, not a cloud receiver. A failed check means the Mac o
 
 After the private Cloudflare receiver is deployed, set the GitHub repository variable `REQUIRE_CLOUD_EXPORT_RECEIVER=true` or run `scripts/check_public_health.py --require-cloud-export-receiver` from an operator shell. That makes a missing Mac-off intake fail loudly instead of reading as a fully green system.
 
+For a full read-only answer to "is everything truly automatic now?", run:
+
+```bash
+.venv/bin/python scripts/check_always_automatic_readiness.py --include-public-sheet --include-watchdog-sync
+```
+
+That command verifies Mac LaunchAgents, public `/health`, strict Mac-off intake, FileVault boundary, GitHub recovery secrets/variable, the live public Tenant Log, and the elevator replacement watchdog in one JSON report.
+
 ## Optional Cloud Recovery
 
 `.github/workflows/cloud-recovery.yml` is intentionally disabled until all private configuration is present. Once enabled, it downloads pending R2 exports to an ephemeral GitHub-hosted runner, imports and audits them, refreshes 311 status and replacement-watchdog data on their normal schedules, and writes the same Tenant Log outputs. It never uploads a chat archive as an artifact or logs chat text. The runner forces `AUTO_FILE_ENABLED=0`, so it cannot submit a new NYC311 filing.
