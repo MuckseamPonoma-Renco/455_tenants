@@ -69,7 +69,7 @@ tail -n 80 "$HOME/.local/var/log/tenant-issue-os/chat-export-sync.out.log"
 tail -n 80 "$HOME/.local/var/log/tenant-issue-os/chat-export-sync.err.log"
 ```
 
-The script first imports the export into the app database, dedupes already-seen messages, processes new messages, and resyncs Sheets through the normal queue path. It reads every WhatsApp chat `.txt` file inside a ZIP, so a full export can refresh more than one chat.
+The script first imports the export into the app database, dedupes already-seen messages, reviews every new non-empty, non-media message with the configured OpenAI model plus retrieved chat/incident context, then resyncs Sheets through the normal queue path. It reads every WhatsApp chat `.txt` file inside a ZIP, so a full export can refresh more than one chat. Media placeholders are recorded locally without a model call because they contain no message text to review.
 
 The script then writes:
 

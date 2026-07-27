@@ -28,11 +28,24 @@ def newest_export(inbox: Path) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
-def import_export(export_path: Path) -> None:
+def import_export(export_path: Path, *, llm_mode: str) -> None:
     if export_path.suffix.casefold() == ".zip":
-        cmd = [sys.executable, str(ROOT / "scripts" / "import_whatsapp_zip.py"), "--zip", str(export_path)]
+        cmd = [
+            sys.executable,
+            str(ROOT / "scripts" / "import_whatsapp_zip.py"),
+            "--zip",
+            str(export_path),
+            "--llm-mode",
+            llm_mode,
+        ]
     else:
-        cmd = [sys.executable, str(ROOT / "scripts" / "import_whatsapp_export.py"), str(export_path)]
+        cmd = [
+            sys.executable,
+            str(ROOT / "scripts" / "import_whatsapp_export.py"),
+            str(export_path),
+            "--llm-mode",
+            llm_mode,
+        ]
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
@@ -41,6 +54,12 @@ def main() -> None:
     parser.add_argument("--inbox", default=str(ROOT / "incoming" / "chat_exports"), help="Folder containing weekly .zip/.txt exports")
     parser.add_argument("--export", help="Specific export file to process instead of the newest inbox file")
     parser.add_argument("--since", default=DEFAULT_SINCE, help=f"Audit cutoff timestamp. Default: {DEFAULT_SINCE}")
+    parser.add_argument(
+        "--llm-mode",
+        default="all",
+        choices=("off", "uncertain", "assist", "all", "supervised"),
+        help="Model-review mode for newly imported messages. Default: all.",
+    )
     parser.add_argument("--skip-import", action="store_true", help="Only create audit artifacts; do not import/reprocess the export first")
     parser.add_argument("--out-dir", help="Output directory for audit artifacts")
     args = parser.parse_args()
@@ -52,7 +71,7 @@ def main() -> None:
         else ROOT / "exports" / "message_decision_audits" / dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     )
     if not args.skip_import:
-        import_export(export_path)
+        import_export(export_path, llm_mode=args.llm_mode)
     reconciliation = run_reconciliation(out_dir=out_dir)
     summary = run_audit(export_path, since=args.since, out_dir=out_dir)
     summary["cross_source_reconciliation"] = reconciliation

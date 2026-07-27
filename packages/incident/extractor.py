@@ -738,6 +738,10 @@ def _should_use_llm(text: str, rules: dict) -> bool:
     return should_call_llm(text or "", rules.get("is_issue", False), rules.get("kind", "nonissue"))
 
 
+def _llm_reviews_every_meaningful_message() -> bool:
+    return (LLM_MODE or "uncertain").lower().strip() in {"all", "supervised"}
+
+
 def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -> dict | None:
     if rm.ts_epoch is None or not rm.chat_name:
         return None
@@ -1022,7 +1026,11 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
         not rule_choice
         or (rule_choice.get("category") == "heat_hot_water" and context_choice.get("category") == "elevator")
     ):
-        return context_choice, rules, None, "rules_context"
+        # Full-export review mode still sends deterministic follow-ups to the
+        # model, while retaining the contextual choice as the rules baseline.
+        if not _llm_reviews_every_meaningful_message():
+            return context_choice, rules, None, "rules_context"
+        rule_choice = context_choice
     llm = None
     open_incidents = _open_incidents_context(session, rm)
     recent_related = _recent_related_context(session, rm)

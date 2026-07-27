@@ -19,12 +19,19 @@ from apps.api.main import app
 def main() -> None:
     parser = argparse.ArgumentParser(description='Import a WhatsApp export zip/txt into Tenant Issue OS.')
     parser.add_argument('export_path', help='Path to the WhatsApp export .zip or .txt file')
+    parser.add_argument(
+        '--llm-mode',
+        default='all',
+        choices=('off', 'uncertain', 'assist', 'all', 'supervised'),
+        help='LLM_MODE to use while processing imported messages. Default: all.',
+    )
     args = parser.parse_args()
 
     export_path = Path(args.export_path)
     if not export_path.exists():
         raise SystemExit(f'File not found: {export_path}')
 
+    os.environ['LLM_MODE'] = args.llm_mode
     token = os.environ['INGEST_TOKEN']
     print(f"Importing {export_path.name}...", flush=True)
     with TestClient(app) as client, export_path.open('rb') as f:

@@ -26,8 +26,9 @@ def main() -> None:
     ap.add_argument('--zip', required=True, help='WhatsApp export ZIP (contains _chat.txt)')
     ap.add_argument(
         '--llm-mode',
-        default='off',
-        help='LLM_MODE to use while processing imported backlog messages. Default: off.',
+        default='all',
+        choices=('off', 'uncertain', 'assist', 'all', 'supervised'),
+        help='LLM_MODE to use while processing imported messages. Default: all.',
     )
     args = ap.parse_args()
 

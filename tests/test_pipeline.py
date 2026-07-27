@@ -274,6 +274,56 @@ def test_export_ingest_media_placeholder_is_not_classified_as_issue(client, tmp_
     assert llm_calls == []
 
 
+def test_all_mode_reviews_contextual_followups(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+    monkeypatch.setattr(
+        'packages.incident.extractor._contextual_elevator_followup_choice',
+        lambda *_args, **_kwargs: {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_south',
+            'event_type': 'still_out',
+            'severity': 3,
+            'confidence': 80,
+            'title': 'South elevator outage',
+            'summary': 'South elevator remains unavailable.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        },
+    )
+    llm_calls = []
+
+    def fake_llm(message_text, *args, **kwargs):
+        llm_calls.append(message_text)
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator',
+            'asset': 'elevator_south',
+            'event_type': 'still_out',
+            'severity': 3,
+            'confidence': 95,
+            'title': 'South elevator outage',
+            'summary': 'South elevator remains unavailable.',
+            'refers_to_open_incident': True,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Still broken.',
+        'sender': 'Karen',
+        'ts_iso': '2026-06-06T12:00:00Z',
+    })
+
+    assert response.status_code == 200, response.text
+    assert llm_calls == ['Still broken.']
+
+
 def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path):
     chat_text = '''[2/15/26, 8:56:59 AM] Karen KWA: North lift dead
 [2/15/26, 8:56:59 AM] Karen KWA: North lift dead
