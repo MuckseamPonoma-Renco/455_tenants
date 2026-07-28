@@ -7,7 +7,7 @@ Name the Shortcut `Archive 455 Tenant Chat` and enable **Show in Share Sheet** f
 1. Receive a file from the Share Sheet. If no file was supplied, use **Select File** with iCloud Drive enabled.
 2. Use **Get Details of Files** twice to obtain `Name` and `File Size`.
 3. Use **Get Contents of URL**:
-   - URL: `https://uploads.455tenants.com/v1/uploads`
+   - URL: `https://tenant-chat-export-receiver.mponomarenko999.workers.dev/v1/uploads`
    - Method: `POST`
    - Headers: `Authorization: Bearer <UPLOAD_AUTH_TOKEN>` and `Content-Type: application/json`
    - Request body: JSON dictionary with `filename` set to the file name and `size_bytes` set to the file size.
@@ -19,7 +19,7 @@ Name the Shortcut `Archive 455 Tenant Chat` and enable **Show in Share Sheet** f
    - Request body: File, set to the input file.
 6. Show a notification only after the `PUT` returns successfully.
 
-The first request creates a short-lived, single-file upload URL. The Shortcut never receives the R2 API credentials.
+The first request creates a short-lived, single-file upload URL. Enter the private `UPLOAD_AUTH_TOKEN` only in your personal Shortcut; do not put it in a note, the repository, or a shared Shortcut. The Shortcut never receives the R2 API credentials.
 
 ## Weekly routine
 
