@@ -91,12 +91,33 @@ function normalizeFilename(value) {
   return filename;
 }
 
+function parseUploadSize(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : NaN;
+  }
+  if (typeof value !== "string") {
+    return NaN;
+  }
+
+  // Shortcuts may serialize its File Size value as display text (for example,
+  // "196 MB") when the JSON field is configured as Text.
+  const match = /^([0-9][0-9,]*(?:\.[0-9]+)?)\s*(bytes?|kb|mb|gb)?$/i.exec(value.trim());
+  if (!match) {
+    return NaN;
+  }
+  const amount = Number(match[1].replaceAll(",", ""));
+  const unit = (match[2] || "bytes").toLowerCase();
+  const multiplier = unit.startsWith("g") ? 1024 ** 3 : unit.startsWith("m") ? 1024 ** 2 : unit.startsWith("k") ? 1024 : 1;
+  const sizeBytes = Math.round(amount * multiplier);
+  return Number.isSafeInteger(sizeBytes) ? sizeBytes : NaN;
+}
+
 function requireUploadRequest(payload, env) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new HttpError(400, "request body must be an object");
   }
   const filename = normalizeFilename(payload.filename);
-  const sizeBytes = Number(payload.size_bytes);
+  const sizeBytes = parseUploadSize(payload.size_bytes);
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > maxUploadBytes(env)) {
     throw new HttpError(400, `size_bytes must be between 1 and ${maxUploadBytes(env)}`);
   }

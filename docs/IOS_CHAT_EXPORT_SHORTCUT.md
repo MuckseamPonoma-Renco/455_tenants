@@ -21,6 +21,8 @@ Name the Shortcut `Archive 455 Tenant Chat` and enable **Show in Share Sheet** f
 
 The first request creates a short-lived, single-file upload URL. Enter the private `UPLOAD_AUTH_TOKEN` only in your personal Shortcut; do not put it in a note, the repository, or a shared Shortcut. The Shortcut never receives the R2 API credentials.
 
+For `size_bytes`, use the File Size magic variable. The receiver accepts either the raw byte count or the display value that Shortcuts may provide, such as `196 MB`.
+
 ## Weekly routine
 
 Create a personal weekly Shortcuts automation that opens the Shortcut or shows a notification. iOS and WhatsApp do not provide a supported way to background-trigger or tap **Export Chat**, so the WhatsApp export itself remains a deliberate one-tap action:
