@@ -35,6 +35,8 @@ Set `R2_ACCOUNT_ID` and `R2_BUCKET_NAME` as Worker variables. The `wrangler.toml
 ```
 
 `size_bytes` may be a raw integer or a Shortcuts display value such as `196 MB`.
+If Shortcuts sends the file name without an extension, the receiver appends
+`.zip`; explicit `.zip` and `.txt` extensions are preserved.
 The receiver normalizes the value before enforcing its upload-size limit.
 
 It returns `upload_url` and the exact `Content-Type` header required for the direct `PUT`.

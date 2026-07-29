@@ -79,7 +79,9 @@ function normalizeFilename(value) {
   if (typeof value !== "string") {
     throw new HttpError(400, "filename is required");
   }
-  const filename = value.trim();
+  const suppliedFilename = value.trim();
+  // Shortcuts' Get Name action strips the extension from shared ZIP files.
+  const filename = /\.(zip|txt)$/i.test(suppliedFilename) ? suppliedFilename : `${suppliedFilename}.zip`;
   if (
     filename.length < 12 ||
     filename.length > 180 ||
@@ -378,3 +380,5 @@ export default {
     }
   },
 };
+
+export { normalizeFilename, parseUploadSize };

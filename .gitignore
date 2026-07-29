@@ -8,6 +8,7 @@ __pycache__/
 .venv/
 .venv.badmove/
 .vscode/
+.wrangler/
 .test_audit/
 .test_audit_debug/
 .audit/
