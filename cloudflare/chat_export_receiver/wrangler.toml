@@ -1,0 +1,14 @@
+name = "tenant-chat-export-receiver"
+main = "worker.js"
+compatibility_date = "2026-07-20"
+workers_dev = true
+
+[vars]
+R2_ACCOUNT_ID = "dc43c80b733f382e0ed9d210b354b2cc"
+R2_BUCKET_NAME = "tenant-chat-export-inbox"
+MAX_UPLOAD_BYTES = "536870912"
+PRESIGN_TTL_SECONDS = "900"
+
+[[r2_buckets]]
+binding = "EXPORTS"
+bucket_name = "tenant-chat-export-inbox"
