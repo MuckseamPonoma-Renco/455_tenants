@@ -1,4 +1,5 @@
 import csv
+import json
 import zipfile
 from pathlib import Path
 
@@ -67,6 +68,82 @@ def test_run_audit_creates_review_roster_for_missing_and_review_rows(client, tmp
 
     assert rows[0]["text"] == "South lift dead"
     assert rows[0]["suspect_reasons"] == "no_db_match"
+
+
+def test_required_model_review_counts_completed_missing_and_failed_rows(client, tmp_path):
+    export_path = tmp_path / "WhatsApp Chat - 455 Tenants.txt"
+    export_path.write_text(
+        "[6/5/26, 9:00:00 AM] Karen: First ordinary message\n"
+        "[6/5/26, 9:01:00 AM] Karen: Second ordinary message\n"
+        "[6/5/26, 9:02:00 AM] Karen: Third ordinary message\n",
+        encoding="utf-8",
+    )
+    parsed = iter_export_messages(export_path)
+    with get_session() as session:
+        for message in parsed:
+            message_id = compute_message_id(message.chat_name, message.sender, message.ts_iso or "", message.text)
+            session.add(
+                RawMessage(
+                    message_id=message_id,
+                    chat_name=message.chat_name,
+                    sender=message.sender,
+                    sender_hash=sender_hash(message.sender),
+                    ts_iso=message.ts_iso,
+                    ts_epoch=message.ts_epoch,
+                    text=message.text,
+                    source="zip_import",
+                )
+            )
+        completed_id = compute_message_id(
+            parsed[0].chat_name,
+            parsed[0].sender,
+            parsed[0].ts_iso or "",
+            parsed[0].text,
+        )
+        failed_id = compute_message_id(
+            parsed[1].chat_name,
+            parsed[1].sender,
+            parsed[1].ts_iso or "",
+            parsed[1].text,
+        )
+        session.add_all([
+            MessageDecision(
+                message_id=completed_id,
+                chosen_source="llm",
+                llm_json=json.dumps({"review_status": "completed", "confidence": 90}),
+            ),
+            MessageDecision(
+                message_id=failed_id,
+                chosen_source="none",
+                llm_json=json.dumps({
+                    "review_status": "error",
+                    "review_error": "insufficient_quota",
+                    "confidence": 0,
+                    "needs_review": True,
+                }),
+            ),
+        ])
+        session.commit()
+
+    out_dir = tmp_path / "audit"
+    summary = run_audit(
+        export_path,
+        since="2026-06-05",
+        out_dir=out_dir,
+        require_llm_review=True,
+    )
+
+    assert summary["llm_review_required"] == 3
+    assert summary["llm_review_completed"] == 1
+    assert summary["llm_review_failed"] == 1
+    assert summary["llm_review_missing"] == 1
+    assert summary["llm_review_complete"] is False
+
+    with (out_dir / "review_roster.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    reasons = {row["text"]: row["suspect_reasons"] for row in rows}
+    assert reasons["Second ordinary message"] == "llm_review_failed"
+    assert reasons["Third ordinary message"] == "no_decision"
 
 
 def test_run_audit_does_not_roster_deterministic_context_followups(client, tmp_path, monkeypatch):

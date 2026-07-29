@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,10 @@ ELEVATOR_ARTICLE_URL = f"{PORTAL_BASE_URL}/article/?kanumber=KA-02015"
 CHECK_STATUS_URL = f"{PORTAL_BASE_URL}/check-status/"
 NY = ZoneInfo("America/New_York")
 SR_RE = re.compile(r"\b311[-\s]?(\d{8,})\b")
+
+
+class PortalSubmissionCancelled(RuntimeError):
+    pass
 
 
 @dataclass
@@ -381,8 +385,9 @@ def submit_elevator_complaint(
     payload: dict[str, Any],
     *,
     headless: bool = True,
-    submit_live: bool = True,
+    submit_live: bool = False,
     screenshot_dir: str | Path | None = None,
+    before_submit: Callable[[], bool] | None = None,
 ) -> PortalSubmissionResult:
     load_local_env_file()
     screenshot_path = Path(screenshot_dir) if screenshot_dir else Path(".local/nyc311_portal")
@@ -440,6 +445,9 @@ def submit_elevator_complaint(
                 review_screenshot_path=review_screenshot_path,
                 confirmation_screenshot_path=None,
             )
+        if before_submit is not None and not before_submit():
+            browser.close()
+            raise PortalSubmissionCancelled("Filing approval or incident state changed before final submission")
 
         previous_url = page.url
         page.locator("#NextButton").click(force=True, no_wait_after=True)

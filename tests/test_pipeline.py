@@ -3,6 +3,7 @@ import zipfile
 
 from pathlib import Path
 from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.incident.extractor import _normalize_choice
 from packages.incident.rules import classify_rules, explicit_elevator_asset
 from packages.nyc311.legal_export import export_legal_bundle
 from packages.nyc311.tracker import find_sr_numbers, normalize_sr_number
@@ -15,6 +16,26 @@ def auth_headers():
 
 def mobile_headers():
     return {'Authorization': 'Bearer mobile-token'}
+
+
+def approve_and_claim_next_filing(client):
+    with get_session() as session:
+        job = session.query(FilingJob).filter_by(state='awaiting_approval').one()
+        job_id = job.job_id
+    preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
+    assert preview.status_code == 200, preview.text
+    approval = client.post(
+        f'/mobile/filings/{job_id}/approve',
+        headers=mobile_headers(),
+        json={
+            'payload_sha256': preview.json()['preview']['payload_sha256'],
+            'approval_phrase': 'APPROVED \u2014 GO LIVE',
+        },
+    )
+    assert approval.status_code == 200, approval.text
+    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
+    assert claim.status_code == 200, claim.text
+    return claim
 
 
 def test_tasker_ingest_creates_incident_and_queue(client):
@@ -31,7 +52,7 @@ def test_tasker_ingest_creates_incident_and_queue(client):
         assert len(incidents) == 1
         assert incidents[0].category == 'elevator'
         assert len(jobs) == 1
-        assert jobs[0].state in {'pending', 'claimed', 'submitted', 'failed'}
+        assert jobs[0].state == 'awaiting_approval'
 
 
 def test_tasker_batch_ingest_creates_rows_and_queue(client):
@@ -216,6 +237,7 @@ def test_export_ingest_extracts_manual_sr_number(client, tmp_path):
         incidents = session.query(Incident).all()
         assert any(case.service_request_number == '311-25842195' for case in cases)
         assert len(incidents) >= 1
+        assert session.query(FilingJob).count() == 0
 
 
 def test_export_ingest_links_manual_sr_number_to_recent_incident(client, tmp_path):
@@ -511,6 +533,118 @@ def test_contextual_elevator_followups_do_not_become_heat_issue(client, monkeypa
         assert decision.event_type == 'status_update'
 
 
+def test_contextual_elevator_mechanism_update_does_not_become_door_issue(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'South lift out on 16th floor.',
+        'sender': 'Karen',
+        'ts_epoch': 1784945167,
+    })
+    second = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': (
+            "It burns itself out when it can't properly level itself to open on a floor correctly. "
+            "Bars keep it from opening doors when it is between floors. The super is calling a technician now."
+        ),
+        'sender': 'Karen',
+        'ts_epoch': 1784945874,
+    })
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, second.json()['message_id'])
+        assert decision is not None
+        assert decision.chosen_source == 'rules_context'
+        assert decision.category == 'elevator'
+        assert decision.event_type == 'status_update'
+        assert session.query(Incident).filter_by(category='security_access').count() == 0
+
+
+def test_context_does_not_turn_an_outage_question_into_a_report(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out.',
+        'sender': 'Karen',
+        'ts_epoch': 1782563500,
+    })
+    question = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Have both been out since last night?',
+        'sender': 'Molly',
+        'ts_epoch': 1782563921,
+    })
+
+    assert first.status_code == 200, first.text
+    assert question.status_code == 200, question.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, question.json()['message_id'])
+        assert decision is not None
+        assert decision.is_issue is False
+        assert decision.event_type is None
+        assert session.query(Incident).filter_by(category='elevator').count() == 1
+
+
+def test_context_does_not_turn_historical_elevator_discussion_into_current_issue(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out.',
+        'sender': 'Karen',
+        'ts_epoch': 1781183500,
+    })
+    history = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Last year, the 3 day stretch of no elevators was June 14-17.',
+        'sender': 'Molly',
+        'ts_epoch': 1781183985,
+    })
+
+    assert first.status_code == 200, first.text
+    assert history.status_code == 200, history.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, history.json()['message_id'])
+        assert decision is not None
+        assert decision.is_issue is False
+        assert session.query(Incident).filter_by(category='elevator').count() == 1
+
+
+def test_shorthand_restore_can_use_bounded_older_elevator_context(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'South elevator is out.',
+        'sender': 'Karen',
+        'ts_epoch': 1783260000,
+    })
+    restored = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both currently working',
+        'sender': 'Larissa',
+        'ts_epoch': 1783951200,
+    })
+
+    assert first.status_code == 200, first.text
+    assert restored.status_code == 200, restored.text
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, restored.json()['message_id'])
+        assert decision is not None
+        assert decision.category == 'elevator'
+        assert decision.event_type == 'restore'
+        final = json.loads(decision.final_json or '{}')
+        assert final["asset"] == "elevator_both"
+
+
 def test_contextual_entrapment_followup_closes_recent_elevator_incident(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
 
@@ -606,8 +740,7 @@ def test_mobile_claim_submit_and_status_sync(client, monkeypatch):
         'sender': 'Karen',
         'ts_epoch': 1770000100,
     })
-    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
-    assert claim.status_code == 200, claim.text
+    claim = approve_and_claim_next_filing(client)
     payload = claim.json()['job']
     assert payload is not None
     job_id = payload['job_id']
@@ -635,6 +768,46 @@ def test_mobile_claim_submit_and_status_sync(client, monkeypatch):
         assert case.agency == 'DOB'
 
 
+def test_mobile_filing_requires_exact_current_preview_approval(client):
+    client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift dead',
+        'sender': 'Karen',
+        'ts_epoch': 1770000100,
+    })
+    unapproved_claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
+    assert unapproved_claim.status_code == 200
+    assert unapproved_claim.json()['job'] is None
+
+    with get_session() as session:
+        job_id = session.query(FilingJob).one().job_id
+    preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
+    assert preview.status_code == 200
+    payload_sha256 = preview.json()['preview']['payload_sha256']
+
+    wrong_phrase = client.post(
+        f'/mobile/filings/{job_id}/approve',
+        headers=mobile_headers(),
+        json={'payload_sha256': payload_sha256, 'approval_phrase': 'approve'},
+    )
+    assert wrong_phrase.status_code == 409
+
+    stale_preview = client.post(
+        f'/mobile/filings/{job_id}/approve',
+        headers=mobile_headers(),
+        json={'payload_sha256': '0' * 64, 'approval_phrase': 'APPROVED \u2014 GO LIVE'},
+    )
+    assert stale_preview.status_code == 409
+
+    approved = client.post(
+        f'/mobile/filings/{job_id}/approve',
+        headers=mobile_headers(),
+        json={'payload_sha256': payload_sha256, 'approval_phrase': 'APPROVED \u2014 GO LIVE'},
+    )
+    assert approved.status_code == 200
+    assert approved.json()['job']['state'] == 'approved'
+
+
 def test_sr_normalization_accepts_bare_eight_digit_value():
     assert normalize_sr_number('25815998') == '311-25815998'
     assert normalize_sr_number('311-25815998') == '311-25815998'
@@ -648,8 +821,7 @@ def test_mobile_submitted_accepts_bare_eight_digit_sr_number(client):
         'sender': 'Karen',
         'ts_epoch': 1770000105,
     })
-    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
-    assert claim.status_code == 200, claim.text
+    claim = approve_and_claim_next_filing(client)
     job_id = claim.json()['job']['job_id']
 
     submitted = client.post(f'/mobile/filings/{job_id}/submitted', headers=mobile_headers(), json={
@@ -673,8 +845,7 @@ def test_mobile_submitted_is_idempotent_when_sr_case_already_exists(client):
         'sender': 'Karen',
         'ts_epoch': 1770000110,
     })
-    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
-    assert claim.status_code == 200, claim.text
+    claim = approve_and_claim_next_filing(client)
     job_id = claim.json()['job']['job_id']
 
     update = client.post('/mobile/sr_updates', headers=mobile_headers(), json={
@@ -709,7 +880,7 @@ def test_legal_export_bundle(client):
         'sender': 'Tibor Simon',
         'ts_epoch': 1770000200,
     })
-    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers()).json()['job']
+    claim = approve_and_claim_next_filing(client).json()['job']
     client.post(f"/mobile/filings/{claim['job_id']}/submitted", headers=mobile_headers(), json={'service_request_number': '311-12345678'})
     with get_session() as session:
         result = export_legal_bundle(session)
@@ -1047,6 +1218,60 @@ def test_rules_do_not_turn_recordkeeping_question_into_restore():
     assert decision["kind"] == "nonissue"
 
 
+def test_rules_distinguish_elevator_history_questions_and_elapsed_updates():
+    historical = classify_rules(
+        "Last year, the 3 day stretch of no elevators was June 14-17! "
+        "I took photos to memorialize how unwell I looked by the 3rd day."
+    )
+    question = classify_rules("Have both been out since last night?")
+    elapsed = classify_rules("Which is 1 hr and 40' since stuck lift event.")
+
+    assert historical["is_issue"] is False
+    assert question["is_issue"] is False
+    assert elapsed["is_issue"] is True
+    assert elapsed["category"] == "elevator"
+    assert elapsed["event_type"] == "status_update"
+
+
+def test_rules_capture_accessibility_and_entrance_safety_reports():
+    accessibility = classify_rules(
+        "The interior lobby door is incredibly difficult and heavy to open when the doorman is away. "
+        "There is zero chance a wheelchair person can navigate it."
+    )
+    safety = classify_rules(
+        "I think u should warn women. I have seen him for three days in front of the building wearing the same clothes."
+    )
+
+    assert accessibility["is_issue"] is True
+    assert accessibility["category"] == "security_access"
+    assert safety["is_issue"] is True
+    assert safety["category"] == "security_access"
+
+
+def test_choice_normalization_keeps_issue_state_internally_consistent():
+    non_issue = _normalize_choice({
+        "is_issue": True,
+        "signal_type": "discussion",
+        "category": "security_access",
+        "event_type": "non_issue",
+        "close_incident": False,
+    })
+    report = _normalize_choice({
+        "is_issue": True,
+        "signal_type": "status_update",
+        "category": "elevator",
+        "event_type": "status_update",
+        "close_incident": False,
+    })
+
+    assert non_issue is not None
+    assert non_issue["is_issue"] is False
+    assert non_issue["category"] == "other"
+    assert non_issue["event_type"] == "non_issue"
+    assert report is not None
+    assert report["signal_type"] == "report"
+
+
 def test_elevator_asset_uses_affected_lift_not_first_lift_named():
     assert explicit_elevator_asset("At time of this message, north elevator is functioning, South still out of order") == "elevator_south"
     assert explicit_elevator_asset("South lift working, but not the north lift!") == "elevator_north"
@@ -1110,7 +1335,7 @@ def test_no_side_elevator_ingest_queues_311_job(client):
         assert incident.asset == 'elevator_north'
         assert decision.is_issue is True
         assert job.incident_id == incident.incident_id
-        assert job.state == 'pending'
+        assert job.state == 'awaiting_approval'
 
 
 def test_311_auto_file_uses_classifier_decision_not_second_regex(client, monkeypatch):
@@ -1557,6 +1782,12 @@ def test_reprocess_last_is_idempotent_for_existing_incidents(client):
     })
     assert follow_up.status_code == 200, follow_up.text
 
+    with get_session() as session:
+        incident_ids_before = {
+            decision.message_id: decision.incident_id
+            for decision in session.query(MessageDecision).all()
+        }
+
     replay = client.post('/admin/reprocess_last/2', headers=auth_headers())
     assert replay.status_code == 200, replay.text
 
@@ -1567,6 +1798,7 @@ def test_reprocess_last_is_idempotent_for_existing_incidents(client):
         assert len(incidents) == 1
         assert len(witnesses) == 1
         assert len(decisions) == 2
+        assert {decision.message_id: decision.incident_id for decision in decisions} == incident_ids_before
 
 
 def test_older_elevator_message_does_not_merge_into_newer_incident(client):

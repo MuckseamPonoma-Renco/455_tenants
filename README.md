@@ -8,10 +8,11 @@ The core loop is:
 2. Backend stores the raw message.
 3. Backend decides whether it is a real building issue.
 4. Backend clusters it into an incident.
-5. Backend queues a 311 filing job when eligible.
-6. A local Playwright worker claims the job and files NYC311 through the web portal.
-7. SR number comes back to the backend.
-8. Backend tracks the case and syncs the spreadsheet.
+5. Backend prepares a 311 filing job when eligible.
+6. The operator reviews that exact payload and supplies `APPROVED — GO LIVE`.
+7. A local Playwright worker claims only the approved job and files NYC311 through the web portal.
+8. SR number comes back to the backend.
+9. Backend tracks the case and syncs the spreadsheet.
 
 ## What is the primary face of the system
 
@@ -38,7 +39,7 @@ The API is still useful, but the Sheet is not a side feature. It is the main ope
 - hybrid rules + LLM message classification
 - incident clustering
 - outage / restore handling
-- automatic 311 filing queue for eligible incidents
+- automatic 311 draft queue for eligible live incidents
 - Playwright filing worker
 - SR number capture from chat or browser worker
 - 311 case status tracking
@@ -58,7 +59,12 @@ But it now has a first-class role in the decision engine when enabled:
 - `LLM_MODE=off` → deterministic rules only
 - ambiguous or disagreeing rule/LLM outcomes can trigger a stronger review model before the final decision is stored
 
-The final filing queue remains deterministic and still under your control via config.
+Model-review failures are stored explicitly. A weekly supervised audit fails closed
+when required reviews are missing or the OpenAI API reports an error; it does not
+mislabel those messages as successful non-issues.
+
+The final filing queue remains deterministic and approval-gated. Full chat exports
+and historical reprocessing cannot create live filing jobs.
 
 ## What is finished in code
 
@@ -68,8 +74,10 @@ The final filing queue remains deterministic and still under your control via co
 - Bulk WhatsApp export ingestion with automatic reprocessing
 - Elevator outage / restore clustering with witness counting
 - Auto-extraction of SR numbers from chat messages like `311-25815998`
-- Auto-queue of eligible incidents into a 311 filing queue
+- Auto-prepare eligible live incidents in an approval-gated 311 filing queue
 - Filing worker API:
+  - `GET /mobile/filings/{job_id}/preview`
+  - `POST /mobile/filings/{job_id}/approve`
   - `POST /mobile/filings/claim_next`
   - `POST /mobile/filings/{job_id}/submitted`
   - `POST /mobile/filings/{job_id}/failed`
@@ -148,6 +156,8 @@ docker compose up --build
 
 ### Filing worker API
 
+- `GET /mobile/filings/{job_id}/preview`
+- `POST /mobile/filings/{job_id}/approve`
 - `POST /mobile/filings/claim_next`
 - `POST /mobile/filings/{job_id}/submitted`
 - `POST /mobile/filings/{job_id}/failed`
@@ -161,8 +171,8 @@ docker compose up --build
 3. Review `Dashboard`, `Incidents`, `Queue311`, and `DecisionLog`.
 4. Run the Chrome/Playwright watcher on the Mac mini for the exact tenant chats you want to monitor.
    Keep the Android Tasker path off unless you explicitly need temporary backward compatibility.
-5. Run the Playwright portal worker.
-6. Submit one real complaint.
+5. Review a filing preview and approve its unchanged payload.
+6. Run the Playwright portal worker.
 7. Confirm SR appears in `Cases311`.
 8. Share the separate `Tenant Log` spreadsheet when you want tenants to see the clean public incident record, and add a QR or link to `/report` only if the first tenant tests show it is intuitive.
 

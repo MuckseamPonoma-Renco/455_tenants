@@ -218,6 +218,14 @@ def _public_row_covers_source_row(public_row: PublicRow, source_row: PublicRow) 
         return False
     public_issue = _normalize_text(public_row.issue)
     source_issue = _normalize_text(source_row.issue)
+    if (
+        _normalize_text(public_row.category) == "elevator"
+        and "working" in public_issue
+        and "working" in source_issue
+        and "both elevator" in public_issue
+        and any(side in source_issue for side in ("north elevator", "south elevator"))
+    ):
+        return True
     if public_issue != source_issue and source_issue not in public_issue:
         return False
     public_summary = _normalize_text(public_row.summary)

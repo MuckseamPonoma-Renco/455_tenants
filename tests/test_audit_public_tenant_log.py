@@ -59,6 +59,25 @@ def test_public_row_covers_source_row_merged_at_same_timestamp():
     assert _public_row_covers_source_row(live, source)
 
 
+def test_both_elevators_working_row_covers_same_time_side_restore():
+    live = PublicRow(
+        updated="2026-07-27 12:19 PM",
+        issue="Both elevators working",
+        category="Elevator",
+        follow_up="",
+        summary="Both elevators were reported working.",
+    )
+    source = PublicRow(
+        updated="2026-07-27 12:19 PM",
+        issue="North elevator working",
+        category="Elevator",
+        follow_up="",
+        summary="North elevator was reported working.",
+    )
+
+    assert _public_row_covers_source_row(live, source)
+
+
 def test_source_public_rows_keep_matching_updates_outside_duplicate_window():
     first = SourcePublicRow(
         message_id="msg-first",

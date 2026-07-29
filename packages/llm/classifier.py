@@ -38,6 +38,38 @@ def _normalized_output(out: dict | None) -> dict:
     return out
 
 
+def _model_error_code(exc: Exception) -> str:
+    message = str(exc).casefold()
+    if "insufficient_quota" in message:
+        return "insufficient_quota"
+    if "429" in message or "rate_limit" in message:
+        return "rate_limit"
+    if "api_key" in message or "unauthorized" in message or "401" in message:
+        return "authentication"
+    if "timeout" in message:
+        return "timeout"
+    return "api_error"
+
+
+def _review_error_choice(code: str) -> dict:
+    return {
+        "is_issue": False,
+        "signal_type": "discussion",
+        "category": "other",
+        "asset": None,
+        "event_type": "non_issue",
+        "severity": 2,
+        "confidence": 0,
+        "title": "",
+        "summary": "",
+        "refers_to_open_incident": False,
+        "close_incident": False,
+        "needs_review": True,
+        "review_status": "error",
+        "review_error": code,
+    }
+
+
 def _build_prompt(message_text: str, open_incidents: list[dict], recent_related: list[dict], recent_chat: list[dict]) -> str:
     return f"""You are classifying messages from a tenants WhatsApp group about building issues.
 
@@ -157,7 +189,7 @@ def llm_classify_message(
     recent_chat = recent_chat or []
 
     if not llm_enabled():
-        return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind":"nonissue"}
+        return _review_error_choice("disabled")
 
     model = _env("OPENAI_MODEL", _env("LLM_MODEL", "gpt-4.1-mini"))
     escalate_model = _env("OPENAI_ESCALATE_MODEL", "gpt-5-mini")
@@ -168,17 +200,20 @@ def llm_classify_message(
 
     try:
         out = call_openai_json(prompt, model=model, max_output_tokens=max_out)
-    except OpenAIError:
-        return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "",
-                "kind":"nonissue", "needs_review": True, "confidence": 0}
+    except OpenAIError as exc:
+        return _review_error_choice(_model_error_code(exc))
 
     out = _normalized_output(out)
+    out["review_status"] = "completed"
+    out.pop("review_error", None)
 
     if (out.get("is_issue") or out.get("refers_to_open_incident")) and int(out.get("confidence", 0)) < min_conf:
         try:
             out2 = call_openai_json(prompt, model=escalate_model, max_output_tokens=max_out)
             if isinstance(out2, dict):
                 out = _normalized_output(out2)
+                out["review_status"] = "completed"
+                out.pop("review_error", None)
         except Exception:
             out["needs_review"] = True
 
@@ -211,6 +246,8 @@ def llm_review_decision(
         return None
 
     out = _normalized_output(out)
+    out["review_status"] = "completed"
+    out.pop("review_error", None)
     if (out.get("is_issue") or out.get("refers_to_open_incident")) and int(out.get("confidence", 0)) < min_conf:
         out["needs_review"] = True
     return out

@@ -75,7 +75,7 @@ def apply_rebuild(raws: list[RawMessage], incident_ids: list[str]) -> None:
             db_raw = session.get(RawMessage, raw.message_id)
             if db_raw is None:
                 continue
-            classify_and_upsert_incident(session, db_raw)
+            classify_and_upsert_incident(session, db_raw, allow_filing_job=False)
         session.commit()
 
 

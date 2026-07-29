@@ -22,6 +22,15 @@ If those vars are missing, the worker still files anonymously, which is enough f
 ./.venv/bin/python -m playwright install chromium
 ```
 
+## Review and approve a filing
+
+Read the current job through `GET /mobile/filings/{job_id}/preview`. Submit its
+unchanged `payload_sha256` and the exact phrase `APPROVED — GO LIVE` to
+`POST /mobile/filings/{job_id}/approve`.
+
+An approval is bound to that payload hash. A changed payload or stale claimed job
+returns to `awaiting_approval`.
+
 ## Run the filing worker once
 
 ```bash
@@ -30,7 +39,7 @@ If those vars are missing, the worker still files anonymously, which is enough f
 
 What it does:
 
-1. Claims the next pending filing job from the local queue.
+1. Claims the next explicitly approved filing job from the local queue.
 2. Opens the elevator complaint portal flow.
 3. Sets `Additional Details` to `Bldg w/ Multiple Devices`.
 4. Pastes `job.payload.description`.
@@ -50,9 +59,11 @@ This is a portal-side verification helper only. The app still uses `NYC311_TRACK
 
 ## Notes
 
-- The worker keeps the existing queue contract intact.
+- Archive imports and historical reprocessing cannot create live filing jobs.
+- A failed portal attempt requires a new preview approval before retry.
+- The low-level portal helper defaults to review-only; only the approval-gated worker enables the final submit click.
 - The browser context runs in `America/New_York` so the portal accepts `Date/Time Observed` validation consistently.
 - When `311_EMAIL` and `311_PASSWORD` exist in `.env`, the worker signs into NYC311 first and then still submits the elevator flow anonymously if requested by the form step.
 - The confirmation page does not always render the SR number in visible text; the worker falls back to the `View Details or Subscribe for Updates` link and extracts `srnum=...` from that URL.
-- `/mobile/filings/claim_next`, `/submitted`, and `/failed` still define the filing lifecycle.
-- `/api/summary` uses `ready_for_portal_worker` when queue jobs are ready for the browser filer.
+- `/mobile/filings/{job_id}/preview`, `/approve`, `/claim_next`, `/submitted`, and `/failed` define the filing lifecycle.
+- `/api/summary` uses `awaiting_filing_approval` before approval and `ready_for_portal_worker` afterward.

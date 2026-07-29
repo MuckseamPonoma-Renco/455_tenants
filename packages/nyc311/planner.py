@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import hashlib
 import json
 import os
 import re
@@ -11,8 +13,10 @@ from packages.nyc311.drafts import build_filing_draft
 
 
 ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
-EQUIVALENT_JOB_STATES = frozenset({"pending", "claimed", "submitted"})
-CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"claimed", "submitted"})
+EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted"})
+CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"approved", "claimed", "submitted"})
+FILING_APPROVAL_PHRASE = "APPROVED \u2014 GO LIVE"
+APPROVAL_HASH_PREFIX = "approval_payload_sha256="
 
 
 ELEVATOR_ACTIONABLE_COMPLAINT_RE = re.compile(
@@ -109,7 +113,7 @@ def _classifier_says_actionable_elevator(inc: Incident) -> bool | None:
 
 
 def incident_is_auto_eligible(inc: Incident) -> bool:
-    if not _env_bool("AUTO_FILE_ENABLED", True):
+    if not _env_bool("AUTO_FILE_ENABLED", False):
         return False
     if _env_bool("AUTO_FILE_ELEVATOR_ONLY", True) and inc.category != "elevator":
         return False
@@ -241,6 +245,73 @@ def _append_job_note(existing: str | None, note: str) -> str:
     return f"{existing} | {note}"[:2000] if existing else note
 
 
+def _payload_sha256(job: FilingJob) -> str:
+    return hashlib.sha256((job.payload_json or "{}").encode("utf-8")).hexdigest()
+
+
+def filing_job_preview(job: FilingJob) -> dict[str, object]:
+    try:
+        payload = json.loads(job.payload_json or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    incident = payload.get("incident") if isinstance(payload, dict) else {}
+    return {
+        "job_id": job.job_id,
+        "incident_id": job.incident_id,
+        "state": job.state,
+        "complaint_type": job.complaint_type,
+        "form_target": job.form_target,
+        "description": payload.get("description") if isinstance(payload, dict) else "",
+        "incident": incident if isinstance(incident, dict) else {},
+        "payload_sha256": _payload_sha256(job),
+    }
+
+
+def _approval_payload_sha256(job: FilingJob) -> str:
+    for part in reversed((job.notes or "").split(" | ")):
+        if part.startswith(APPROVAL_HASH_PREFIX):
+            return part.removeprefix(APPROVAL_HASH_PREFIX).strip()
+    return ""
+
+
+def claimed_filing_job_is_current(session, job: FilingJob) -> bool:
+    if job.state != "claimed" or _approval_payload_sha256(job) != _payload_sha256(job):
+        return False
+    incident = session.get(Incident, job.incident_id) if job.incident_id else None
+    return bool(incident is not None and incident_is_auto_eligible(incident))
+
+
+def approve_filing_job(
+    session,
+    job_id: int,
+    *,
+    expected_payload_sha256: str,
+    approval_phrase: str,
+) -> FilingJob:
+    if approval_phrase != FILING_APPROVAL_PHRASE:
+        raise ValueError("The exact filing approval phrase is required")
+    job = session.get(FilingJob, job_id)
+    if job is None:
+        raise ValueError(f"Filing job {job_id} does not exist")
+    if job.state not in {"awaiting_approval", "failed"}:
+        raise ValueError(f"Filing job {job_id} cannot be approved from state {job.state}")
+    current_payload_sha256 = _payload_sha256(job)
+    if expected_payload_sha256 != current_payload_sha256:
+        raise ValueError("The filing preview changed; review the current payload before approving")
+    incident = session.get(Incident, job.incident_id) if job.incident_id else None
+    if incident is None or not incident_is_auto_eligible(incident):
+        raise ValueError("The filing incident is no longer eligible")
+    approval_note = f"{APPROVAL_HASH_PREFIX}{current_payload_sha256}"
+    existing_notes = job.notes or ""
+    available = max(0, 2000 - len(approval_note) - 3)
+    job.notes = f"{existing_notes[:available]} | {approval_note}" if existing_notes else approval_note
+    job.state = "approved"
+    job.claimed_at = None
+    job.last_error = None
+    job.updated_at = now_iso()
+    return job
+
+
 def _equivalent_job_note(job: FilingJob) -> str:
     reference = str(job.job_id) if job.job_id is not None else job.dedupe_key
     return f"auto-skipped equivalent 311 filing job {reference} ({job.dedupe_key})"
@@ -297,7 +368,7 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         dedupe_key=dedupe_key,
         incident_id=inc.incident_id,
         job_type="nyc311_file",
-        state="pending",
+        state="awaiting_approval",
         priority=max(1, 100 - int(inc.severity or 0) * 10),
         filing_channel="portal_playwright",
         complaint_type=draft.complaint_type,
@@ -332,10 +403,10 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
         for row in claimed_rows:
             claimed_at = _parse_iso(row.claimed_at) or _parse_iso(row.updated_at) or _parse_iso(row.created_at)
             if claimed_at and claimed_at <= cutoff:
-                row.state = "pending"
+                row.state = "awaiting_approval"
                 row.claimed_at = None
                 row.updated_at = now_iso()
-                note = "auto-requeued because a claimed job went stale"
+                note = "approval reset because a claimed job went stale"
                 row.notes = f"{row.notes} | {note}"[:2000] if row.notes else note
                 requeued = True
     if requeued:
@@ -343,11 +414,18 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
 
     rows = session.scalars(
         select(FilingJob)
-        .where(FilingJob.state.in_(["pending", "failed"]))
+        .where(FilingJob.state == "approved")
         .order_by(FilingJob.priority.asc(), FilingJob.created_at.asc())
     ).all()
     skipped = 0
     for row in rows:
+        if _approval_payload_sha256(row) != _payload_sha256(row):
+            row.state = "awaiting_approval"
+            row.claimed_at = None
+            row.updated_at = now_iso()
+            row.notes = _append_job_note(row.notes, "approval reset because the filing payload changed")
+            skipped += 1
+            continue
         incident = session.get(Incident, row.incident_id) if row.incident_id else None
         if incident is None or not incident_is_auto_eligible(incident):
             row.state = "skipped"

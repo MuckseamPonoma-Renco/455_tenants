@@ -5,8 +5,8 @@ from typing import Any
 
 from packages.audit import append_audit_event
 from packages.db import FilingJob, get_session
-from packages.nyc311.planner import claim_next_job
-from packages.nyc311.portal import lookup_service_request_status, submit_elevator_complaint
+from packages.nyc311.planner import claim_next_job, claimed_filing_job_is_current
+from packages.nyc311.portal import PortalSubmissionCancelled, lookup_service_request_status, submit_elevator_complaint
 from packages.nyc311.tracker import apply_portal_lookup_status, create_case_from_filing_job
 from packages.worker_jobs import _safe_sync_sheets
 
@@ -18,6 +18,12 @@ def _append_note(existing: str | None, extra: str) -> str:
     if not existing:
         return extra[:2000]
     return f"{existing} | {extra}"[:2000]
+
+
+def _claimed_job_still_current(job_id: int) -> bool:
+    with get_session() as session:
+        job = session.get(FilingJob, job_id)
+        return bool(job is not None and claimed_filing_job_is_current(session, job))
 
 
 def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True) -> dict[str, Any]:
@@ -33,9 +39,25 @@ def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True)
         payload = json.loads(job.payload_json or "{}")
 
     try:
-        submission = submit_elevator_complaint(payload, headless=headless)
+        submission = submit_elevator_complaint(
+            payload,
+            headless=headless,
+            submit_live=True,
+            before_submit=lambda: _claimed_job_still_current(job_id),
+        )
         if not submission.service_request_number:
             raise RuntimeError("Portal submission finished without a service request number")
+    except PortalSubmissionCancelled as exc:
+        with get_session() as session:
+            job = session.get(FilingJob, job_id)
+            if job:
+                job.state = "skipped"
+                job.last_error = None
+                job.notes = _append_note(job.notes, "cancelled at portal review because approval or incident state changed")
+                session.commit()
+        _safe_sync_sheets()
+        append_audit_event("PORTAL_FILING_CANCELLED", str(job_id), {"reason": str(exc)[:500]})
+        return {"ok": True, "job": job_meta, "job_id": job_id, "skipped": True, "reason": str(exc)}
     except Exception as exc:
         with get_session() as session:
             job = session.get(FilingJob, job_id)

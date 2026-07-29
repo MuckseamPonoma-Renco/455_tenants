@@ -2761,7 +2761,9 @@ def sync_dashboard_to_sheets():
         raw_count = session.query(RawMessage).count()
         last_raw = session.query(RawMessage).order_by(RawMessage.ts_epoch.desc().nullslast()).first()
         open_cases = session.query(ServiceRequestCase).filter(ServiceRequestCase.closed_at.is_(None)).count()
-        queue_count = session.query(FilingJob).filter(FilingJob.state.in_(["pending", "claimed", "failed"])).count()
+        queue_count = session.query(FilingJob).filter(
+            FilingJob.state.in_(["awaiting_approval", "approved", "pending", "claimed", "failed"])
+        ).count()
         review_count = session.query(MessageDecision).filter(MessageDecision.needs_review.is_(True)).count()
 
     total = len(incidents)
@@ -2868,7 +2870,7 @@ def sync_311_queue_to_sheets():
     with get_session() as session:
         jobs = (
             session.query(FilingJob)
-            .filter(FilingJob.state.in_(["pending", "claimed", "failed"]))
+            .filter(FilingJob.state.in_(["awaiting_approval", "approved", "pending", "claimed", "failed"]))
             .all()
         )
     values = [["job_id", "incident_id", "state", "priority", "complaint_type", "form_target", "attempts", "created_at", "claimed_at", "completed_at", "notes"]]

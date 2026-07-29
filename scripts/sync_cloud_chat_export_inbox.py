@@ -34,6 +34,10 @@ SAFE_AUDIT_KEYS = (
     "matched_messages",
     "missing_db_messages",
     "missing_decisions",
+    "llm_review_required",
+    "llm_review_completed",
+    "llm_review_missing",
+    "llm_review_failed",
     "review_roster_rows",
 )
 

@@ -69,7 +69,23 @@ tail -n 80 "$HOME/.local/var/log/tenant-issue-os/chat-export-sync.out.log"
 tail -n 80 "$HOME/.local/var/log/tenant-issue-os/chat-export-sync.err.log"
 ```
 
-The script first imports the export into the app database, dedupes already-seen messages, reviews every new non-empty, non-media message with the configured OpenAI model plus retrieved chat/incident context, then resyncs Sheets through the normal queue path. It reads every WhatsApp chat `.txt` file inside a ZIP, so a full export can refresh more than one chat. Media placeholders are recorded locally without a model call because they contain no message text to review.
+The script first imports the export into the app database, dedupes already-seen
+messages, attempts to review every non-empty, non-media message with the configured
+OpenAI model plus retrieved chat/incident context, then resyncs Sheets through the
+normal queue path. It reads every WhatsApp chat `.txt` file inside a ZIP, so a full
+export can refresh more than one chat. Media placeholders are recorded locally
+without a model call because they contain no message text to review.
+
+The supervised weekly path records model review as `completed`, `missing`, or
+`failed`. It retries only missing/failed rows and exits nonzero while any required
+review remains incomplete, including `insufficient_quota`. The cloud receiver does
+not acknowledge a new export after such a failure, so it can retry after API access
+is restored. A successful ZIP download or database import is not proof that every
+message received model review.
+
+Weekly exports and all historical reprocessing run with filing creation disabled.
+They may correct incidents, decisions, rosters, and Sheets, but cannot enqueue or
+submit a new NYC311 complaint.
 
 The script then writes:
 
@@ -94,7 +110,7 @@ The roster is an exception queue, not the main decision path.
 3. Ask Codex to turn that filled roster into rules/tests.
 4. Reprocess the affected messages and resync Sheets.
 
-Codex and ChatGPT do not reliably train themselves from uploaded chats. The durable learning path here is explicit: full chat exports refresh the app database, corrected roster rows become repo rules, prompts, and tests, then stored decisions are regenerated.
+Codex and ChatGPT do not reliably train themselves from uploaded chats. The durable learning path here is explicit: full chat exports refresh the app database, corrected roster rows become repo rules, prompts, and tests, then stored decisions are regenerated. A ChatGPT or Codex subscription also does not supply OpenAI API quota to this app; the configured API project must have available billing/quota for supervised review.
 
 ## Autonomous Context Model
 

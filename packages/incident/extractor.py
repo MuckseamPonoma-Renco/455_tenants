@@ -8,7 +8,14 @@ from sqlalchemy import func
 from zoneinfo import ZoneInfo
 from packages.audit import compute_message_id
 from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, RawMessage, ServiceRequestCase, WatchdogAction
-from packages.incident.rules import classify_rules, explicit_elevator_asset, text_explicitly_supports_category
+from packages.incident.rules import (
+    CURRENT_STATE_REFERENCE,
+    ELAPSED_ELEVATOR_EVENT,
+    HISTORICAL_ELEVATOR_REFERENCE,
+    classify_rules,
+    explicit_elevator_asset,
+    text_explicitly_supports_category,
+)
 from packages.llm.classifier import llm_classify_message, llm_review_decision
 from packages.llm.triage import should_call_llm
 from packages.nyc311.planner import ensure_filing_job_for_incident, incident_is_auto_eligible
@@ -92,20 +99,41 @@ SENSITIVE_INTERPERSONAL_SECURITY_RE = re.compile(
     r"\b(?:walk(?:ed|ing)?\s+(?:up\s+)?(?:from\s+)?behind|"
     r"squeez(?:ed|ing)\s+(?:himself|herself|themselves|next\s+to)|"
     r"follow(?:ed|ing)|stalk(?:ed|ing)|grop(?:ed|ing)|grab(?:bed|bing)|"
-    r"harass(?:ed|ment)|assault(?:ed)?|unwanted\s+(?:touch|contact))\b",
+    r"harass(?:ed|ment)|assault(?:ed)?|unwanted\s+(?:touch|contact)|warn\s+women|"
+    r"(?:hang(?:ing)?\s+out|linger(?:ing)?)\b[^.!?\n]{0,100}\b(?:in\s*front\s+of|outside)\s+(?:the\s+)?building|"
+    r"(?:enter(?:ed|ing)?|access(?:ed|ing)?)\b[^.!?\n]{0,100}\b(?:apartment|unit)\b[^.!?\n]{0,100}\bwithout\s+consent|"
+    r"\bwithout\s+consent\b[^.!?\n]{0,100}\b(?:enter(?:ed|ing)?|access(?:ed|ing)?)\b)\b",
     re.IGNORECASE,
 )
 CONTEXTUAL_ELEVATOR_RESTORE_RE = re.compile(
     r"\b(?:he|she|they|child|kid|person|passenger|guy)\b[^.!?\n]{0,80}\bout\s+now\b"
-    r"|\bboth\s+(?:elevators?|lifts?)?\s*(?:are\s+|were\s+)?(?:working|functioning|operational|running)\b"
+    r"|\bboth\s+(?:elevators?|lifts?)?\s*(?:(?:are|were)\s+)?(?:currently\s+)?(?:working|functioning|operational|running)\b"
     r"|\bboth\s+work\s+now\b",
     re.IGNORECASE,
 )
 CONTEXTUAL_ELEVATOR_OUTAGE_RE = re.compile(
     r"\b(?:it|they|north|south|one|both)\b[^.!?\n]{0,80}\b(?:was|were|is|are|still|again)?\s*(?:out|down|dead|stuck|not\s+working)\b"
     r"|\b(?:no|zero)\s+(?:elevators?|lifts?)\b"
-    r"|\b(?:mechanic|mechanics)\b[^.!?\n]{0,120}\b(?:called|not\s+arrived|not\s+here|arriv(?:ed|ing)|coming)\b"
-    r"|\b(?:excessive\s+heat|mechanical\s+room|heat\s+in\s+the\s+shaft)\b",
+    r"|\b(?:mechanic|mechanics)\b[^.!?\n]{0,120}\b(?:called|not\s+arrived|not\s+here|arriv(?:ed|ing)|coming|in\s+the\s+building|on\s+site)\b"
+    r"|\b(?:excessive\s+heat|mechanical\s+room|heat\s+in\s+the\s+shaft)\b"
+    r"|\bair\s+(?:is\s+)?blowing\b[^.!?\n]{0,100}\b(?:elevator|lift)\b"
+    r"|\bwas\s+out\s+(?:around|at)\s+(?:\d{1,2}(?::\d{2})?|\d{3,4})\s*(?:a\.?m\.?|p\.?m\.?)?\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_ELEVATOR_MECHANISM_RE = re.compile(
+    r"\b(?:properly\s+level(?:s|ed|ing)?(?:\s+itself)?|between\s+floors|"
+    r"open(?:ing|s|ed)?\s+(?:the\s+)?doors?\s+when\s+it\s+is\s+between\s+floors)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_QUESTION_RE = re.compile(r"\?\s*(?:<This message was edited>)?\s*$", re.IGNORECASE)
+CONTEXTUAL_RESTORE_CAUTION_RE = re.compile(
+    r"\b(?:wouldn['’]?t\s+get\s+too\s+excited|heat\s+(?:is|was|remains)|"
+    r"(?:excessive|too\s+much)\s+heat|overheating)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_LONG_LOOKBACK_RE = re.compile(
+    r"\b(?:properly\s+level(?:s|ed|ing)?|between\s+floors|air\s+(?:is\s+)?blowing|"
+    r"was\s+out\s+(?:around|at)\s+(?:\d{1,2}(?::\d{2})?|\d{3,4}))\b",
     re.IGNORECASE,
 )
 SOURCE_DEFAULT_REDACTED_NAMES = (
@@ -279,7 +307,12 @@ def _same_local_day(epoch_a: int | None, epoch_b: int | None) -> bool:
     )
 
 
-def _has_recent_same_chat_elevator_context(session, rm: RawMessage) -> bool:
+def _has_recent_same_chat_elevator_context(
+    session,
+    rm: RawMessage,
+    *,
+    window_seconds: int = RECENT_CHAT_CONTEXT_WINDOW_SECONDS,
+) -> bool:
     if rm.ts_epoch is None or not rm.chat_name:
         return False
     count = (
@@ -290,7 +323,7 @@ def _has_recent_same_chat_elevator_context(session, rm: RawMessage) -> bool:
             RawMessage.chat_name == rm.chat_name,
             RawMessage.ts_epoch.isnot(None),
             RawMessage.ts_epoch <= int(rm.ts_epoch),
-            RawMessage.ts_epoch >= int(rm.ts_epoch) - RECENT_CHAT_CONTEXT_WINDOW_SECONDS,
+            RawMessage.ts_epoch >= int(rm.ts_epoch) - int(window_seconds),
             MessageDecision.is_issue.is_(True),
             MessageDecision.category == "elevator",
         )
@@ -748,33 +781,55 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
     recent_elevator_context = _has_recent_same_chat_elevator_context(session, rm)
 
     text = rm.text or ""
+    if CONTEXTUAL_QUESTION_RE.search(text):
+        return None
+    if HISTORICAL_ELEVATOR_REFERENCE.search(text) and not CURRENT_STATE_REFERENCE.search(text):
+        return None
     if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(text):
-        if not recent_elevator_context and not _has_recent_days_same_chat_elevator_context(session, rm):
+        extended_restore_context = _has_recent_same_chat_elevator_context(
+            session,
+            rm,
+            window_seconds=RECENT_RELATED_CONTEXT_DAYS * 86400,
+        )
+        if not recent_elevator_context and not extended_restore_context:
             return None
+        cautious_restore = bool(CONTEXTUAL_RESTORE_CAUTION_RE.search(text))
         return {
             "is_issue": True,
             "signal_type": "report",
             "category": "elevator",
-            "asset": None,
-            "event_type": "restore",
-            "severity": 2,
+            "asset": explicit_elevator_asset(text),
+            "event_type": "status_update" if cautious_restore else "restore",
+            "severity": 3 if cautious_restore else 2,
             "confidence": 82,
-            "title": "Elevator restored",
-            "summary": "Tenant reports the recent elevator issue is resolved.",
+            "title": "Elevator working update" if cautious_restore else "Elevator restored",
+            "summary": (
+                "Tenant reports elevators working but cautions that the underlying problem may remain."
+                if cautious_restore
+                else "Tenant reports the recent elevator issue is resolved."
+            ),
             "refers_to_open_incident": True,
-            "close_incident": True,
+            "close_incident": not cautious_restore,
             "needs_review": False,
+            "preserve_event_type": cautious_restore,
         }
 
     if not recent_elevator_context:
-        return None
+        extended_context = _has_recent_same_chat_elevator_context(
+            session,
+            rm,
+            window_seconds=RECENT_RELATED_CONTEXT_DAYS * 86400,
+        )
+        if not extended_context or not CONTEXTUAL_LONG_LOOKBACK_RE.search(text):
+            return None
 
-    if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text):
+    mechanism_update = bool(CONTEXTUAL_ELEVATOR_MECHANISM_RE.search(text))
+    if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text) or mechanism_update:
         return {
             "is_issue": True,
             "signal_type": "report",
             "category": "elevator",
-            "asset": None,
+            "asset": explicit_elevator_asset(text),
             "event_type": "still_out" if re.search(r"\bstill|again\b", text, re.IGNORECASE) else "status_update",
             "severity": 4,
             "confidence": 78,
@@ -783,6 +838,10 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             "refers_to_open_incident": True,
             "close_incident": False,
             "needs_review": bool((rules or {}).get("category") == "heat_hot_water"),
+            "preserve_event_type": bool(
+                mechanism_update
+                or re.search(r"\b(?:excessive\s+heat|overheating|heat\s+as\s+the\s+cause)\b", text, re.IGNORECASE)
+            ),
         }
     return None
 
@@ -865,6 +924,7 @@ def _merge_choices(rule_choice: dict | None, llm_choice: dict | None) -> tuple[d
         if (
             int(llm_choice.get("confidence", 0) or 0) >= NONISSUE_GUARDRAIL_CONFIDENCE
             and str(llm_choice.get("signal_type") or "").casefold() == "discussion"
+            and not bool(llm_choice.get("refers_to_open_incident"))
         ):
             blocked = dict(llm_choice)
             blocked["is_issue"] = False
@@ -893,6 +953,17 @@ def _normalize_choice(choice: dict | None) -> dict | None:
     if not isinstance(choice, dict):
         return None
     normalized = dict(choice)
+    is_issue = bool(normalized.get("is_issue"))
+    event_type = str(normalized.get("event_type") or "")
+    if not is_issue or event_type == "non_issue":
+        normalized["is_issue"] = False
+        normalized["signal_type"] = "discussion"
+        normalized["category"] = "other"
+        normalized["asset"] = None
+        normalized["event_type"] = "non_issue"
+        normalized["close_incident"] = False
+        return normalized
+    normalized["signal_type"] = "report"
     category = str(normalized.get("category") or "other")
     if category not in VALID_CATEGORIES:
         normalized["category"] = "other"
@@ -1025,6 +1096,11 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
     if context_choice and (
         not rule_choice
         or (rule_choice.get("category") == "heat_hot_water" and context_choice.get("category") == "elevator")
+        or (
+            rule_choice.get("category") == "security_access"
+            and context_choice.get("category") == "elevator"
+            and CONTEXTUAL_ELEVATOR_MECHANISM_RE.search(rm.text or "")
+        )
     ):
         # Full-export review mode still sends deterministic follow-ups to the
         # model, while retaining the contextual choice as the rules baseline.
@@ -1101,7 +1177,13 @@ def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | No
     persisted.auto_file_candidate = bool(incident and incident_is_auto_eligible(incident))
 
 
-def classify_and_upsert_incident(session, rm: RawMessage) -> str:
+def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: bool = True) -> str:
+    existing_decision = session.get(MessageDecision, rm.message_id)
+    existing_incident = (
+        session.get(Incident, existing_decision.incident_id)
+        if existing_decision and existing_decision.incident_id
+        else None
+    )
     if is_media_placeholder_text(rm.text):
         _record_decision(
             session,
@@ -1137,14 +1219,15 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
 
         if cat == "elevator":
             if close_incident:
-                query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
-                if asset and asset != "elevator_both":
-                    query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
-                candidate = None
-                for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
-                    if rm.ts_epoch is None or row.last_ts_epoch is None or int(row.last_ts_epoch) <= int(rm.ts_epoch):
-                        candidate = row
-                        break
+                candidate = existing_incident if existing_incident and existing_incident.category == cat else None
+                if candidate is None:
+                    query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
+                    if asset and asset != "elevator_both":
+                        query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
+                    for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
+                        if rm.ts_epoch is None or row.last_ts_epoch is None or int(row.last_ts_epoch) <= int(rm.ts_epoch):
+                            candidate = row
+                            break
                 if not candidate:
                     incident = _create_incident(session, cat, asset, rm, title, summary, 2, "closed", max(confidence, 60), True)
                     incident.end_ts = rm.ts_iso
@@ -1170,25 +1253,26 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                 query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
                 if asset and asset != "elevator_both":
                     query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
-                last_open = None
+                last_open = existing_incident if existing_incident and existing_incident.category == cat else None
                 continuation_event = event_type in {"still_out", "status_update"}
                 recent_same_chat_elevator = _has_recent_same_chat_elevator_context(session, rm)
-                for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
-                    if rm.ts_epoch is None or row.last_ts_epoch is None:
-                        last_open = row
-                        break
-                    if _can_merge_elevator_follow_up(
-                        rm=rm,
-                        candidate=row,
-                        asset=asset,
-                        continuation_event=continuation_event,
-                        recent_same_chat_elevator=recent_same_chat_elevator,
-                    ):
-                        last_open = row
-                        break
-                    delta = int(rm.ts_epoch) - int(row.last_ts_epoch)
-                    if delta > _elevator_merge_window_seconds(asset, continuation_event):
-                        break
+                if last_open is None:
+                    for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
+                        if rm.ts_epoch is None or row.last_ts_epoch is None:
+                            last_open = row
+                            break
+                        if _can_merge_elevator_follow_up(
+                            rm=rm,
+                            candidate=row,
+                            asset=asset,
+                            continuation_event=continuation_event,
+                            recent_same_chat_elevator=recent_same_chat_elevator,
+                        ):
+                            last_open = row
+                            break
+                        delta = int(rm.ts_epoch) - int(row.last_ts_epoch)
+                        if delta > _elevator_merge_window_seconds(asset, continuation_event):
+                            break
                 if last_open:
                     _update_incident(
                         session,
@@ -1208,27 +1292,32 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
                         event_type == "status_update"
                         and SOURCE_ELEVATOR_AFFECTED_RE.search(f"{rm.text or ''} {title or ''} {summary or ''}")
                     )
-                    if continuation_event and (event_type != "status_update" or actionable_status_update):
+                    preserve_status_update = bool(
+                        chosen.get("preserve_event_type")
+                        or (rules.get("event_type") == "status_update" and ELAPSED_ELEVATOR_EVENT.search(rm.text or ""))
+                    )
+                    if event_type == "status_update" and actionable_status_update and not preserve_status_update:
                         event_type = "new_issue"
                         chosen["event_type"] = "new_issue"
                     incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", max(confidence, 80), needs_review)
         else:
-            best = None
-            rows = session.query(Incident).filter(Incident.category == cat, Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast()).all()
-            for candidate in rows:
-                if asset and candidate.asset and candidate.asset != asset:
-                    continue
-                if not _can_merge_non_elevator_incident(candidate, category=cat, title=title, summary=summary):
-                    continue
-                if rm.ts_epoch is None or candidate.last_ts_epoch is None:
-                    best = candidate
-                    break
-                delta = int(rm.ts_epoch) - int(candidate.last_ts_epoch)
-                if 0 <= delta <= OTHER_WINDOW_SECONDS:
-                    best = candidate
-                    break
-                if delta > OTHER_WINDOW_SECONDS:
-                    break
+            best = existing_incident if existing_incident and existing_incident.category == cat else None
+            if best is None:
+                rows = session.query(Incident).filter(Incident.category == cat, Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast()).all()
+                for candidate in rows:
+                    if asset and candidate.asset and candidate.asset != asset:
+                        continue
+                    if not _can_merge_non_elevator_incident(candidate, category=cat, title=title, summary=summary):
+                        continue
+                    if rm.ts_epoch is None or candidate.last_ts_epoch is None:
+                        best = candidate
+                        break
+                    delta = int(rm.ts_epoch) - int(candidate.last_ts_epoch)
+                    if 0 <= delta <= OTHER_WINDOW_SECONDS:
+                        best = candidate
+                        break
+                    if delta > OTHER_WINDOW_SECONDS:
+                        break
             if best:
                 _update_incident(
                     session,
@@ -1248,6 +1337,6 @@ def classify_and_upsert_incident(session, rm: RawMessage) -> str:
 
     attach_manual_cases_from_text(session, text=rm.text or "", incident=incident, raw_message=rm)
     _record_decision(session, rm, rules, llm_choice, chosen, chosen_source, incident.incident_id if incident else None)
-    if incident:
+    if incident and allow_filing_job:
         ensure_filing_job_for_incident(session, incident)
     return incident.incident_id if incident else ""

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from packages.auth import require_bearer_token
 from packages.db import FilingJob, ServiceRequestCase, get_session
-from packages.nyc311.planner import claim_next_job
+from packages.nyc311.planner import approve_filing_job, claim_next_job, filing_job_preview
 from packages.nyc311.tracker import create_case_from_filing_job, normalize_sr_number, upsert_service_request_case
 from packages.queue import enqueue_full_resync
 from packages.worker_jobs import sync_311_statuses as sync_311_statuses_now
@@ -19,6 +19,11 @@ class FilingSubmittedPayload(BaseModel):
     service_request_number: str
     app_status: str | None = None
     notes: str | None = None
+
+
+class FilingApprovalPayload(BaseModel):
+    payload_sha256: str
+    approval_phrase: str
 
 
 class FilingFailedPayload(BaseModel):
@@ -40,6 +45,39 @@ def _schedule_sheet_refresh() -> None:
         enqueue_full_resync()
     except Exception:
         return
+
+
+@router.get('/filings/{job_id}/preview')
+def mobile_filing_preview(job_id: int, authorization: str | None = Header(default=None)):
+    require_bearer_token(authorization, kind='mobile')
+    with get_session() as session:
+        job = session.get(FilingJob, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail='Unknown filing job')
+        return {'ok': True, 'preview': filing_job_preview(job)}
+
+
+@router.post('/filings/{job_id}/approve')
+def mobile_approve_filing(
+    job_id: int,
+    payload: FilingApprovalPayload,
+    authorization: str | None = Header(default=None),
+):
+    require_bearer_token(authorization, kind='mobile')
+    with get_session() as session:
+        try:
+            job = approve_filing_job(
+                session,
+                job_id,
+                expected_payload_sha256=payload.payload_sha256,
+                approval_phrase=payload.approval_phrase,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        session.commit()
+        result = {'ok': True, 'job': filing_job_preview(job)}
+    _schedule_sheet_refresh()
+    return result
 
 
 @router.post('/filings/claim_next')

@@ -2,9 +2,15 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from packages.db import FilingJob, Incident, ServiceRequestCase, get_session
-from packages.nyc311.planner import claim_next_job, ensure_filing_job_for_incident
+from packages.nyc311.planner import (
+    approve_filing_job,
+    claim_next_job,
+    ensure_filing_job_for_incident,
+    filing_job_preview,
+)
 from packages.nyc311.portal import (
     NY,
+    PortalSubmissionCancelled,
     PortalSubmissionResult,
     _extract_confirmation_sr_number,
     _extract_lookup_status,
@@ -20,6 +26,17 @@ from packages.nyc311.portal_worker import run_portal_filing_once
 
 def auth_headers():
     return {'Authorization': 'Bearer test-token'}
+
+
+def _approve_job(session, job):
+    session.flush()
+    preview = filing_job_preview(job)
+    return approve_filing_job(
+        session,
+        int(job.job_id),
+        expected_payload_sha256=str(preview['payload_sha256']),
+        approval_phrase='APPROVED \u2014 GO LIVE',
+    )
 
 
 def _elevator_incident(incident_id, *, timestamp):
@@ -51,7 +68,7 @@ def test_equivalent_incident_alias_is_skipped_before_a_second_311_job(client):
         session.flush()
         first_job = ensure_filing_job_for_incident(session, first_incident)
         assert first_job is not None
-        assert first_job.state == "pending"
+        assert first_job.state == "awaiting_approval"
         session.flush()
         first_job.state = "submitted"
         first_job.completed_at = datetime.fromtimestamp(now_epoch, timezone.utc).isoformat()
@@ -69,6 +86,7 @@ def test_equivalent_incident_alias_is_skipped_before_a_second_311_job(client):
 def test_claim_next_job_skips_pending_alias_after_equivalent_submission(client, monkeypatch):
     now = datetime.now(timezone.utc).isoformat()
     payload = json.dumps({"description": "South elevator dead.", "incident": {"asset": "elevator_south"}})
+    monkeypatch.setattr("packages.nyc311.planner.incident_is_auto_eligible", lambda _incident: True)
     with get_session() as session:
         session.add_all([
             Incident(incident_id="submitted-incident", category="elevator", title="Submitted outage"),
@@ -90,7 +108,7 @@ def test_claim_next_job_skips_pending_alias_after_equivalent_submission(client, 
             FilingJob(
                 dedupe_key="311:pending-alias",
                 incident_id="pending-alias",
-                state="pending",
+                state="awaiting_approval",
                 complaint_type="Elevator or Escalator Complaint",
                 form_target="elevator_not_working",
                 payload_json=payload,
@@ -98,9 +116,11 @@ def test_claim_next_job_skips_pending_alias_after_equivalent_submission(client, 
                 updated_at=now,
             ),
         ])
+        session.flush()
+        alias_job = session.query(FilingJob).filter_by(dedupe_key="311:pending-alias").one()
+        _approve_job(session, alias_job)
         session.commit()
 
-    monkeypatch.setattr("packages.nyc311.planner.incident_is_auto_eligible", lambda _incident: True)
     with get_session() as session:
         job, skipped = claim_next_job(session)
         assert job is None
@@ -198,6 +218,10 @@ def test_run_portal_filing_once_marks_job_submitted(client, monkeypatch):
         },
     )
 
+    with get_session() as session:
+        _approve_job(session, session.query(FilingJob).one())
+        session.commit()
+
     result = run_portal_filing_once(headless=True, verify_lookup=True)
 
     assert result['ok'] is True
@@ -230,6 +254,10 @@ def test_run_portal_filing_once_skips_ineligible_jobs(client, monkeypatch):
         'ts_epoch': 1770000500,
     })
 
+    with get_session() as session:
+        _approve_job(session, session.query(FilingJob).one())
+        session.commit()
+
     monkeypatch.setattr('packages.nyc311.planner.incident_is_auto_eligible', lambda inc: False)
 
     result = run_portal_filing_once(headless=True, verify_lookup=False)
@@ -239,6 +267,31 @@ def test_run_portal_filing_once_skips_ineligible_jobs(client, monkeypatch):
         job = session.query(FilingJob).one()
         assert job.state == 'skipped'
         assert 'no longer auto-eligible' in (job.notes or '')
+
+
+def test_portal_worker_cancels_at_review_when_incident_state_changes(client, monkeypatch):
+    client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out again and people are stuck walking home.',
+        'sender': 'Karen',
+        'ts_epoch': 1770000500,
+    })
+    with get_session() as session:
+        _approve_job(session, session.query(FilingJob).one())
+        session.commit()
+
+    def cancel_at_review(*_args, **_kwargs):
+        raise PortalSubmissionCancelled('incident closed before final submit')
+
+    monkeypatch.setattr('packages.nyc311.portal_worker.submit_elevator_complaint', cancel_at_review)
+    result = run_portal_filing_once(headless=True, verify_lookup=False)
+
+    assert result['ok'] is True
+    assert result['skipped'] is True
+    with get_session() as session:
+        job = session.query(FilingJob).one()
+        assert job.state == 'skipped'
+        assert 'cancelled at portal review' in (job.notes or '')
 
 
 def test_observed_at_text_clamps_future_timestamp():
@@ -269,6 +322,7 @@ def test_claim_next_job_requeues_stale_claims(client, monkeypatch):
 
     with get_session() as session:
         job = session.query(FilingJob).one()
+        _approve_job(session, job)
         job.state = 'claimed'
         job.claimed_at = old_claimed_at
         job.updated_at = old_claimed_at
@@ -277,11 +331,11 @@ def test_claim_next_job_requeues_stale_claims(client, monkeypatch):
     with get_session() as session:
         job, skipped = claim_next_job(session)
         assert skipped == 0
-        assert job is not None
-        assert job.state == 'claimed'
-        assert job.claimed_at is not None
-        assert job.claimed_at != old_claimed_at
-        assert 'auto-requeued because a claimed job went stale' in (job.notes or '')
+        assert job is None
+        reset = session.query(FilingJob).one()
+        assert reset.state == 'awaiting_approval'
+        assert reset.claimed_at is None
+        assert 'approval reset because a claimed job went stale' in (reset.notes or '')
 
 
 def test_wait_for_url_change_passes_previous_url_by_keyword():

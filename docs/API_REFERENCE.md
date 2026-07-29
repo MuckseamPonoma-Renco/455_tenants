@@ -92,8 +92,16 @@ Returns tenant-visible replacement-watchdog action queue items. Internal operato
 ## GET /api/project/briefing
 Returns structured project state, tenant-ready update draft, management follow-up draft, and next best action. Uses deterministic fallback text.
 
+## GET /mobile/filings/{job_id}/preview
+Returns the current filing payload and its SHA-256 approval binding.
+
+## POST /mobile/filings/{job_id}/approve
+Moves an unchanged filing preview to `approved`. Requires its current
+`payload_sha256` and the exact approval phrase `APPROVED — GO LIVE`.
+
 ## POST /mobile/filings/claim_next
-Claims the next pending job.
+Claims the next approved job. Unapproved, failed, stale-claimed, and changed
+payloads are not claimable.
 
 ## POST /mobile/filings/{job_id}/submitted
 Stores the SR number and marks the job submitted.

@@ -1,7 +1,7 @@
 from sqlalchemy import select
 
 from packages.audit import append_audit_event, daily_hash_chain
-from packages.db import Incident, MessageDecision, RawMessage, get_session
+from packages.db import FilingJob, Incident, MessageDecision, RawMessage, get_session
 from packages.incident.extractor import classify_and_upsert_incident
 from packages.nyc311.legal_export import export_legal_bundle as export_bundle_impl
 from packages.nyc311.replacement_export import export_elevator_replacement_bundle as export_replacement_bundle_impl
@@ -35,20 +35,32 @@ def _safe_sync_sheets():
         append_audit_event("SHEETS_SYNC_SKIPPED", None, {"error": str(exc)[:300]})
 
 
+ARCHIVE_MESSAGE_SOURCES = frozenset({"export", "export_media", "zip_import"})
+
+
+def _allow_filing_job_for_message(raw: RawMessage, *, previously_decided: bool) -> bool:
+    return not previously_decided and (raw.source or "").casefold() not in ARCHIVE_MESSAGE_SOURCES
+
+
 def process_message(message_id: str, *, sync_sheets: bool = True):
     with get_session() as session:
         raw = session.get(RawMessage, message_id)
         if not raw:
             return {"ok": False, "error": "missing raw message"}
-        incident_id = classify_and_upsert_incident(session, raw)
-        queued = ensure_filing_jobs(session)
+        previously_decided = session.get(MessageDecision, message_id) is not None
+        incident_id = classify_and_upsert_incident(
+            session,
+            raw,
+            allow_filing_job=_allow_filing_job_for_message(raw, previously_decided=previously_decided),
+        )
+        queued = sum(1 for row in session.new if isinstance(row, FilingJob))
         session.commit()
 
-    append_audit_event("PROCESS_MESSAGE", message_id, {"incident_id": incident_id, "queued_jobs": len(queued)})
+    append_audit_event("PROCESS_MESSAGE", message_id, {"incident_id": incident_id, "queued_jobs": queued})
     if sync_sheets:
         _safe_sync_sheets()
     daily_hash_chain()
-    return {"ok": True, "incident_id": incident_id, "queued_jobs": len(queued)}
+    return {"ok": True, "incident_id": incident_id, "queued_jobs": queued}
 
 
 def process_pending_messages(limit: int = 100, *, latest_first: bool = False, resync_sheets: bool = True):
@@ -68,13 +80,19 @@ def process_pending_messages(limit: int = 100, *, latest_first: bool = False, re
 
     processed = 0
     errors = 0
+    queued_count = 0
     for message_id in pending_ids:
         try:
             with get_session() as session:
                 raw = session.get(RawMessage, message_id)
                 if raw is None or session.get(MessageDecision, message_id) is not None:
                     continue
-                classify_and_upsert_incident(session, raw)
+                classify_and_upsert_incident(
+                    session,
+                    raw,
+                    allow_filing_job=_allow_filing_job_for_message(raw, previously_decided=False),
+                )
+                queued_count += sum(1 for row in session.new if isinstance(row, FilingJob))
                 session.commit()
             processed += 1
         except Exception as exc:
@@ -82,9 +100,6 @@ def process_pending_messages(limit: int = 100, *, latest_first: bool = False, re
             append_audit_event("PROCESS_PENDING_MESSAGE_ERROR", message_id, {"error": str(exc)[:300]})
 
     with get_session() as session:
-        queued = ensure_filing_jobs(session)
-        session.commit()
-
         remaining = session.query(RawMessage).outerjoin(
             MessageDecision, MessageDecision.message_id == RawMessage.message_id
         ).filter(MessageDecision.message_id.is_(None)).count()
@@ -102,7 +117,7 @@ def process_pending_messages(limit: int = 100, *, latest_first: bool = False, re
         "remaining_pending": remaining,
         "incidents_total": incidents,
         "decisions_total": decisions,
-        "queued_jobs": len(queued),
+        "queued_jobs": queued_count,
     }
     append_audit_event("PROCESS_PENDING_MESSAGES", None, result)
     daily_hash_chain()
@@ -120,13 +135,12 @@ def reprocess_last_n(n: int):
     with get_session() as session:
         msgs = session.query(RawMessage).order_by(RawMessage.ts_epoch.desc().nullslast()).limit(n).all()
         for raw in reversed(msgs):
-            classify_and_upsert_incident(session, raw)
-        queued = ensure_filing_jobs(session)
+            classify_and_upsert_incident(session, raw, allow_filing_job=False)
         session.commit()
     _safe_sync_sheets()
-    append_audit_event("REPROCESS_LAST_N", None, {"n": n, "queued_jobs": len(queued)})
+    append_audit_event("REPROCESS_LAST_N", None, {"n": n, "queued_jobs": 0})
     daily_hash_chain()
-    return {"ok": True, "queued_jobs": len(queued)}
+    return {"ok": True, "queued_jobs": 0}
 
 
 def queue_311_jobs():

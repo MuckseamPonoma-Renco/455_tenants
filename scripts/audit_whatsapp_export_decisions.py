@@ -23,6 +23,7 @@ from packages.db import MessageDecision, RawMessage, get_session  # noqa: E402
 from packages.incident.rules import classify_rules  # noqa: E402
 from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate, find_recent_duplicate  # noqa: E402
 from packages.timeutil import parse_ts_to_epoch  # noqa: E402
+from packages.whatsapp.parser import is_media_placeholder_text  # noqa: E402
 from packages.whatsapp.export import parse_export_path  # noqa: E402
 
 DEFAULT_SINCE = "2026-06-05"
@@ -49,6 +50,8 @@ CSV_FIELDS = [
     "event_type",
     "confidence",
     "needs_review",
+    "llm_review_status",
+    "llm_review_error",
     "rule_kind",
     "rule_category",
     "rule_asset",
@@ -105,7 +108,36 @@ def _safe_json(value: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _decision_row(decision: MessageDecision | None) -> dict[str, Any]:
+def llm_review_details(decision: MessageDecision | None, *, text: str) -> tuple[str, str]:
+    if is_media_placeholder_text(text):
+        return "not_applicable", ""
+    if decision is None:
+        return "missing", ""
+
+    llm = _safe_json(decision.llm_json)
+    final = _safe_json(decision.final_json)
+    status = str(llm.get("review_status") or "").strip().casefold()
+    error = str(llm.get("review_error") or "").strip()
+    if str(decision.chosen_source or "").startswith("review") and final.get("review_status") == "completed":
+        return "completed", ""
+    if status == "completed":
+        return "completed", ""
+    if status in {"error", "disabled"}:
+        return "failed", error or status
+
+    try:
+        confidence = int(llm.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if confidence > 0:
+        return "completed", ""
+    if llm.get("needs_review") is True and confidence == 0:
+        return "failed", error or "legacy_api_error"
+    return "missing", ""
+
+
+def _decision_row(decision: MessageDecision | None, *, text: str) -> dict[str, Any]:
+    review_status, review_error = llm_review_details(decision, text=text)
     if decision is None:
         return {
             "incident_id": "",
@@ -116,6 +148,8 @@ def _decision_row(decision: MessageDecision | None) -> dict[str, Any]:
             "event_type": "",
             "confidence": "",
             "needs_review": "",
+            "llm_review_status": review_status,
+            "llm_review_error": review_error,
         }
     final = _safe_json(decision.final_json)
     return {
@@ -127,6 +161,8 @@ def _decision_row(decision: MessageDecision | None) -> dict[str, Any]:
         "event_type": decision.event_type or final.get("event_type") or "",
         "confidence": int(decision.confidence or 0),
         "needs_review": bool(decision.needs_review),
+        "llm_review_status": review_status,
+        "llm_review_error": review_error,
     }
 
 
@@ -136,6 +172,7 @@ def _suspect_reasons(
     decision: MessageDecision | None,
     rules: dict[str, Any],
     decision_fields: dict[str, Any],
+    require_llm_review: bool,
 ) -> list[str]:
     reasons: list[str] = []
     if raw is None:
@@ -160,6 +197,10 @@ def _suspect_reasons(
         reasons.append("llm_only_low_confidence_issue")
     if decision.is_issue and (decision.category or "") == "other":
         reasons.append("other_issue_category")
+    if require_llm_review and decision_fields.get("llm_review_status") == "failed":
+        reasons.append("llm_review_failed")
+    if require_llm_review and decision_fields.get("llm_review_status") == "missing":
+        reasons.append("llm_review_missing")
     return sorted(set(reasons))
 
 
@@ -203,12 +244,23 @@ def _match_export_message(session, message: ExportMessage) -> tuple[RawMessage |
     return None, "", None
 
 
-def _row_from_message(session, message: ExportMessage) -> tuple[dict[str, Any], list[str]]:
+def _row_from_message(
+    session,
+    message: ExportMessage,
+    *,
+    require_llm_review: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
     raw, match_method, alternate = _match_export_message(session, message)
     decision = session.get(MessageDecision, raw.message_id) if raw else None
     rules = classify_rules(message.text)
-    decision_fields = _decision_row(decision)
-    reasons = _suspect_reasons(raw=raw, decision=decision, rules=rules, decision_fields=decision_fields)
+    decision_fields = _decision_row(decision, text=message.text)
+    reasons = _suspect_reasons(
+        raw=raw,
+        decision=decision,
+        rules=rules,
+        decision_fields=decision_fields,
+        require_llm_review=require_llm_review,
+    )
     alternate_decision = session.get(MessageDecision, alternate.message_id) if alternate else None
     if alternate is not None and _decision_signature(decision) != _decision_signature(alternate_decision):
         reasons.append("cross_source_decision_conflict")
@@ -259,6 +311,9 @@ def _write_summary(path: Path, *, summary: dict[str, Any], outputs: dict[str, Pa
         f"- Matched messages: {summary['matched_messages']}",
         f"- Missing from DB: {summary['missing_db_messages']}",
         f"- Missing decisions: {summary['missing_decisions']}",
+        f"- Completed model reviews: {summary['llm_review_completed']}",
+        f"- Missing model reviews: {summary['llm_review_missing']}",
+        f"- Failed model reviews: {summary['llm_review_failed']}",
         f"- Review roster rows: {summary['review_roster_rows']}",
         "",
         "## Outputs",
@@ -283,6 +338,7 @@ def run_audit(
     since: str = DEFAULT_SINCE,
     out_dir: Path | None = None,
     default_chat_name: str = "Tenants WhatsApp",
+    require_llm_review: bool = False,
 ) -> dict[str, Any]:
     export_path = Path(export_path).expanduser().resolve()
     since_epoch = parse_ts_to_epoch(since)
@@ -304,11 +360,12 @@ def run_audit(
 
     with get_session() as session:
         for message in audited:
-            row, reasons = _row_from_message(session, message)
+            row, reasons = _row_from_message(session, message, require_llm_review=require_llm_review)
             all_rows.append(row)
             counters["matched_messages"] += bool(row["matched_message_id"])
             counters["missing_db_messages"] += "no_db_match" in reasons
             counters["missing_decisions"] += "no_decision" in reasons
+            counters[f"llm_review:{row['llm_review_status']}"] += 1
             if reasons:
                 review_rows.append(row)
                 for reason in reasons:
@@ -322,6 +379,10 @@ def run_audit(
     _write_csv(all_messages_csv, all_rows)
     _write_csv(review_roster_csv, review_rows)
 
+    llm_review_completed = counters["llm_review:completed"]
+    llm_review_missing = counters["llm_review:missing"]
+    llm_review_failed = counters["llm_review:failed"]
+    llm_review_not_applicable = counters["llm_review:not_applicable"]
     summary: dict[str, Any] = {
         "ok": True,
         "export_path": str(export_path),
@@ -331,6 +392,12 @@ def run_audit(
         "matched_messages": counters["matched_messages"],
         "missing_db_messages": counters["missing_db_messages"],
         "missing_decisions": counters["missing_decisions"],
+        "llm_review_required": len(audited) - llm_review_not_applicable,
+        "llm_review_completed": llm_review_completed,
+        "llm_review_missing": llm_review_missing,
+        "llm_review_failed": llm_review_failed,
+        "llm_review_not_applicable": llm_review_not_applicable,
+        "llm_review_complete": llm_review_missing == 0 and llm_review_failed == 0,
         "review_roster_rows": len(review_rows),
         "reason_counts": {key.removeprefix("reason:"): value for key, value in counters.items() if key.startswith("reason:")},
         "out_dir": str(out_dir),
@@ -357,6 +424,11 @@ def main() -> None:
     parser.add_argument("--since", default=DEFAULT_SINCE, help=f"Only audit messages at/after this timestamp. Default: {DEFAULT_SINCE}")
     parser.add_argument("--out-dir", help="Output directory for CSV/JSON/Markdown audit artifacts")
     parser.add_argument("--default-chat-name", default="Tenants WhatsApp", help="Chat name to use for _chat.txt exports")
+    parser.add_argument(
+        "--require-llm-review",
+        action="store_true",
+        help="Add missing or failed model reviews to the private review roster.",
+    )
     args = parser.parse_args()
 
     summary = run_audit(
@@ -364,6 +436,7 @@ def main() -> None:
         since=args.since,
         out_dir=Path(args.out_dir) if args.out_dir else None,
         default_chat_name=args.default_chat_name,
+        require_llm_review=args.require_llm_review,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
 

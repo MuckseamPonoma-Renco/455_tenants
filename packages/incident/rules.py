@@ -56,6 +56,7 @@ CALL_RESPONSE = re.compile(
 HEAT = re.compile(r"\bheat\b|hot\s+water|no\s+hot\s+water|cold\s+water|boiler", re.I)
 LEAK = re.compile(r"leak|flood|water\s+damage|ceiling\s+collapsed|mold", re.I)
 PESTS = re.compile(r"\b(?:roach(?:es)?|mice|mouse|rats?|bed\s*bugs?|bugs)\b", re.I)
+VENTILATION = re.compile(r"\b(?:vent|vents|ventilation|airflow|air\s+flow)\b", re.I)
 SEC = re.compile(r"lock|door|intercom|camera|security|stair|fire\s+door|handrail", re.I)
 APARTMENT_ENTRY = re.compile(
     r"\b(?:apartment|apt|unit)\b[^.!?\n]{0,80}\b(?:entry|enter|entered|access|advise\s+super|without\s+(?:me|anyone)\s+(?:home|there))\b"
@@ -80,6 +81,26 @@ ELEVATOR_SAFETY_GUIDANCE = re.compile(
 ELEVATOR_CONDITIONAL_SAFETY_DISCUSSION = re.compile(
     r"\bif\s+(?:both\s+)?(?:elevators?|lifts?)\s+(?:are\s+|were\s+)?stuck\b"
     r"|\b(?:indicator\s+floor\s+lights|adjacent\s+shaft|emergency\s+two-way|building\s+code|asme\s+a17\.3)\b",
+    re.I,
+)
+HISTORICAL_ELEVATOR_REFERENCE = re.compile(
+    r"\b(?:last\s+year|years?\s+ago|months?\s+ago|back\s+in\s+20\d{2})\b",
+    re.I,
+)
+CURRENT_STATE_REFERENCE = re.compile(r"\b(?:now|today|currently|still|right\s+now|at\s+present)\b", re.I)
+ELAPSED_ELEVATOR_EVENT = re.compile(
+    r"\bsince\s+(?:the\s+)?(?:stuck|stopped|out|down|dead)\s+(?:elevator|lift)(?:\s+event)?\b",
+    re.I,
+)
+DOOR_ACCESSIBILITY = re.compile(
+    r"\b(?:door|entry)\b[\s\S]{0,300}\b(?:wheelchair|accessible|accessibility)\b"
+    r"|\b(?:wheelchair|accessible|accessibility)\b[\s\S]{0,300}\b(?:door|entry)\b",
+    re.I,
+)
+PERSONAL_SAFETY_REPORT = re.compile(
+    r"\b(?:warn\s+women|"
+    r"(?:hang(?:ing)?\s+out|linger(?:ing)?)\b[^.!?\n]{0,100}\b(?:in\s*front\s+of|outside)\s+(?:the\s+)?building|"
+    r"walk(?:ed|ing)?\s+(?:up\s+)?(?:from\s+)?behind\b[^.!?\n]{0,100}\b(?:squeez(?:ed|ing)|touch(?:ed|ing)))\b",
     re.I,
 )
 
@@ -174,6 +195,24 @@ def classify_rules(text: str) -> dict:
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
     if ELEVATOR_SAFETY_GUIDANCE.search(t) or ELEVATOR_CONDITIONAL_SAFETY_DISCUSSION.search(t):
+        return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
+
+    if _has_elevator_reference(t) and HISTORICAL_ELEVATOR_REFERENCE.search(t) and not CURRENT_STATE_REFERENCE.search(t):
+        return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
+
+    if _has_elevator_reference(t) and ELAPSED_ELEVATOR_EVENT.search(t):
+        return {
+            "is_issue": True,
+            "category": "elevator",
+            "asset": _asset(t),
+            "event_type": "status_update",
+            "severity": 3,
+            "title": "Elevator incident duration update",
+            "summary": "Tenant reports elapsed time since a recent elevator incident.",
+            "kind": "issue",
+        }
+
+    if QUESTION_ONLY.search(t) and DISCUSSION_QUESTION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
     if QUESTION_ONLY.search(t) and not OUT.search(t) and not BACK.search(t):
@@ -272,6 +311,42 @@ def classify_rules(text: str) -> dict:
             "severity": 3,
             "title": "Pest issue",
             "summary": "Tenant reports pests.",
+            "kind": "issue",
+        }
+
+    if VENTILATION.search(t) and re.search(r"\b(?:issue|problem|inspect(?:ion|or|ed)?|not\s+working|no\s+air)\b", t, re.I):
+        return {
+            "is_issue": True,
+            "category": "other",
+            "asset": None,
+            "event_type": "new_issue",
+            "severity": 2,
+            "title": "Ventilation issue",
+            "summary": "Tenant reports a building ventilation concern.",
+            "kind": "issue",
+        }
+
+    if DOOR_ACCESSIBILITY.search(t):
+        return {
+            "is_issue": True,
+            "category": "security_access",
+            "asset": None,
+            "event_type": "new_issue",
+            "severity": 3,
+            "title": "Entry door accessibility issue",
+            "summary": "Tenant reports an entry door accessibility problem.",
+            "kind": "issue",
+        }
+
+    if PERSONAL_SAFETY_REPORT.search(t):
+        return {
+            "is_issue": True,
+            "category": "security_access",
+            "asset": None,
+            "event_type": "new_issue",
+            "severity": 3,
+            "title": "Building entrance safety concern",
+            "summary": "Tenant reports a personal safety concern at the building entrance.",
             "kind": "issue",
         }
 

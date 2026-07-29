@@ -11,12 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from packages.audit import append_audit_event, daily_hash_chain
-from packages.db import get_session
-from packages.incident.cross_source_reconciliation import ReconciliationSummary, reconcile_exact_cross_source_duplicates
 from packages.local_env import load_local_env_file
 
 load_local_env_file(ROOT / ".env")
+
+from packages.audit import append_audit_event, daily_hash_chain
+from packages.db import get_session
+from packages.incident.cross_source_reconciliation import ReconciliationSummary, reconcile_exact_cross_source_duplicates
 
 ROSTER_FIELDS = (
     "archive_message_id",

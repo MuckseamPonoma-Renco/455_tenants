@@ -7,6 +7,7 @@ from sqlalchemy import select
 from packages.auth import require_bearer_token
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.llm.briefing import generate_briefing
+from packages.nyc311.planner import filing_job_preview
 from packages.ops_summary import build_ops_summary
 from packages.public_records.sync import (
     VISIBLE_ACTION_STATUSES,
@@ -63,11 +64,7 @@ def list_queue(authorization: str | None = Header(default=None)):
             'spreadsheet_url': _spreadsheet_url(),
             'jobs': [
                 {
-                    'job_id': job.job_id,
-                    'incident_id': job.incident_id,
-                    'state': job.state,
-                    'complaint_type': job.complaint_type,
-                    'form_target': job.form_target,
+                    **filing_job_preview(job),
                     'payload': normalize_timestamp_fields(json.loads(job.payload_json or '{}')),
                     'attempts': job.attempts,
                     'last_error': job.last_error,

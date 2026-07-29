@@ -393,7 +393,7 @@ def import_media_zip(zip_path: Path, *, chat_name: str, repair_reply_context: bo
             row = session.get(RawMessage, message_id)
             if row is None:
                 continue
-            classify_and_upsert_incident(session, row)
+            classify_and_upsert_incident(session, row, allow_filing_job=False)
             session.commit()
             stats["processed_inserted_rows"] += 1
 

@@ -100,7 +100,14 @@ def build_ops_summary(session) -> dict[str, Any]:
     ).all()
     latest_message = session.scalar(select(RawMessage).order_by(RawMessage.ts_epoch.desc().nullslast()).limit(1))
 
-    job_counts = {'pending': 0, 'claimed': 0, 'submitted': 0, 'failed': 0}
+    job_counts = {
+        'awaiting_approval': 0,
+        'approved': 0,
+        'pending': 0,
+        'claimed': 0,
+        'submitted': 0,
+        'failed': 0,
+    }
     for job in jobs:
         job_counts[job.state] = job_counts.get(job.state, 0) + 1
 
@@ -121,9 +128,12 @@ def build_ops_summary(session) -> dict[str, Any]:
     if case_count > 0:
         stage = 'tracking_live'
         next_step = 'Keep the NYC311 portal worker available for new incidents and run case-status sync daily.'
-    if open_incidents and (job_counts.get('pending', 0) or job_counts.get('failed', 0)):
+    if open_incidents and (job_counts.get('approved', 0) or job_counts.get('claimed', 0)):
         stage = 'ready_for_portal_worker'
-        next_step = 'Run the Playwright NYC311 portal worker and submit one real complaint.'
+        next_step = 'Run the Playwright NYC311 portal worker for the approved complaint.'
+    elif open_incidents and (job_counts.get('awaiting_approval', 0) or job_counts.get('failed', 0)):
+        stage = 'awaiting_filing_approval'
+        next_step = 'Review the current NYC311 filing preview and approve that exact payload before submission.'
 
     alerts: list[dict[str, Any]] = []
     actions: list[dict[str, str]] = []
@@ -159,11 +169,16 @@ def build_ops_summary(session) -> dict[str, Any]:
             'detail': f'{recent_elevator_count} elevator incidents were recorded in the last 30 days.',
         })
 
-    if open_incidents and not case_count and (job_counts.get('pending', 0) or job_counts.get('claimed', 0) or job_counts.get('failed', 0)):
+    if open_incidents and not case_count and (
+        job_counts.get('awaiting_approval', 0)
+        or job_counts.get('approved', 0)
+        or job_counts.get('claimed', 0)
+        or job_counts.get('failed', 0)
+    ):
         actions.append({
             'kind': 'do_now',
-            'title': 'Submit the first real complaint',
-            'detail': 'Run the Playwright portal worker once and complete one end-to-end NYC311 submission.',
+            'title': 'Review the first complaint preview',
+            'detail': 'Approve the unchanged payload with the exact approval phrase, then run the portal worker.',
         })
 
     if case_count:
@@ -198,7 +213,13 @@ def build_ops_summary(session) -> dict[str, Any]:
         'incidents_total': int(incident_count),
         'incidents_open': len(open_incidents),
         'filing_jobs_total': len(jobs),
-        'filing_jobs_pending': int(job_counts.get('pending', 0)),
+        'filing_jobs_pending': int(
+            job_counts.get('awaiting_approval', 0)
+            + job_counts.get('approved', 0)
+            + job_counts.get('pending', 0)
+        ),
+        'filing_jobs_awaiting_approval': int(job_counts.get('awaiting_approval', 0)),
+        'filing_jobs_approved': int(job_counts.get('approved', 0)),
         'filing_jobs_failed': int(job_counts.get('failed', 0)),
         'service_requests_total': int(case_count),
         'recent_elevator_incidents_30d': int(recent_elevator_count),
