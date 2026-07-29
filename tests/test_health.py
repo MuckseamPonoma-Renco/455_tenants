@@ -100,6 +100,32 @@ def test_health_marks_stale_chat_export_sync_as_an_error(client, monkeypatch, tm
     }
 
 
+def test_health_names_incomplete_model_review_as_blocked(client, monkeypatch, tmp_path):
+    sync_path = tmp_path / "chat-export-sync.json"
+    monkeypatch.setenv("CHAT_EXPORT_SYNC_STATE_PATH", str(sync_path))
+    monkeypatch.setattr(health_router, "_utcnow", lambda: dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC))
+    sync_path.write_text(
+        json.dumps(
+            {
+                "last_checked_at": "2026-07-20T01:59:00Z",
+                "last_processed_at": "2026-07-20T00:00:00Z",
+                "last_error": "model review incomplete: 104 missing, 38 failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["chat_export_sync"] == {
+        "state": "blocked_model_review",
+        "last_checked_at": "2026-07-20T01:59:00Z",
+        "last_processed_at": "2026-07-20T00:00:00Z",
+        "has_error": True,
+    }
+
+
 def test_health_reports_low_storage_without_public_capacity_details(client, monkeypatch):
     monkeypatch.setattr(health_router.shutil, "disk_usage", lambda _path: SimpleNamespace(free=5 * 1024 * 1024 * 1024))
     monkeypatch.setattr(health_router, "database_is_ready", lambda: True)

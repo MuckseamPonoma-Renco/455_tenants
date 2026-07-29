@@ -18,7 +18,7 @@ from packages.db import (
 )
 from packages.project_watch.rules import action_for_changed_record, action_for_new_record, ensure_action, evaluate_project_rules, now_iso
 from packages.public_records.config import building_bbl_compact, building_bin, source_configs
-from packages.public_records.normalize import normalize_record
+from packages.public_records.normalize import normalize_record, semantic_raw_hash
 from packages.public_records.nyc_open_data import fetch_rows, query_url
 from packages.public_records.verification import apply_machine_verification
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
@@ -209,7 +209,7 @@ def _sync_source_error_action(session, errors: list[dict[str, str]]) -> None:
             "The watchdog kept using the sources that responded, but these official-source queries failed: "
             + "; ".join(detail_lines)
         ),
-        due_at=(datetime.now(tz=timezone.utc) + timedelta(days=1)).isoformat(),
+        due_in_days=1,
         owner_role="system",
         draft_message=f"Retry public-record sync; affected source(s): {', '.join(source_names)}.",
     )
@@ -247,9 +247,16 @@ def upsert_public_record(
         return record, "created"
 
     existing.last_seen_at = ts
-    if existing.raw_hash == normalized["raw_hash"]:
+    existing_semantic_hash = existing.raw_hash
+    try:
+        existing_raw = json.loads(existing.raw_json or "{}")
+        if isinstance(existing_raw, dict):
+            existing_semantic_hash = semantic_raw_hash(source_key, existing_raw)
+    except (TypeError, ValueError):
+        pass
+    if existing_semantic_hash == normalized["raw_hash"]:
         for field, value in normalized.items():
-            if field in {"needs_human_verification", "visible_public", "raw_json", "raw_hash"}:
+            if field in {"needs_human_verification", "visible_public"}:
                 continue
             if getattr(existing, field) != value:
                 setattr(existing, field, value)

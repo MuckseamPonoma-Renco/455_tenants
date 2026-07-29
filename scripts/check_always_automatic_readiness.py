@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
+INSTALLED_RUNTIME_ROOT = Path.home() / ".local" / "share" / "tenant-issue-os" / "runtime"
+OPERATION_ROOT = (
+    INSTALLED_RUNTIME_ROOT
+    if (INSTALLED_RUNTIME_ROOT / ".env").is_file()
+    and (INSTALLED_RUNTIME_ROOT / "scripts" / "check_mac_services.sh").is_file()
+    else ROOT
+)
+OPERATION_PYTHON = (
+    INSTALLED_RUNTIME_ROOT / ".venv" / "bin" / "python"
+    if (INSTALLED_RUNTIME_ROOT / ".venv" / "bin" / "python").is_file()
+    else Path(sys.executable)
+)
 REQUIRED_CLOUD_RECOVERY_SECRETS = {
     "CLOUD_RECOVERY_ENABLED",
     "CLOUD_RECOVERY_ENV",
@@ -33,7 +45,7 @@ Runner = Callable[[list[str], int], CommandResult]
 def run_command(args: list[str], timeout_seconds: int) -> CommandResult:
     completed = subprocess.run(
         args,
-        cwd=ROOT,
+        cwd=OPERATION_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -95,7 +107,7 @@ def _command_check(
 def check_mac_services(runner: Runner) -> dict[str, Any]:
     result = _command_check(
         "mac_services",
-        [str(ROOT / "scripts" / "check_mac_services.sh"), "--json"],
+        [str(OPERATION_ROOT / "scripts" / "check_mac_services.sh"), "--json"],
         runner=runner,
         timeout_seconds=60,
         success_detail="Local LaunchAgents, API, tunnel, storage, WhatsApp capture, and iCloud importer are healthy.",
@@ -116,8 +128,8 @@ def check_mac_services(runner: Runner) -> dict[str, Any]:
 
 def check_public_health(runner: Runner, *, require_cloud_receiver: bool) -> dict[str, Any]:
     args = [
-        sys.executable,
-        str(ROOT / "scripts" / "check_public_health.py"),
+        str(OPERATION_PYTHON),
+        str(OPERATION_ROOT / "scripts" / "check_public_health.py"),
         "--url",
         "https://api.455tenants.com/health",
         "--max-capture-age-seconds",
@@ -151,7 +163,7 @@ def check_public_health(runner: Runner, *, require_cloud_receiver: bool) -> dict
 def check_public_tenant_log(runner: Runner) -> dict[str, Any]:
     return _command_check(
         "public_tenant_log",
-        [sys.executable, str(ROOT / "scripts" / "audit_public_tenant_log.py"), "--days", "30", "--limit", "20"],
+        [str(OPERATION_PYTHON), str(OPERATION_ROOT / "scripts" / "audit_public_tenant_log.py"), "--days", "30", "--limit", "20"],
         runner=runner,
         timeout_seconds=45,
         success_detail="Published Tenant Log matches the source renderer for the recent window.",
@@ -177,7 +189,7 @@ print(__import__('json').dumps(result, sort_keys=True))
 """
     return _command_check(
         "replacement_watchdog",
-        [sys.executable, "-c", code],
+        [str(OPERATION_PYTHON), "-c", code],
         runner=runner,
         timeout_seconds=90,
         success_detail="Elevator replacement watchdog fetched official records and applied rules without source errors.",
@@ -264,6 +276,26 @@ def check_github_cloud_recovery(repo: str, runner: Runner) -> dict[str, Any]:
     )
 
 
+def _next_required_action(hard_failures: list[dict[str, Any]]) -> str:
+    if not hard_failures:
+        return ""
+    serialized = json.dumps(hard_failures, sort_keys=True).casefold()
+    actions: list[str] = []
+    if "blocked_model_review" in serialized or "required openai model review is incomplete" in serialized:
+        actions.append("Restore the configured OpenAI API project's quota so the staged chat audit can finish.")
+    if (
+        any(row.get("name") == "github_cloud_recovery_gate" for row in hard_failures)
+        or "cloud export receiver is not_configured" in serialized
+    ):
+        actions.append(
+            "Configure the three GitHub cloud-recovery secrets for the private Cloudflare receiver and set "
+            "REQUIRE_CLOUD_EXPORT_RECEIVER=true."
+        )
+    if not actions:
+        actions.append("Resolve the failed readiness checks shown in this report, then rerun the audit.")
+    return " ".join(actions)
+
+
 def build_report(args: argparse.Namespace, *, runner: Runner = run_command) -> dict[str, Any]:
     checks = [
         check_mac_services(runner),
@@ -281,11 +313,7 @@ def build_report(args: argparse.Namespace, *, runner: Runner = run_command) -> d
     return {
         "ok": not hard_failures,
         "checks": checks,
-        "next_required_action": (
-            ""
-            if not hard_failures
-            else "Authorize and deploy the private Cloudflare receiver, configure GitHub recovery secrets, then set REQUIRE_CLOUD_EXPORT_RECEIVER=true."
-        ),
+        "next_required_action": _next_required_action(hard_failures),
     }
 
 

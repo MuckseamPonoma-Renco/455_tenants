@@ -195,4 +195,24 @@ Enable it only after the private Cloudflare receiver is deployed and these GitHu
 - `CLOUD_RECOVERY_ENV`: a multiline `.env` body containing the production `DATABASE_URL`, `CLOUD_EXPORT_RECEIVER_URL`, `CLOUD_EXPORT_RECEIVER_PULL_TOKEN`, `GOOGLE_SHEETS_SPREADSHEET_ID`, public-sheet/policy settings, and other non-file runtime settings needed to mirror the local configuration
 - `CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON`: the Google service-account JSON used for Sheets access
 
+Validate the local production inputs and print a secret-name-only preview:
+
+```bash
+python scripts/configure_github_cloud_recovery.py
+```
+
+The apply path is deliberately approval-gated and activates
+`CLOUD_RECOVERY_ENABLED` last:
+
+```bash
+python scripts/configure_github_cloud_recovery.py \
+  --apply \
+  --approval 'APPROVED — GO LIVE'
+```
+
+The generated recovery environment is allowlisted. It includes the database,
+private receiver, Sheets, building-policy, and OpenAI review settings needed by
+the recovery runner; it excludes local ingest/mobile filing tokens and NYC311
+contact fields. The workflow also forces `AUTO_FILE_ENABLED=0`.
+
 This moves full-export recovery, public Sheet refreshes, and elevator-watch maintenance off the Mac. It does not replace live WhatsApp Web capture, which still requires the local authenticated WhatsApp session.

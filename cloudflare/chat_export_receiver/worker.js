@@ -259,6 +259,10 @@ function compactAudit(payload) {
     "matched_messages",
     "missing_db_messages",
     "missing_decisions",
+    "llm_review_required",
+    "llm_review_completed",
+    "llm_review_missing",
+    "llm_review_failed",
     "review_roster_rows",
   ];
   return Object.fromEntries(
@@ -266,6 +270,32 @@ function compactAudit(payload) {
       .map((key) => [key, Number(audit[key])])
       .filter(([, value]) => Number.isSafeInteger(value) && value >= 0),
   );
+}
+
+function receiptNeedsRetry(receipt) {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return true;
+  }
+  const audit = receipt.audit;
+  if (!audit || typeof audit !== "object" || Array.isArray(audit)) {
+    return true;
+  }
+  const hasCompleteModelCounts = [
+    "llm_review_required",
+    "llm_review_completed",
+    "llm_review_missing",
+    "llm_review_failed",
+  ].every((key) => Number.isSafeInteger(Number(audit[key])));
+  if (hasCompleteModelCounts) {
+    const required = Number(audit.llm_review_required || 0);
+    const completed = Number(audit.llm_review_completed || 0);
+    const missing = Number(audit.llm_review_missing || 0);
+    const failed = Number(audit.llm_review_failed || 0);
+    return missing > 0 || failed > 0 || required > completed;
+  }
+  // Legacy receipts did not preserve model-review counters. Requeue only when
+  // that receipt explicitly recorded unresolved roster rows.
+  return Number(audit.review_roster_rows || 0) > 0;
 }
 
 async function uploadIntent(request, env) {
@@ -297,8 +327,17 @@ async function pendingExports(request, env) {
   const listing = await env.EXPORTS.list(listOptions);
   const exports = [];
   for (const object of listing.objects) {
-    if (await env.EXPORTS.head(await receiptKeyFor(object.key))) {
-      continue;
+    const receipt = await env.EXPORTS.get(await receiptKeyFor(object.key));
+    if (receipt) {
+      let receiptPayload = null;
+      try {
+        receiptPayload = await receipt.json();
+      } catch {
+        receiptPayload = null;
+      }
+      if (!receiptNeedsRetry(receiptPayload)) {
+        continue;
+      }
     }
     exports.push({
       key: object.key,
@@ -321,9 +360,7 @@ async function acknowledgeExport(request, env) {
   const payload = await readJson(request);
   const key = requirePendingKey(payload.key);
   const receiptKey = await receiptKeyFor(key);
-  if (await env.EXPORTS.head(receiptKey)) {
-    return json({ acknowledged: true, key, idempotent: true });
-  }
+  const existingReceipt = await env.EXPORTS.head(receiptKey);
   if (!(await env.EXPORTS.head(key))) {
     throw new HttpError(404, "export was not found");
   }
@@ -338,7 +375,7 @@ async function acknowledgeExport(request, env) {
     }),
     { httpMetadata: { contentType: "application/json; charset=utf-8" } },
   );
-  return json({ acknowledged: true, key, idempotent: false });
+  return json({ acknowledged: true, key, idempotent: Boolean(existingReceipt) });
 }
 
 async function health(env) {
@@ -381,4 +418,4 @@ export default {
   },
 };
 
-export { normalizeFilename, parseUploadSize };
+export { compactAudit, normalizeFilename, parseUploadSize, receiptNeedsRetry };

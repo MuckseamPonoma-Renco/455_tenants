@@ -1,7 +1,7 @@
 import os
 
 from packages.db import AccessNeedPrivate, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction, get_session
-from packages.project_watch.rules import evaluate_project_rules
+from packages.project_watch.rules import ensure_action, evaluate_project_rules
 from packages.public_records import sync as public_record_sync
 from packages.public_records.sync import sync_public_records, upsert_public_record
 from packages.public_records.verification import apply_machine_verification
@@ -116,6 +116,36 @@ def test_public_record_normalization_dedupes_unchanged_rows(client):
         assert session.query(PublicRecordWatch).count() == 1
 
 
+def test_dob_extract_refresh_does_not_look_like_a_record_change(client):
+    row = {
+        "complaint_number": "3988591",
+        "status": "CLOSED",
+        "date_entered": "12/21/2024",
+        "house_number": "455",
+        "house_street": "OCEAN PARKWAY",
+        "bin": "3126839",
+        "unit": "ELEVR",
+        "dobrundate": "20260728000000",
+    }
+    with get_session() as session:
+        first, first_state = upsert_public_record(session, "dob_complaints", row)
+        first.raw_hash = "legacy-full-row-hash"
+        original_changed_at = first.last_changed_at
+        refreshed, refreshed_state = upsert_public_record(
+            session,
+            "dob_complaints",
+            {**row, "dobrundate": "20260729000000"},
+        )
+        session.commit()
+
+        assert first_state == "created"
+        assert refreshed_state == "unchanged"
+        assert refreshed.id == first.id
+        assert refreshed.last_changed_at == original_changed_at
+        assert "20260729000000" in (refreshed.raw_json or "")
+        assert session.query(WatchdogAction).filter_by(action_type="changed_public_record").count() == 0
+
+
 def test_changed_public_record_creates_watchdog_action(client):
     with get_session() as session:
         upsert_public_record(session, "dob_now_elevator_applications", _elevator_application_row("Filed"))
@@ -127,6 +157,48 @@ def test_changed_public_record_creates_watchdog_action(client):
         actions = session.query(WatchdogAction).filter_by(action_type="changed_public_record").all()
         assert len(actions) == 1
         assert actions[0].source_record_id == changed.id
+
+
+def test_existing_watchdog_action_deadline_is_anchored_to_creation(client):
+    with get_session() as session:
+        action = ensure_action(
+            session,
+            action_type="stable_deadline_test",
+            severity="watch",
+            title="Stable deadline",
+            detail="The deadline must not move on each sync.",
+            due_in_days=7,
+            owner_role="operator",
+        )
+        session.flush()
+        action.created_at = "2026-05-01T00:00:00Z"
+        action.updated_at = "2026-05-01T00:00:00Z"
+        action.due_at = "2026-08-05T00:00:00Z"
+
+        repaired = ensure_action(
+            session,
+            action_type="stable_deadline_test",
+            severity="watch",
+            title="Stable deadline",
+            detail="The deadline must not move on each sync.",
+            due_in_days=7,
+            owner_role="operator",
+        )
+        session.flush()
+        assert repaired.due_at.startswith("2026-05-08T00:00:00")
+        repaired_at = repaired.updated_at
+
+        unchanged = ensure_action(
+            session,
+            action_type="stable_deadline_test",
+            severity="watch",
+            title="Stable deadline",
+            detail="The deadline must not move on each sync.",
+            due_in_days=7,
+            owner_role="operator",
+        )
+        assert unchanged.due_at == repaired.due_at
+        assert unchanged.updated_at == repaired_at
 
 
 def test_first_public_record_sync_baselines_historical_rows(client, monkeypatch):
@@ -493,6 +565,40 @@ def test_management_request_closes_when_current_replacement_filing_exists(client
 
         action = session.query(WatchdogAction).filter_by(action_type="no_public_filing_after_30_days").one()
         assert action.status == "completed"
+
+
+def test_no_movement_rule_tracks_replacement_filing_only(client):
+    with get_session() as session:
+        unrelated, _ = upsert_public_record(
+            session,
+            "dob_now_elevator_applications",
+            {
+                **_elevator_application_row("Signed Off"),
+                "job_filing_number": "BOLD-I1",
+                "descriptionofwork": "Provide New Door Lock Monitoring System.",
+                "signedoff_date": "2021-07-21T00:00:00.000",
+                "permit_expiration_date": "2021-11-08T00:00:00.000",
+            },
+        )
+        unrelated.last_changed_at = "2000-01-01T00:00:00Z"
+        evaluate_project_rules(session)
+        assert session.query(WatchdogAction).filter_by(action_type="no_public_movement_14_days").count() == 0
+
+        replacement, _ = upsert_public_record(
+            session,
+            "dob_now_elevator_applications",
+            {
+                **_elevator_application_row("Filed"),
+                "job_filing_number": "BNEW-I1",
+            },
+        )
+        replacement.last_changed_at = "2000-01-01T00:00:00Z"
+        evaluate_project_rules(session)
+        session.commit()
+
+        movement = session.query(WatchdogAction).filter_by(action_type="no_public_movement_14_days").one()
+        assert movement.status == "open"
+        assert "current replacement filing" in (movement.detail or "")
 
 
 def test_existing_311_case_suppresses_tenant_visible_elevator_action(client):

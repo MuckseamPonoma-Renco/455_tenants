@@ -9,7 +9,12 @@ This Worker persists WhatsApp chat exports while the Mac is unavailable. It does
 3. The Shortcut uploads the ZIP directly to private R2. The Worker never proxies the large file.
 4. The Mac agent calls `GET /v1/exports` with `PULL_AUTH_TOKEN`, downloads each unacknowledged export, runs the existing audit, and calls `POST /v1/exports/ack` only after a successful audit.
 
-The original R2 archive is retained. An acknowledgment is a small separate receipt object, so a transient failure cannot erase evidence or cause an export to be silently skipped.
+The original R2 archive is retained. An acknowledgment is a small separate receipt
+object, so a transient failure cannot erase evidence or cause an export to be
+silently skipped. Receipts preserve strict model-review counters. A receipt with
+missing or failed required reviews stays visible to recovery clients, and a
+legacy receipt with unresolved roster rows is retried once under the strict
+contract.
 
 ## Required Cloudflare configuration
 

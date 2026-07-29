@@ -9,9 +9,25 @@ from packages.public_records.config import DATA_CITY_BASE, SourceConfig
 from packages.timeutil import normalize_timestamp
 
 
-def raw_hash(row: dict[str, Any]) -> str:
-    payload = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+VOLATILE_FIELDS_BY_SOURCE = {
+    # This extract timestamp changes when Socrata republishes the dataset, even
+    # when the complaint record itself is unchanged.
+    "dob_complaints": frozenset({"dobrundate"}),
+}
+
+
+def raw_hash(row: dict[str, Any], *, ignored_fields: frozenset[str] = frozenset()) -> str:
+    semantic_row = {
+        key: value
+        for key, value in row.items()
+        if key not in ignored_fields
+    }
+    payload = json.dumps(semantic_row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def semantic_raw_hash(source_key: str, row: dict[str, Any]) -> str:
+    return raw_hash(row, ignored_fields=VOLATILE_FIELDS_BY_SOURCE.get(source_key, frozenset()))
 
 
 def raw_json(row: dict[str, Any]) -> str:
@@ -117,7 +133,7 @@ def normalize_record(source: SourceConfig, row: dict[str, Any], *, source_url: s
         "expires_at": _date(row, "permit_expiration_date", "expired_date", "expiration_date"),
         "source_url": source_url or _source_url(source),
         "raw_json": raw_json(row),
-        "raw_hash": raw_hash(row),
+        "raw_hash": semantic_raw_hash(source.key, row),
         "visible_public": True,
         "needs_human_verification": True,
         "notes": source.notes or None,

@@ -98,3 +98,31 @@ def test_compact_report_keeps_verdict_without_raw_command_evidence(monkeypatch):
     assert compact["warnings"][0]["name"] == "filevault_boundary"
     assert "checks" not in compact
     assert "command" not in json.dumps(compact)
+
+
+def test_next_action_names_model_quota_and_cloud_recovery_gaps():
+    action = readiness._next_required_action(
+        [
+            {
+                "name": "mac_services",
+                "evidence": {
+                    "payload": {
+                        "services": [
+                            {
+                                "name": "chat_export_sync",
+                                "state": "blocked",
+                                "reason": "required OpenAI model review is incomplete",
+                            }
+                        ]
+                    }
+                },
+            },
+            {
+                "name": "github_cloud_recovery_gate",
+                "detail": "missing recovery secrets",
+            },
+        ]
+    )
+
+    assert "OpenAI API project's quota" in action
+    assert "three GitHub cloud-recovery secrets" in action

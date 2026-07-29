@@ -166,6 +166,13 @@ This gives you auto-start after login, crash restart via `KeepAlive`, and period
 
 `install_mac_launch_agents.sh` also stages a launchd-safe runtime copy under `~/.local/share/tenant-issue-os/runtime` so the agents do not have to execute directly from a Desktop-hosted repo. Re-run the installer after code changes so the staged runtime stays current. The installer deliberately preserves the runtime `.env`, secrets, virtual environment, capture profile, and queued exports; provision `$HOME/.local/share/tenant-issue-os/runtime/.env` once before the first install instead of allowing a code update to replace production configuration.
 
+Keep the active source checkout outside Desktop/iCloud as well. A suitable path
+is `~/.local/share/tenant-issue-os/source`. macOS Optimize Storage can turn
+hidden `.git` objects or virtualenv CA files under Desktop into `dataless`
+placeholders, which can make Git and TLS probes block while iCloud hydrates
+them. Service checks prefer the staged non-iCloud runtime Python so production
+health does not depend on a Desktop virtualenv.
+
 Important:
 
 - The tunnel only starts if this Mac has Cloudflare tunnel auth already copied over.

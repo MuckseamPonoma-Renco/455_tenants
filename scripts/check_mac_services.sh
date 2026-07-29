@@ -69,7 +69,7 @@ pid_within_startup_grace() {
 refresh_endpoint_health() {
   PUBLIC_BASE_URL="$(mac_service_public_base_url)"
 
-  LOCAL_HEALTH_CODE="$(curl -sS -o "$LOCAL_BODY_FILE" -w '%{http_code}' http://127.0.0.1:8000/health || true)"
+  LOCAL_HEALTH_CODE="$(curl --connect-timeout 3 --max-time 10 -sS -o "$LOCAL_BODY_FILE" -w '%{http_code}' http://127.0.0.1:8000/health || true)"
   LOCAL_API_HEALTHY=0
   if [[ "$LOCAL_HEALTH_CODE" == "200" ]]; then
     LOCAL_API_HEALTHY=1
@@ -83,7 +83,7 @@ refresh_endpoint_health() {
   PUBLIC_HEALTH_CODE=""
   PUBLIC_HEALTHY=0
   if [[ -n "$PUBLIC_BASE_URL" ]]; then
-    PUBLIC_HEALTH_CODE="$(curl -sS -o "$PUBLIC_BODY_FILE" -w '%{http_code}' "${PUBLIC_BASE_URL%/}/health" || true)"
+    PUBLIC_HEALTH_CODE="$(curl --connect-timeout 5 --max-time 15 -sS -o "$PUBLIC_BODY_FILE" -w '%{http_code}' "${PUBLIC_BASE_URL%/}/health" || true)"
     if [[ "$PUBLIC_HEALTH_CODE" == "200" ]]; then
       PUBLIC_HEALTHY=1
     fi
@@ -305,9 +305,38 @@ PY
 }
 
 cloud_export_receiver_probe() {
-  local python_bin
+  local python_bin script_path timeout_seconds
   python_bin="$(mac_service_runtime_python)" || return 1
-  "$python_bin" "$REPO_ROOT/scripts/sync_cloud_chat_export_inbox.py" --probe
+  script_path="$MAC_SERVICE_RUNTIME_ROOT/scripts/sync_cloud_chat_export_inbox.py"
+  if [[ ! -f "$script_path" ]]; then
+    script_path="$REPO_ROOT/scripts/sync_cloud_chat_export_inbox.py"
+  fi
+  timeout_seconds="${CLOUD_EXPORT_RECEIVER_PROBE_TIMEOUT_SECONDS:-20}"
+  "$python_bin" - "$script_path" "$timeout_seconds" <<'PY'
+import subprocess
+import sys
+
+script_path = sys.argv[1]
+try:
+    timeout_seconds = max(1, int(sys.argv[2]))
+except (TypeError, ValueError):
+    timeout_seconds = 20
+
+try:
+    completed = subprocess.run(
+        [sys.executable, script_path, "--probe"],
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+except subprocess.TimeoutExpired:
+    print(f"cloud receiver probe exceeded {timeout_seconds}s", file=sys.stderr)
+    raise SystemExit(124)
+
+sys.stdout.write(completed.stdout)
+sys.stderr.write(completed.stderr)
+raise SystemExit(completed.returncode)
+PY
 }
 
 service_status_row() {

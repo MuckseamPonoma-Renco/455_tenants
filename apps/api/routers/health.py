@@ -138,6 +138,8 @@ def _public_chat_export_sync_status() -> dict[str, Any]:
         status = 'stale'
     elif error and error.startswith('waiting for complete iCloud export:'):
         status = 'waiting_for_download'
+    elif error and ('model review incomplete:' in error or 'insufficient_quota' in error):
+        status = 'blocked_model_review'
     elif error:
         status = 'error'
     elif state.get('last_processed_fingerprint'):
@@ -151,7 +153,7 @@ def _public_chat_export_sync_status() -> dict[str, Any]:
         'state': status,
         'last_checked_at': last_checked_at,
         'last_processed_at': _text(state.get('last_processed_at')),
-        'has_error': bool(stale or (error and status == 'error')),
+        'has_error': bool(stale or (error and status in {'error', 'blocked_model_review'})),
     }
 
 

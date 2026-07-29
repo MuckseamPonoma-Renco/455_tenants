@@ -85,10 +85,19 @@ def test_primary_automation_health_requires_a_fresh_working_heartbeat(monkeypatc
 
     payload = {
         "ok": True,
+        "database_ready": True,
+        "storage": {
+            "state": "ready",
+            "low_disk": False,
+        },
         "automation": {
             "state": "ready",
             "has_error": False,
             "last_cycle_at": "2026-07-20T04:20:00Z",
+        },
+        "chat_export_sync": {
+            "state": "ready",
+            "has_error": False,
         },
     }
     monkeypatch.setattr(recovery.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
@@ -100,6 +109,13 @@ def test_primary_automation_health_requires_a_fresh_working_heartbeat(monkeypatc
     assert recovery.primary_automation_healthy(now=now) is False
 
     payload["automation"]["last_cycle_at"] = "2026-07-20T04:31:00Z"
+    assert recovery.primary_automation_healthy(now=now) is False
+
+    payload["automation"]["last_cycle_at"] = "2026-07-20T04:20:00Z"
+    payload["chat_export_sync"] = {
+        "state": "blocked_model_review",
+        "has_error": True,
+    }
     assert recovery.primary_automation_healthy(now=now) is False
 
 

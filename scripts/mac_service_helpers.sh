@@ -10,12 +10,28 @@ MAC_SERVICE_UID="$(id -u)"
 MAC_SERVICE_RUNTIME_ROOT="${HOME}/.local/share/tenant-issue-os/runtime"
 
 mac_service_runtime_python() {
+  if [[ -x "$MAC_SERVICE_RUNTIME_ROOT/.venv/bin/python" ]]; then
+    printf '%s\n' "$MAC_SERVICE_RUNTIME_ROOT/.venv/bin/python"
+    return 0
+  fi
   if [[ -x "$MAC_SERVICE_REPO_ROOT/.venv/bin/python" ]]; then
     printf '%s\n' "$MAC_SERVICE_REPO_ROOT/.venv/bin/python"
     return 0
   fi
   if command -v python3 >/dev/null 2>&1; then
     command -v python3
+    return 0
+  fi
+  return 1
+}
+
+mac_service_config_env_path() {
+  if [[ -f "$MAC_SERVICE_RUNTIME_ROOT/.env" ]]; then
+    printf '%s\n' "$MAC_SERVICE_RUNTIME_ROOT/.env"
+    return 0
+  fi
+  if [[ -f "$MAC_SERVICE_REPO_ROOT/.env" ]]; then
+    printf '%s\n' "$MAC_SERVICE_REPO_ROOT/.env"
     return 0
   fi
   return 1
@@ -194,10 +210,9 @@ mac_service_service_pid() {
 }
 
 mac_service_public_base_url() {
-  if [[ ! -f "$MAC_SERVICE_REPO_ROOT/.env" ]]; then
-    return 0
-  fi
-  awk -F= '/^PUBLIC_BASE_URL=/{print $2; exit}' "$MAC_SERVICE_REPO_ROOT/.env" | tr -d '"' | tr -d "'"
+  local env_path
+  env_path="$(mac_service_config_env_path)" || return 0
+  awk -F= '/^PUBLIC_BASE_URL=/{print $2; exit}' "$env_path" | tr -d '"' | tr -d "'"
 }
 
 mac_service_tunnel_configured() {
@@ -209,16 +224,14 @@ mac_service_tunnel_check_message() {
 }
 
 mac_service_whatsapp_capture_configured() {
-  if [[ ! -f "$MAC_SERVICE_REPO_ROOT/.env" ]]; then
-    return 1
-  fi
-  local raw
-  raw="$(awk -F= '/^WHATSAPP_CAPTURE_CHAT_NAMES=/{print $2; exit}' "$MAC_SERVICE_REPO_ROOT/.env" | tr -d '"' | tr -d "'")"
+  local env_path raw
+  env_path="$(mac_service_config_env_path)" || return 1
+  raw="$(awk -F= '/^WHATSAPP_CAPTURE_CHAT_NAMES=/{print $2; exit}' "$env_path" | tr -d '"' | tr -d "'")"
   [[ -n "${raw//[[:space:],]/}" ]]
 }
 
 mac_service_whatsapp_capture_check_message() {
-  echo "Set WHATSAPP_CAPTURE_CHAT_NAMES in $MAC_SERVICE_REPO_ROOT/.env to enable the optional Chrome/Playwright WhatsApp capture service."
+  echo "Set WHATSAPP_CAPTURE_CHAT_NAMES in the staged runtime .env to enable the optional Chrome/Playwright WhatsApp capture service."
 }
 
 mac_service_stop_manual_service() {

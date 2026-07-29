@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -13,8 +13,28 @@ def now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-def _due(days: int) -> str:
-    return (datetime.now(tz=timezone.utc) + timedelta(days=days)).isoformat()
+def _deadline_from(anchor: str, days: int) -> str:
+    anchor_epoch = parse_ts_to_epoch(anchor)
+    if anchor_epoch is None:
+        anchor_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    return datetime.fromtimestamp(
+        anchor_epoch + (days * 86400),
+        tz=timezone.utc,
+    ).replace(microsecond=0).isoformat()
+
+
+def _earlier_deadline(current: str | None, candidate: str | None) -> str | None:
+    if not current:
+        return candidate
+    if not candidate:
+        return current
+    current_epoch = parse_ts_to_epoch(current)
+    candidate_epoch = parse_ts_to_epoch(candidate)
+    if current_epoch is None:
+        return candidate
+    if candidate_epoch is None:
+        return current
+    return candidate if candidate_epoch < current_epoch else current
 
 
 def ensure_action(
@@ -25,11 +45,14 @@ def ensure_action(
     title: str,
     detail: str,
     due_at: str | None = None,
+    due_in_days: int | None = None,
     owner_role: str = "volunteer",
     source_record_id: int | None = None,
     related_incident_id: str | None = None,
     draft_message: str | None = None,
 ) -> WatchdogAction:
+    if due_at is not None and due_in_days is not None:
+        raise ValueError("Provide due_at or due_in_days, not both")
     existing = session.scalar(
         select(WatchdogAction)
         .where(
@@ -41,27 +64,46 @@ def ensure_action(
         .order_by(WatchdogAction.created_at.desc().nullslast())
     )
     if existing:
-        existing.severity = severity
-        existing.title = title
-        existing.detail = detail
-        existing.due_at = due_at
-        existing.owner_role = owner_role
-        existing.draft_message = draft_message
-        existing.updated_at = now_iso()
+        anchored_due_at = (
+            _deadline_from(existing.created_at or now_iso(), due_in_days)
+            if due_in_days is not None
+            else due_at
+        )
+        updates = {
+            "severity": severity,
+            "title": title,
+            "detail": detail,
+            "due_at": _earlier_deadline(existing.due_at, anchored_due_at),
+            "owner_role": owner_role,
+            "draft_message": draft_message,
+        }
+        changed = False
+        for field, value in updates.items():
+            if getattr(existing, field) != value:
+                setattr(existing, field, value)
+                changed = True
+        if changed:
+            existing.updated_at = now_iso()
         return existing
+    created_at = now_iso()
+    resolved_due_at = (
+        _deadline_from(created_at, due_in_days)
+        if due_in_days is not None
+        else due_at
+    )
     action = WatchdogAction(
         action_type=action_type,
         severity=severity,
         title=title,
         detail=detail,
-        due_at=due_at,
+        due_at=resolved_due_at,
         owner_role=owner_role,
         status="open",
         source_record_id=source_record_id,
         related_incident_id=related_incident_id,
         draft_message=draft_message,
-        created_at=now_iso(),
-        updated_at=now_iso(),
+        created_at=created_at,
+        updated_at=created_at,
     )
     session.add(action)
     return action
@@ -77,7 +119,7 @@ def action_for_new_record(session, record: PublicRecordWatch) -> WatchdogAction:
             f"The system imported official record {record.record_key}, but it has not reached the automatic "
             "confidence threshold yet. A person only needs to help if the public view marks this as weak or conflicting."
         ),
-        due_at=_due(3),
+        due_in_days=3,
         owner_role="volunteer",
         source_record_id=record.id,
         draft_message="Please check this one record only if the automatic official-source match stays weak or conflicting.",
@@ -94,7 +136,7 @@ def action_for_changed_record(session, record: PublicRecordWatch) -> WatchdogAct
             f"The system detected a change on official record {record.record_key}. The public view should update "
             "the plain-language answer before asking any resident to do manual checking."
         ),
-        due_at=_due(2),
+        due_in_days=2,
         owner_role="operator",
         source_record_id=record.id,
         draft_message="A public record changed. Update tenants only with the plain-language meaning of the record.",
@@ -220,7 +262,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                     severity="watch",
                     title="Ask management for correction/resubmission date",
                     detail=f"Permit filing {record.record_key} appears to have an objection, incomplete item, or hold.",
-                    due_at=_due(3),
+                    due_in_days=3,
                     owner_role="operator",
                     source_record_id=record.id,
                     draft_message="What is the correction or resubmission date for the DOB filing issue on the elevator replacement?",
@@ -237,7 +279,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                         f"The system can see that filing {record.record_key} is approved, but no permit-issued "
                         "date is stored. Treat it as not construction-ready until a permit date appears or management provides an official permit."
                     ),
-                    due_at=_due(5),
+                    due_in_days=5,
                     owner_role="operator",
                     source_record_id=record.id,
                 )
@@ -254,7 +296,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                         f"The system found a permit-issued signal for {record.record_key}. This is now a hallway-only "
                         "check: a resident photo or note is needed because the system cannot see lobby postings or start-date notices."
                     ),
-                    due_at=_due(2),
+                    due_in_days=2,
                     owner_role="resident",
                     source_record_id=record.id,
                 )
@@ -270,7 +312,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                         severity="watch",
                         title="Ask for permit renewal or extension plan",
                         detail=f"Permit or filing {record.record_key} expires within 30 days.",
-                        due_at=_due(2),
+                        due_in_days=2,
                         owner_role="operator",
                         source_record_id=record.id,
                 )
@@ -290,7 +332,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                     "filing number and status; if it does not, management should provide the expected filing date "
                     "and what approvals, drawings, contracts, or equipment decisions remain before submission."
                 ),
-                due_at=_due(7),
+                due_in_days=7,
                 owner_role="tenant_association",
                 draft_message=(
                     "Please confirm whether a DOB NOW elevator filing has been submitted for the full elevator "
@@ -335,7 +377,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                     severity="critical",
                     title="Both elevators down: file 311 and escalate",
                     detail="Tenant-observed reality indicates both elevators are down. Trigger 311, management notice, and escalation packet.",
-                    due_at=_due(0),
+                    due_in_days=0,
                     owner_role="operator",
                     related_incident_id=incident.incident_id,
                 )
@@ -349,7 +391,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                     severity="critical" if age_hours >= 72 else "yellow",
                     title="One elevator down during replacement watch",
                     detail=f"{incident.title} has remained open for about {int(age_hours)} hours.",
-                    due_at=_due(1),
+                    due_in_days=1,
                     owner_role="operator",
                     related_incident_id=incident.incident_id,
                 )
@@ -365,17 +407,30 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
         keep_related_incident_ids=active_both_elevator_incident_ids,
     )
 
-    latest_change_epoch = max((parse_ts_to_epoch(row.last_changed_at) or 0 for row in records), default=0)
-    if records and latest_change_epoch and (now_epoch - latest_change_epoch) >= 14 * 86400:
+    replacement_progress_records = [
+        row for row in permit_records
+        if _is_current_replacement_filing(row)
+    ]
+    latest_change_epoch = max(
+        (parse_ts_to_epoch(row.last_changed_at) or 0 for row in replacement_progress_records),
+        default=0,
+    )
+    if (
+        replacement_progress_records
+        and latest_change_epoch
+        and (now_epoch - latest_change_epoch) >= 14 * 86400
+    ):
         actions.append(
             ensure_action(
                 session,
                 action_type="no_public_movement_14_days",
                 severity="watch",
                 title="Ask management for two-week project update",
-                detail="No public-record movement has been detected for at least 14 days.",
-                due_at=_due(2),
+                detail="No public-record movement on the current replacement filing has been detected for at least 14 days.",
+                due_in_days=2,
                 owner_role="operator",
             )
         )
+    else:
+        _complete_open_actions(session, "no_public_movement_14_days")
     return actions

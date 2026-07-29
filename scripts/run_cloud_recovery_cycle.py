@@ -92,6 +92,11 @@ def primary_automation_healthy(
 
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         return False
+    if payload.get("database_ready") is not True:
+        return False
+    storage = payload.get("storage")
+    if not isinstance(storage, dict) or storage.get("state") != "ready" or storage.get("low_disk") is not False:
+        return False
     automation = payload.get("automation")
     if not isinstance(automation, dict):
         return False
@@ -101,7 +106,16 @@ def primary_automation_healthy(
     if last_cycle is None:
         return False
     age_seconds = int((current_time - last_cycle).total_seconds())
-    return 0 <= age_seconds <= maximum_age
+    if not 0 <= age_seconds <= maximum_age:
+        return False
+    chat_export_sync = payload.get("chat_export_sync")
+    if not isinstance(chat_export_sync, dict):
+        return False
+    if chat_export_sync.get("state") not in {"ready", "no_export", "waiting_for_download"}:
+        return False
+    if chat_export_sync.get("has_error") is True:
+        return False
+    return True
 
 
 def _runtime_operations() -> CloudRecoveryOperations:

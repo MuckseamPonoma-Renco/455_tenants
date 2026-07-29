@@ -64,6 +64,17 @@ When nobody can manually verify records, the watchdog uses only official NYC/DOB
 - No public movement for 14 days: ask management for update.
 - Permit expiring within 30 days: ask for renewal/extension plan.
 
+Action deadlines are anchored to the action's original creation time. A six-hour
+watchdog refresh may make a deadline earlier when risk increases, but it cannot
+silently move an unresolved deadline into the future. The 14-day movement rule
+tracks the current replacement filing itself, not unrelated 311, complaint, or
+historical-record updates.
+
+Socrata extract metadata such as `dobrundate` is stored for provenance but is
+excluded from semantic change detection. A daily dataset republish therefore
+does not look like dozens of official complaint changes or reset the
+replacement-project movement clock.
+
 ## Privacy Rules
 
 - Access and mobility needs never go to public endpoints or public sheet sync.
