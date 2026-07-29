@@ -4,7 +4,7 @@ Name the Shortcut `Archive 455 Tenant Chat` and enable **Show in Share Sheet** f
 
 ## Shortcut actions
 
-1. Receive a file from the Share Sheet. If no file was supplied, use **Select File** with iCloud Drive enabled.
+1. Receive a file from the Share Sheet. Set **If there's no input** to **Ask For -> Files** so a direct run opens the iCloud Drive file picker instead of sending an empty request.
 2. Use **Get Details of Files** twice to obtain `Name` and `File Size`.
 3. Use **Get Contents of URL**:
    - URL: `https://tenant-chat-export-receiver.mponomarenko999.workers.dev/v1/uploads`
