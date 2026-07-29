@@ -286,11 +286,14 @@ for key in ("last_pending_fingerprint", "last_seen_fingerprint", "last_processed
         source = str(value["path"])
         break
 
+last_error = str(state.get("last_error") or "")
 if age_seconds is None or age_seconds > max(interval * 3, 1800):
     action = "stale"
-elif str(state.get("last_error") or "").startswith("waiting for complete iCloud export:"):
+elif last_error.startswith("waiting for complete iCloud export:"):
     action = "waiting_for_download"
-elif state.get("last_error"):
+elif "model review incomplete:" in last_error or "insufficient_quota" in last_error:
+    action = "blocked_model_review"
+elif last_error:
     action = "error"
 elif state.get("last_processed_fingerprint"):
     action = "processed"
@@ -370,6 +373,10 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
           waiting_for_download)
             state="pending"
             reason="chat export is waiting for iCloud to download: ${source:-unknown source}"
+            ;;
+          blocked_model_review)
+            state="blocked"
+            reason="chat export is safely staged but required OpenAI model review is incomplete; restore API quota, then the scheduled sync will retry"
             ;;
           *)
             state="unhealthy"
