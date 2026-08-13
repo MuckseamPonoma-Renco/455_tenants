@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from packages.run_lock import try_file_lock
+
 ICLOUD_DRIVE_ROOT = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"
 ICLOUD_CHAT_EXPORT_DIR = ICLOUD_DRIVE_ROOT / "455 Tenant Chat Exports"
 LOCAL_CHAT_EXPORT_DIR = ROOT / "incoming" / "chat_exports"
@@ -332,7 +334,7 @@ def run_import_and_audit(export_path: Path, *, since: str) -> dict[str, Any]:
     }
 
 
-def sync_once(
+def _sync_once_unlocked(
     *,
     source_dirs: list[Path],
     dest_dir: Path,
@@ -427,6 +429,33 @@ def sync_once(
         "fingerprint": fingerprint,
         "state_path": str(state_path),
     }
+
+
+def sync_once(
+    *,
+    source_dirs: list[Path],
+    dest_dir: Path,
+    state_path: Path,
+    since: str,
+    force: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    lock_path = state_path.parent / "chat-export-pipeline.lock"
+    with try_file_lock(lock_path) as acquired:
+        if not acquired:
+            return {
+                "ok": True,
+                "action": "skipped_concurrent_run",
+                "state_path": str(state_path),
+            }
+        return _sync_once_unlocked(
+            source_dirs=source_dirs,
+            dest_dir=dest_dir,
+            state_path=state_path,
+            since=since,
+            force=force,
+            dry_run=dry_run,
+        )
 
 
 def main() -> None:

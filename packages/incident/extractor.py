@@ -155,6 +155,22 @@ CONTEXTUAL_HYPOTHETICAL_RE = re.compile(
     r"|\b(?:doesn['’]?t|won['’]?t)\s+go\s+out\s+of\s+service\b",
     re.IGNORECASE,
 )
+CONTEXTUAL_STATUS_UPDATE_RE = re.compile(
+    r"\b(?:said|says|reported)\b[^.!?\n]{0,100}\b(?:out|down|not\s+working)\b"
+    r"|\bdefinitely\s+not\s+working\b"
+    r"|\bout\s+now\s+as\s+of\b"
+    r"|\bdoesn['’]?t\s+stop\s+at\s+\d+\b",
+    re.IGNORECASE,
+)
+REVIEWED_NONISSUE_CONTEXT_RE = re.compile(
+    r"\bshould\s+never\s+enter\b[^.!?\n]{0,120}\b(?:24\s+hours?|notice)\b"
+    r"|\bcame\s+with\s+(?:the\s+)?list\s+in\s+hand\b"
+    r"|\bsticking\s+something\s+like\s+a\s+coat\s+hanger\b"
+    r"|^\s*did\s+you\s+see\b[^?]*\?\s*$"
+    r"|\bi\s+don['’]?t\s+hear\s+it\s+moving(?:\s+now)?\b"
+    r"|\bfingers\s+crossed\b[^.!?\n]{0,120}\bgo\s+out\s+of\s+service\b",
+    re.IGNORECASE,
+)
 CONTEXTUAL_LONG_LOOKBACK_RE = re.compile(
     r"\b(?:properly\s+level(?:s|ed|ing)?|between\s+floors|air\s+(?:is\s+)?blowing|"
     r"was\s+out\s+(?:around|at)\s+(?:\d{1,2}(?::\d{2})?|\d{3,4}))\b",
@@ -583,6 +599,8 @@ def _rule_choice(rules: dict | None) -> dict | None:
         "summary": rules.get("summary") or "",
         "close_incident": rules.get("kind") == "restore",
         "needs_review": False,
+        "preserve_issue": bool(rules.get("preserve_issue")),
+        "preserve_event_type": bool(rules.get("preserve_event_type")),
     }
 
 
@@ -882,6 +900,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             "preserve_event_type": bool(
                 mechanism_update
                 or re.search(r"\b(?:excessive\s+heat|overheating|heat\s+as\s+the\s+cause)\b", text, re.IGNORECASE)
+                or CONTEXTUAL_STATUS_UPDATE_RE.search(text)
             ),
         }
     return None
@@ -909,7 +928,11 @@ def _lock_authoritative_rule_state(rule_choice: dict | None, choice: dict | None
         return choice, False
 
     rule_event_type = str(rule_choice.get("event_type") or "")
-    if rule_event_type not in AUTHORITATIVE_RULE_EVENT_TYPES:
+    preserve_issue = bool(rule_choice.get("preserve_issue"))
+    preserve_event_type = bool(
+        rule_choice.get("preserve_event_type") or rule_event_type in AUTHORITATIVE_RULE_EVENT_TYPES
+    )
+    if not preserve_issue and not preserve_event_type:
         return choice, False
 
     if not choice or not choice.get("is_issue"):
@@ -918,13 +941,22 @@ def _lock_authoritative_rule_state(rule_choice: dict | None, choice: dict | None
         return locked, True
 
     locked = dict(choice)
-    rule_closes_incident = bool(rule_choice.get("close_incident")) or rule_event_type == "restore"
-    changed = (
-        str(locked.get("event_type") or "") != rule_event_type
-        or bool(locked.get("close_incident")) != rule_closes_incident
-    )
-    locked["event_type"] = rule_event_type
-    locked["close_incident"] = rule_closes_incident
+    changed = False
+    if preserve_issue:
+        changed = changed or str(locked.get("category") or "") != str(rule_choice.get("category") or "")
+        locked["is_issue"] = True
+        locked["signal_type"] = "report"
+        locked["category"] = rule_choice.get("category") or "other"
+        if rule_choice.get("asset") is not None:
+            locked["asset"] = rule_choice.get("asset")
+    if preserve_event_type:
+        rule_closes_incident = bool(rule_choice.get("close_incident")) or rule_event_type == "restore"
+        changed = changed or (
+            str(locked.get("event_type") or "") != rule_event_type
+            or bool(locked.get("close_incident")) != rule_closes_incident
+        )
+        locked["event_type"] = rule_event_type
+        locked["close_incident"] = rule_closes_incident
     if changed:
         # Preserve the rule's state, but surface the disagreement for the
         # private roster instead of silently trusting the model's override.
@@ -1089,6 +1121,8 @@ def _can_merge_non_elevator_incident(candidate: Incident, *, category: str, titl
 def _non_issue_guardrail(text: str, rule_choice: dict | None, llm_choice: dict | None, chosen: dict | None) -> tuple[dict | None, str | None]:
     if not isinstance(chosen, dict) or not chosen.get("is_issue"):
         return None, None
+    if rule_choice and rule_choice.get("preserve_issue"):
+        return None, None
     if not isinstance(llm_choice, dict) or llm_choice.get("is_issue"):
         return None, None
     if bool(llm_choice.get("refers_to_open_incident")):
@@ -1133,6 +1167,7 @@ def _should_request_review(rule_choice: dict | None, llm_choice: dict | None, ll
 def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | None, str]:
     rules = classify_rules(rm.text)
     rule_choice = _rule_choice(rules)
+    reviewed_nonissue = bool(not rule_choice and REVIEWED_NONISSUE_CONTEXT_RE.search(rm.text or ""))
     context_choice = _contextual_elevator_followup_choice(session, rm, rules)
     if context_choice and (
         not rule_choice
@@ -1141,6 +1176,11 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             rule_choice.get("category") == "security_access"
             and context_choice.get("category") == "elevator"
             and CONTEXTUAL_ELEVATOR_MECHANISM_RE.search(rm.text or "")
+        )
+        or (
+            rule_choice.get("category") == "elevator"
+            and context_choice.get("category") == "elevator"
+            and context_choice.get("preserve_event_type")
         )
     ):
         # Full-export review mode still sends deterministic follow-ups to the
@@ -1183,6 +1223,20 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             guarded_choice, guarded_source = _non_issue_guardrail(rm.text or "", rule_choice, llm_choice, review_choice)
             if guarded_choice is not None:
                 return guarded_choice, rules, llm_choice, guarded_source or "guardrail_non_issue"
+            if reviewed_nonissue:
+                return _normalize_choice({
+                    "is_issue": False,
+                    "signal_type": "discussion",
+                    "category": "other",
+                    "asset": None,
+                    "event_type": "non_issue",
+                    "severity": 1,
+                    "confidence": 95,
+                    "title": "",
+                    "summary": "",
+                    "close_incident": False,
+                    "needs_review": False,
+                }), rules, llm_choice, "guardrail_reviewed_non_issue"
             return review_choice, rules, llm_choice, "review_rule_state" if rule_state_locked else "review"
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
@@ -1193,6 +1247,20 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
     guarded_choice, guarded_source = _non_issue_guardrail(rm.text or "", rule_choice, llm_choice, chosen)
     if guarded_choice is not None:
         return guarded_choice, rules, llm_choice, guarded_source or "guardrail_non_issue"
+    if reviewed_nonissue:
+        return _normalize_choice({
+            "is_issue": False,
+            "signal_type": "discussion",
+            "category": "other",
+            "asset": None,
+            "event_type": "non_issue",
+            "severity": 1,
+            "confidence": 95,
+            "title": "",
+            "summary": "",
+            "close_incident": False,
+            "needs_review": False,
+        }), rules, llm_choice, "guardrail_reviewed_non_issue"
     return chosen, rules, llm_choice, chosen_source
 
 

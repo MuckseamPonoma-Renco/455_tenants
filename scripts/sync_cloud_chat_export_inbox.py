@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from packages.local_env import load_local_env_file
+from packages.run_lock import try_file_lock
 from scripts.sync_chat_export_inbox import (
     DEFAULT_SINCE,
     ModelReviewIncompleteError,
@@ -271,7 +272,7 @@ def _pending_acknowledgements(state: dict[str, Any]) -> dict[str, dict[str, Any]
     return {}
 
 
-def run_once(
+def _run_once_unlocked(
     config: ReceiverConfig,
     *,
     dest_dir: Path = LOCAL_CLOUD_EXPORT_DIR,
@@ -353,6 +354,39 @@ def run_once(
     finally:
         if owns_client:
             client.close()
+
+
+def run_once(
+    config: ReceiverConfig,
+    *,
+    dest_dir: Path = LOCAL_CLOUD_EXPORT_DIR,
+    state_path: Path = DEFAULT_STATE_PATH,
+    since: str = DEFAULT_SINCE,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    max_exports: int = DEFAULT_MAX_EXPORTS,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    lock_path = state_path.parent / "chat-export-pipeline.lock"
+    with try_file_lock(lock_path) as acquired:
+        if not acquired:
+            return {
+                "ok": True,
+                "action": "skipped_concurrent_run",
+                "processed": [],
+                "blocked_exports": [],
+                "pending_exports": 0,
+                "recovered_acknowledgements": 0,
+                "state_path": str(state_path),
+            }
+        return _run_once_unlocked(
+            config,
+            dest_dir=dest_dir,
+            state_path=state_path,
+            since=since,
+            max_bytes=max_bytes,
+            max_exports=max_exports,
+            client=client,
+        )
 
 
 def probe(config: ReceiverConfig, *, max_bytes: int = DEFAULT_MAX_BYTES, client: httpx.Client | None = None) -> dict[str, Any]:

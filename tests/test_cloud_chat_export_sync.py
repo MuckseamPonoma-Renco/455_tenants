@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 import scripts.sync_cloud_chat_export_inbox as cloud_sync
+from packages.run_lock import try_file_lock
 
 
 def _zip_bytes() -> bytes:
@@ -220,6 +221,23 @@ def test_run_once_checks_newest_export_first_and_continues_after_quota_block(tmp
     assert audited[0].endswith(str(newer["filename"]))
     assert audited[1].endswith(str(older["filename"]))
     assert [row["key"] for row in result["blocked_exports"]] == [newer["key"], older["key"]]
+
+
+def test_run_once_skips_when_another_export_pipeline_run_holds_the_lock(tmp_path):
+    state_path = tmp_path / "state.json"
+    lock_path = tmp_path / "chat-export-pipeline.lock"
+
+    with try_file_lock(lock_path) as acquired:
+        assert acquired is True
+        result = cloud_sync.run_once(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=tmp_path / "incoming",
+            state_path=state_path,
+            client=_client(lambda request: (_ for _ in ()).throw(AssertionError(request.url))),
+        )
+
+    assert result["action"] == "skipped_concurrent_run"
+    assert result["processed"] == []
 
 
 def test_pending_exports_follows_cloud_receiver_pagination():

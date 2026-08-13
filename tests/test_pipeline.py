@@ -525,6 +525,8 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
     assert laundry["is_issue"] is True
     assert laundry["category"] == "other"
     assert laundry["title"] == "Laundry facility issue"
+    assert laundry["preserve_issue"] is True
+    assert laundry["preserve_event_type"] is True
 
     electrical = classify_rules(
         "A few of mine are painted over and the oven is wired to an outlet in the living room."
@@ -532,12 +534,126 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
     assert electrical["is_issue"] is True
     assert electrical["category"] == "other"
     assert electrical["title"] == "Electrical wiring concern"
+    assert electrical["preserve_issue"] is True
+    assert electrical["preserve_event_type"] is True
 
     entry = classify_rules(
         "The super came to my apartment trying to enter even though I had not requested a visit?"
     )
     assert entry["is_issue"] is True
     assert entry["category"] == "security_access"
+    assert entry["preserve_issue"] is True
+    assert entry["preserve_event_type"] is True
+
+
+def test_reviewed_export_guardrails_override_model_drift(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    reviewed_nonissues = (
+        'should never enter a premises without 24 hours notice',
+        'came with list in hand',
+        'sticking something like a coat hanger',
+        'Did you see 1 working',
+        "I don't hear it moving now",
+        "Fingers crossed that it doesn't go out of service",
+    )
+
+    def model_choice(message_text):
+        if 'painted over' in message_text:
+            return {
+                'is_issue': False,
+                'signal_type': 'discussion',
+                'category': 'other',
+                'asset': None,
+                'event_type': 'non_issue',
+                'severity': 1,
+                'confidence': 96,
+                'title': 'Discussion only',
+                'summary': 'The model incorrectly dismissed the electrical report.',
+                'refers_to_open_incident': False,
+                'close_incident': False,
+                'needs_review': False,
+            }
+        if 'come into my apartment' in message_text:
+            category = 'security_access'
+            event_type = 'status_update'
+            asset = None
+        elif any(fragment in message_text for fragment in reviewed_nonissues):
+            category = 'elevator' if 'super' not in message_text and 'list in hand' not in message_text else 'security_access'
+            event_type = 'status_update'
+            asset = None
+        else:
+            category = 'elevator'
+            event_type = 'restore' if 'working' in message_text.casefold() else 'outage'
+            asset = 'elevator_both' if 'both' in message_text.casefold() else 'elevator_south'
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': category,
+            'asset': asset,
+            'event_type': event_type,
+            'severity': 4,
+            'confidence': 94,
+            'title': 'Model choice',
+            'summary': 'Deliberately drifting model choice.',
+            'refers_to_open_incident': category == 'elevator',
+            'close_incident': event_type == 'restore',
+            'needs_review': False,
+        }
+
+    def fake_llm(message_text, open_incidents=None, recent_related=None, recent_chat=None):
+        return model_choice(message_text)
+
+    def fake_review(message_text, rules_choice, llm_choice, open_incidents=None, recent_related=None, recent_chat=None):
+        return model_choice(message_text)
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', fake_llm)
+    monkeypatch.setattr('packages.incident.extractor.llm_review_decision', fake_review)
+
+    texts = [
+        'South elevator is out.',
+        'Jose said they are both out',
+        'Seems both lifts working',
+        'South is definitely not working, Val is going to go look for it',
+        'South is back in service',
+        'South is out now as of 9 pm. Just walked into lobby.',
+        "It doesn't stop at 10 I have to call the doorman to send it up",
+        "Right! Why would he try to come into my apartment in the middle of the day when presumably I'm not home?",
+        'A few of mine are painted over and the oven is wired to an outlet in the living room.',
+        'I do not trust this building super. he should never enter a premises without 24 hours notice.',
+        'yeah super came with list in hand and boogied on it to my surprise lol',
+        'Young David is down there sticking something like a coat hanger in the north one.',
+        'Did you see 1 working, because I waited 5 minutes in dead silence?',
+        "I don't hear it moving now",
+        "Fingers crossed that it doesn't go out of service.",
+    ]
+    message_ids = []
+    for offset, text in enumerate(texts):
+        response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+            'chat_name': '455 Tenants',
+            'text': text,
+            'sender': 'Karen',
+            'ts_epoch': 1785700000 + offset * 60,
+        })
+        assert response.status_code == 200, response.text
+        message_ids.append(response.json()['message_id'])
+
+    with get_session() as session:
+        decisions = [session.get(MessageDecision, message_id) for message_id in message_ids]
+
+    assert decisions[1].event_type == 'status_update'
+    assert decisions[2].event_type == 'status_update'
+    assert decisions[3].event_type == 'status_update'
+    assert decisions[5].event_type == 'status_update'
+    assert decisions[6].event_type == 'status_update'
+    assert decisions[7].is_issue is True
+    assert decisions[7].category == 'security_access'
+    assert decisions[7].event_type == 'new_issue'
+    assert decisions[8].is_issue is True
+    assert decisions[8].category == 'other'
+    assert decisions[8].event_type == 'new_issue'
+    assert all(decision.is_issue is False for decision in decisions[9:])
+    assert all(decision.chosen_source == 'guardrail_reviewed_non_issue' for decision in decisions[9:])
 
 
 def test_non_elevator_problem_is_not_reframed_by_recent_elevator_context(client, monkeypatch):

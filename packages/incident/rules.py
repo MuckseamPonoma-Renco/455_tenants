@@ -245,10 +245,13 @@ def classify_rules(text: str) -> dict:
             "is_issue": True,
             "category": "security_access",
             "asset": None,
+            "event_type": "new_issue",
             "severity": 3,
             "title": "Apartment entry / access concern",
             "summary": "Tenant reports a concern about apartment entry or access.",
             "kind": "issue",
+            "preserve_issue": True,
+            "preserve_event_type": True,
         }
 
     if LAUNDRY.search(t) and LAUNDRY_PROBLEM.search(t):
@@ -261,6 +264,8 @@ def classify_rules(text: str) -> dict:
             "title": "Laundry facility issue",
             "summary": "Tenant reports a laundry room, machine, card, or connectivity problem.",
             "kind": "issue",
+            "preserve_issue": True,
+            "preserve_event_type": True,
         }
 
     if ELECTRICAL.search(t) and ELECTRICAL_PROBLEM.search(t) and FIRST_PERSON_BUILDING_CONDITION.search(t):
@@ -273,6 +278,8 @@ def classify_rules(text: str) -> dict:
             "title": "Electrical wiring concern",
             "summary": "Tenant reports an electrical wiring or outlet concern in an apartment.",
             "kind": "issue",
+            "preserve_issue": True,
+            "preserve_event_type": True,
         }
 
     if QUESTION_ONLY.search(t) and DISCUSSION_QUESTION.search(t):
@@ -293,6 +300,7 @@ def classify_rules(text: str) -> dict:
                 "title": "Elevator working update",
                 "summary": "Tenant reports possible elevator operation without confirming a stable restoration.",
                 "kind": "issue",
+                "preserve_event_type": True,
             }
         return {
             "is_issue": True,

@@ -5,6 +5,7 @@ import zipfile
 import pytest
 
 import scripts.sync_chat_export_inbox as inbox_sync
+from packages.run_lock import try_file_lock
 from scripts.sync_chat_export_inbox import newest_export, sync_once
 
 
@@ -256,6 +257,26 @@ def test_sync_once_skips_unchanged_after_processing(tmp_path, monkeypatch):
     assert second["action"] == "unchanged_skip"
     assert len(calls) == 1
     assert (dest_dir / export_path.name).exists()
+
+
+def test_sync_once_skips_when_cloud_recovery_holds_the_shared_lock(tmp_path):
+    state_path = tmp_path / "state.json"
+    lock_path = tmp_path / "chat-export-pipeline.lock"
+
+    with try_file_lock(lock_path) as acquired:
+        assert acquired is True
+        result = sync_once(
+            source_dirs=[tmp_path / "icloud"],
+            dest_dir=tmp_path / "incoming",
+            state_path=state_path,
+            since="2026-06-05",
+        )
+
+    assert result == {
+        "ok": True,
+        "action": "skipped_concurrent_run",
+        "state_path": str(state_path),
+    }
 
 
 def test_sync_once_clears_stale_failure_state_after_unchanged_skip(tmp_path):
