@@ -643,6 +643,7 @@ def test_reviewed_export_guardrails_override_model_drift(client, monkeypatch):
 
     assert decisions[1].event_type == 'status_update'
     assert decisions[2].event_type == 'status_update'
+    assert json.loads(decisions[2].final_json or '{}')['title'] == 'Elevator working update'
     assert decisions[3].event_type == 'status_update'
     assert decisions[5].event_type == 'status_update'
     assert decisions[6].event_type == 'status_update'

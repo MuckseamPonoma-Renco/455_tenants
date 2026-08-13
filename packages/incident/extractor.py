@@ -960,6 +960,8 @@ def _lock_authoritative_rule_state(rule_choice: dict | None, choice: dict | None
     if changed:
         # Preserve the rule's state, but surface the disagreement for the
         # private roster instead of silently trusting the model's override.
+        if rule_choice.get("title"):
+            locked["title"] = rule_choice.get("title")
         locked["needs_review"] = True
     return locked, changed
 
