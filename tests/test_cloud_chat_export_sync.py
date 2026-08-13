@@ -123,6 +123,105 @@ def test_run_once_recovers_a_saved_acknowledgement_before_listing(tmp_path):
     assert json.loads(state_path.read_text(encoding="utf-8"))["pending_acknowledgements"] == {}
 
 
+def test_run_once_keeps_quota_blocked_export_pending_without_failing(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    record = _record(payload)
+    acknowledgements = []
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": [record]})
+        if request.url == httpx.URL("https://signed.example.test/export"):
+            return httpx.Response(200, content=payload, headers={"Content-Length": str(len(payload))})
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports/ack"):
+            acknowledgements.append(json.loads(request.content))
+            return httpx.Response(200, json={"acknowledged": True})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    summary = {
+        "parsed_messages": 12,
+        "audited_messages": 4,
+        "matched_messages": 4,
+        "llm_review_required": 4,
+        "llm_review_completed": 0,
+        "llm_review_missing": 0,
+        "llm_review_failed": 4,
+        "review_roster_rows": 4,
+        "llm_review_complete": False,
+        "llm_review_retry": {"error": "insufficient_quota"},
+    }
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(cloud_sync.ModelReviewIncompleteError(summary)),
+    )
+
+    result = cloud_sync.run_once(
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+        dest_dir=tmp_path / "incoming",
+        state_path=tmp_path / "state.json",
+        client=_client(handler),
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "blocked_model_review"
+    assert result["pending_exports"] == 1
+    assert result["blocked_exports"][0]["reason"] == "insufficient_quota"
+    assert acknowledgements == []
+
+
+def test_run_once_checks_newest_export_first_and_continues_after_quota_block(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    older = _record(payload)
+    newer = dict(older)
+    newer.update(
+        {
+            "key": "pending/20260812T234850Z-fedcba9876543210fedcba9876543210-WhatsApp Chat - 455 Tenants.zip",
+            "filename": "WhatsApp Chat - 455 Tenants.zip",
+            "uploaded_at": "2026-08-12T23:48:50Z",
+            "download_url": "https://signed.example.test/newer",
+        }
+    )
+    older["download_url"] = "https://signed.example.test/older"
+    audited = []
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": [older, newer]})
+        if request.url in {
+            httpx.URL("https://signed.example.test/newer"),
+            httpx.URL("https://signed.example.test/older"),
+        }:
+            return httpx.Response(200, content=payload, headers={"Content-Length": str(len(payload))})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    summary = {
+        "llm_review_complete": False,
+        "llm_review_retry": {"error": "insufficient_quota"},
+    }
+
+    def blocked_review(export_path, *, since):
+        audited.append(export_path.name)
+        raise cloud_sync.ModelReviewIncompleteError(summary)
+
+    monkeypatch.setattr(cloud_sync, "run_import_and_audit", blocked_review)
+
+    result = cloud_sync.run_once(
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+        dest_dir=tmp_path / "incoming",
+        state_path=tmp_path / "state.json",
+        client=_client(handler),
+        max_exports=2,
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "blocked_model_review"
+    assert len(audited) == 2
+    assert audited[0].endswith(str(newer["filename"]))
+    assert audited[1].endswith(str(older["filename"]))
+    assert [row["key"] for row in result["blocked_exports"]] == [newer["key"], older["key"]]
+
+
 def test_pending_exports_follows_cloud_receiver_pagination():
     first = _record(_zip_bytes())
     first["key"] = "pending/20260720T030405Z-0123456789abcdef0123456789abcdef-WhatsApp Chat - 455 Tenants 12.zip"

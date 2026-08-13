@@ -43,6 +43,7 @@ def test_full_cycle_runs_exports_and_maintenance_without_portal_filing():
     assert result["cloud_exports"] == {
         "action": "processed",
         "processed_exports": 1,
+        "blocked_model_review_exports": 0,
         "pending_exports": 2,
         "recovered_acknowledgements": 1,
     }
@@ -138,6 +139,7 @@ def test_compact_cloud_result_excludes_local_paths_and_audit_content():
     assert result == {
         "action": "processed",
         "processed_exports": 1,
+        "blocked_model_review_exports": 0,
         "pending_exports": 0,
         "recovered_acknowledgements": 0,
     }

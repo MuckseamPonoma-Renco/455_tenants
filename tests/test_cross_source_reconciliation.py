@@ -84,6 +84,39 @@ def test_cross_source_match_recognizes_concise_outage_update(client):
         ) is None
 
 
+def test_cross_source_match_accepts_short_operational_update_but_not_generic_reply(client):
+    with get_session() as session:
+        operational = _raw(
+            "live-short-operational",
+            source="whatsapp_web",
+            text="Both working",
+            ts_epoch=1784331000,
+            sender="+1 (208) 450-9517",
+        )
+        generic = _raw(
+            "live-short-generic",
+            source="whatsapp_web",
+            text="Yes",
+            ts_epoch=1784331060,
+            sender="+1 (631) 703-8841",
+        )
+        session.add_all([operational, generic])
+        session.commit()
+
+        assert find_recent_cross_source_duplicate(
+            session,
+            text="Both working",
+            ts_epoch=1784331017,
+            sources=LIVE_CAPTURE_SOURCES,
+        ) == operational
+        assert find_recent_cross_source_duplicate(
+            session,
+            text="Yes",
+            ts_epoch=1784331082,
+            sources=LIVE_CAPTURE_SOURCES,
+        ) is None
+
+
 def test_authoritative_rule_state_locks_still_out_and_restore():
     rule = {
         "is_issue": True,

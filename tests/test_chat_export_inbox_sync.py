@@ -172,6 +172,7 @@ def test_run_import_and_audit_rejects_zero_parsed_messages(tmp_path, monkeypatch
     def fake_run(cmd, *, cwd, stdout, stderr, text):
         assert stdout is inbox_sync.subprocess.PIPE
         assert stderr is inbox_sync.subprocess.STDOUT
+        assert "--sync-sheets-after-success" in cmd
         audit_dir = __import__("pathlib").Path(cmd[cmd.index("--out-dir") + 1])
         audit_dir.mkdir(parents=True)
         (audit_dir / "summary.json").write_text('{"parsed_messages": 0}', encoding="utf-8")
@@ -185,6 +186,40 @@ def test_run_import_and_audit_rejects_zero_parsed_messages(tmp_path, monkeypatch
         assert "parsed zero messages" in str(exc)
     else:
         raise AssertionError("zero-message exports must not be treated as processed")
+
+
+def test_run_import_and_audit_classifies_quota_block_from_summary(tmp_path, monkeypatch):
+    export_path = tmp_path / "WhatsApp Chat - 455 Tenants 11.zip"
+    with zipfile.ZipFile(export_path, "w") as archive:
+        archive.writestr("WhatsApp Chat - 455 Tenants.txt", "[6/5/26, 9:00:00 AM] Karen: North lift dead\n")
+
+    class Completed:
+        returncode = 2
+        stdout = "model review incomplete"
+
+    def fake_run(cmd, *, cwd, stdout, stderr, text):
+        audit_dir = __import__("pathlib").Path(cmd[cmd.index("--out-dir") + 1])
+        audit_dir.mkdir(parents=True)
+        (audit_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "parsed_messages": 1,
+                    "llm_review_complete": False,
+                    "error": "model review incomplete: 0 missing, 1 failed",
+                    "llm_review_retry": {"error": "insufficient_quota"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return Completed()
+
+    monkeypatch.setattr(inbox_sync.subprocess, "run", fake_run)
+
+    with pytest.raises(inbox_sync.ModelReviewIncompleteError) as exc_info:
+        inbox_sync.run_import_and_audit(export_path, since="2026-06-05")
+
+    assert exc_info.value.reason == "insufficient_quota"
+    assert exc_info.value.summary["parsed_messages"] == 1
 
 
 def test_sync_once_skips_unchanged_after_processing(tmp_path, monkeypatch):

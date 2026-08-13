@@ -136,6 +136,49 @@ def test_validate_health_rejects_locked_or_stale_services():
     assert "chat export sync is stale (7200s old)" in failures
 
 
+def test_validate_health_can_report_quota_block_as_warning_only():
+    payload = _payload()
+    payload["chat_export_sync"].update(
+        {
+            "state": "blocked_model_review",
+            "has_error": True,
+        }
+    )
+
+    failures, details = validate_health(
+        payload,
+        now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600,
+        max_automation_age_seconds=1200,
+        max_import_age_seconds=3600,
+        allow_blocked_model_review=True,
+    )
+
+    assert failures == []
+    assert details["chat_export_sync_warning"] == "blocked_model_review"
+
+
+def test_validate_health_still_rejects_quota_block_without_explicit_allowance():
+    payload = _payload()
+    payload["chat_export_sync"].update(
+        {
+            "state": "blocked_model_review",
+            "has_error": True,
+        }
+    )
+
+    failures, _ = validate_health(
+        payload,
+        now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600,
+        max_automation_age_seconds=1200,
+        max_import_age_seconds=3600,
+    )
+
+    assert "chat export sync is blocked_model_review" in failures
+    assert "chat export sync has an error" in failures
+
+
 def test_validate_health_rejects_low_host_storage():
     payload = _payload()
     payload["storage"] = {"state": "low_disk", "low_disk": True}

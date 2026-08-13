@@ -134,9 +134,11 @@ def _runtime_operations() -> CloudRecoveryOperations:
 
 def _compact_cloud_result(result: dict[str, Any]) -> dict[str, int | str]:
     processed = result.get("processed")
+    blocked = result.get("blocked_exports")
     return {
         "action": str(result.get("action") or "unknown"),
         "processed_exports": len(processed) if isinstance(processed, list) else 0,
+        "blocked_model_review_exports": len(blocked) if isinstance(blocked, list) else 0,
         "pending_exports": int(result.get("pending_exports") or 0),
         "recovered_acknowledgements": int(result.get("recovered_acknowledgements") or 0),
     }

@@ -39,6 +39,7 @@ def validate_health(
     max_automation_age_seconds: int,
     max_import_age_seconds: int,
     require_cloud_export_receiver: bool = False,
+    allow_blocked_model_review: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
     details: dict[str, Any] = {}
@@ -98,10 +99,14 @@ def validate_health(
     if not isinstance(sync, dict):
         failures.append('chat export sync health is missing')
     else:
-        if sync.get('state') not in {'ready', 'no_export', 'waiting_for_download'}:
-            failures.append(f"chat export sync is {sync.get('state') or 'unknown'}")
-        if sync.get('has_error') is True:
+        sync_state = sync.get('state')
+        quota_blocked = allow_blocked_model_review and sync_state == 'blocked_model_review'
+        if sync_state not in {'ready', 'no_export', 'waiting_for_download'} and not quota_blocked:
+            failures.append(f"chat export sync is {sync_state or 'unknown'}")
+        if sync.get('has_error') is True and not quota_blocked:
             failures.append('chat export sync has an error')
+        if quota_blocked:
+            details['chat_export_sync_warning'] = 'blocked_model_review'
         import_age = _age_seconds(sync.get('last_checked_at'), now)
         details['chat_export_sync_age_seconds'] = import_age
         if import_age is None:
@@ -142,17 +147,23 @@ def main() -> int:
     parser.add_argument('--max-automation-age-seconds', type=int, default=1200)
     parser.add_argument('--max-import-age-seconds', type=int, default=3600)
     parser.add_argument('--require-cloud-export-receiver', action='store_true')
+    parser.add_argument(
+        '--allow-blocked-model-review',
+        action='store_true',
+        help='Treat a known paid-model quota block as a warning while still failing on stale or broken services.',
+    )
     args = parser.parse_args()
 
     try:
         payload = fetch_health(args.url, max(1, args.timeout_seconds))
         failures, details = validate_health(
             payload,
-            now=dt.datetime.now(dt.UTC),
+            now=dt.datetime.now(dt.timezone.utc),
             max_capture_age_seconds=max(1, args.max_capture_age_seconds),
             max_automation_age_seconds=max(1, args.max_automation_age_seconds),
             max_import_age_seconds=max(1, args.max_import_age_seconds),
             require_cloud_export_receiver=args.require_cloud_export_receiver,
+            allow_blocked_model_review=args.allow_blocked_model_review,
         )
     except (OSError, RuntimeError, urllib.error.URLError, json.JSONDecodeError) as exc:
         print(json.dumps({'ok': False, 'failures': [str(exc)]}, sort_keys=True))

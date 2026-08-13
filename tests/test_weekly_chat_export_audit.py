@@ -11,7 +11,7 @@ def test_weekly_zip_import_requests_all_message_model_review(tmp_path, monkeypat
     calls = []
 
     def fake_run(command, *, cwd, check, env):
-        calls.append((command, cwd, check, env["AUTO_FILE_ENABLED"]))
+        calls.append((command, cwd, check, env["AUTO_FILE_ENABLED"], env["DISABLE_SHEETS_SYNC"]))
 
     monkeypatch.setattr(weekly_audit.subprocess, "run", fake_run)
 
@@ -30,6 +30,7 @@ def test_weekly_zip_import_requests_all_message_model_review(tmp_path, monkeypat
             weekly_audit.ROOT,
             True,
             "0",
+            "1",
         )
     ]
 
@@ -39,7 +40,7 @@ def test_weekly_text_import_requests_all_message_model_review(tmp_path, monkeypa
     calls = []
 
     def fake_run(command, *, cwd, check, env):
-        calls.append((command, cwd, check, env["AUTO_FILE_ENABLED"]))
+        calls.append((command, cwd, check, env["AUTO_FILE_ENABLED"], env["DISABLE_SHEETS_SYNC"]))
 
     monkeypatch.setattr(weekly_audit.subprocess, "run", fake_run)
 
@@ -57,8 +58,23 @@ def test_weekly_text_import_requests_all_message_model_review(tmp_path, monkeypa
             weekly_audit.ROOT,
             True,
             "0",
+            "1",
         )
     ]
+
+
+def test_post_audit_sheet_sync_forces_enabled_then_restores_environment(monkeypatch):
+    calls = []
+    monkeypatch.setenv("DISABLE_SHEETS_SYNC", "1")
+    monkeypatch.setattr(
+        "packages.worker_jobs.sync_all_sheets",
+        lambda: calls.append(__import__("os").environ["DISABLE_SHEETS_SYNC"]),
+    )
+
+    weekly_audit.sync_sheets_after_success()
+
+    assert calls == ["0"]
+    assert __import__("os").environ["DISABLE_SHEETS_SYNC"] == "1"
 
 
 def test_retry_incomplete_reviews_reprocesses_only_unreviewed_messages(client, tmp_path, monkeypatch):

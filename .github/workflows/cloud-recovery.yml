@@ -24,7 +24,7 @@ on:
       - packages/**
       - requirements.txt
   schedule:
-    - cron: '3,18,33,48 * * * *'
+    - cron: '3 * * * *'
     - cron: '11 * * * *'
     - cron: '27 */6 * * *'
 
@@ -64,7 +64,7 @@ jobs:
             mode="${MANUAL_MODE:-full}"
           else
             case "$EVENT_SCHEDULE" in
-              '3,18,33,48 * * * *') mode="exports" ;;
+              '3 * * * *') mode="exports" ;;
               '11 * * * *') mode="status" ;;
               '27 */6 * * *') mode="watchdog" ;;
             esac

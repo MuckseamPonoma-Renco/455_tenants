@@ -107,8 +107,13 @@ SENSITIVE_INTERPERSONAL_SECURITY_RE = re.compile(
 )
 CONTEXTUAL_ELEVATOR_RESTORE_RE = re.compile(
     r"\b(?:he|she|they|child|kid|person|passenger|guy)\b[^.!?\n]{0,80}\bout\s+now\b"
-    r"|\bboth\s+(?:elevators?|lifts?)?\s*(?:(?:are|were)\s+)?(?:currently\s+)?(?:working|functioning|operational|running)\b"
-    r"|\bboth\s+work\s+now\b",
+    r"|\b(?:all|both)\s+(?:elevators?|lifts?)?\s*(?:(?:are|were|might\s+be|may\s+be)\s+)?(?:currently\s+)?[\"'“”]?(?:working|functioning|operational|running)[\"'“”]?\b"
+    r"|\bboth\s+work\s+now\b"
+    r"|\b(?:north\s*(?:&|and)\s*south|south\s*(?:&|and)\s*north)\s+(?:elevators?|lifts?)?\s*(?:are\s+)?(?:working|functioning|operational|running)\b"
+    r"|\b(?:north|south)(?:\s+(?:elevator|lift|one))?\s+(?:is\s+)?back\s+in\s+service\b"
+    r"|\brode\s+(?:the\s+)?(?:north|south)(?:\s+(?:elevator|lift|one))?[^.!?\n]{0,40}\bseemed\s+fine\b"
+    r"|\b(?:i\s+)?(?:just\s+)?heard\s+it\s+moving\b"
+    r"|\bit(?:'s|\s+is)\s+moving\b",
     re.IGNORECASE,
 )
 CONTEXTUAL_ELEVATOR_OUTAGE_RE = re.compile(
@@ -117,7 +122,14 @@ CONTEXTUAL_ELEVATOR_OUTAGE_RE = re.compile(
     r"|\b(?:mechanic|mechanics)\b[^.!?\n]{0,120}\b(?:called|not\s+arrived|not\s+here|arriv(?:ed|ing)|coming|in\s+the\s+building|on\s+site)\b"
     r"|\b(?:excessive\s+heat|mechanical\s+room|heat\s+in\s+the\s+shaft)\b"
     r"|\bair\s+(?:is\s+)?blowing\b[^.!?\n]{0,100}\b(?:elevator|lift)\b"
-    r"|\bwas\s+out\s+(?:around|at)\s+(?:\d{1,2}(?::\d{2})?|\d{3,4})\s*(?:a\.?m\.?|p\.?m\.?)?\b",
+    r"|\bwas\s+out\s+(?:around|at)\s+(?:\d{1,2}(?::\d{2})?|\d{3,4})\s*(?:a\.?m\.?|p\.?m\.?)?\b"
+    r"|\b(?:mechanic|mechanics)\s+(?:is|are)\s+here\b"
+    r"|\bcalled\s+(?:the\s+)?(?:mechanic|mechanics)\b"
+    r"|\b(?:they|it)\s+will\s+be\s+fixed\s+[\"'“”]?soon[\"'“”]?"
+    r"|\b(?:one|1)\s+(?:is\s+)?working\b"
+    r"|\bit(?:['’]s|\s+has)\s+been\s+\d+(?:\.\d+)?\s+hours?\b"
+    r"|\bstill\s+(?:out|down)\b"
+    r"|\bit\s+doesn['’]?t\s+stop\s+at\s+\d+\b",
     re.IGNORECASE,
 )
 CONTEXTUAL_ELEVATOR_MECHANISM_RE = re.compile(
@@ -128,7 +140,19 @@ CONTEXTUAL_ELEVATOR_MECHANISM_RE = re.compile(
 CONTEXTUAL_QUESTION_RE = re.compile(r"\?\s*(?:<This message was edited>)?\s*$", re.IGNORECASE)
 CONTEXTUAL_RESTORE_CAUTION_RE = re.compile(
     r"\b(?:wouldn['’]?t\s+get\s+too\s+excited|heat\s+(?:is|was|remains)|"
-    r"(?:excessive|too\s+much)\s+heat|overheating)\b",
+    r"(?:excessive|too\s+much)\s+heat|overheating|might|may|seems?|seemed|skeptical|heard)\b"
+    r"|[\"“”]\s*working\s*[\"“”]"
+    r"|\bit(?:['’]s|\s+is)\s+moving\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_NON_ELEVATOR_TOPIC_RE = re.compile(
+    r"\b(?:wi-?fi|internet|laundry|washer|dryer|laundry\s+app|laundry\s+card|"
+    r"electrical|wiring|outlet|outlets|oven)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_HYPOTHETICAL_RE = re.compile(
+    r"\b(?:fingers\s+crossed|hopefully|i\s+hope|we\s+hope)\b"
+    r"|\b(?:doesn['’]?t|won['’]?t)\s+go\s+out\s+of\s+service\b",
     re.IGNORECASE,
 )
 CONTEXTUAL_LONG_LOOKBACK_RE = re.compile(
@@ -785,6 +809,15 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
         return None
     if HISTORICAL_ELEVATOR_REFERENCE.search(text) and not CURRENT_STATE_REFERENCE.search(text):
         return None
+    if CONTEXTUAL_HYPOTHETICAL_RE.search(text):
+        return None
+    if (
+        CONTEXTUAL_NON_ELEVATOR_TOPIC_RE.search(text)
+        and rules.get("is_issue")
+        and rules.get("category") != "elevator"
+        and not text_explicitly_supports_category(text, "elevator")
+    ):
+        return None
     if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(text):
         extended_restore_context = _has_recent_same_chat_elevator_context(
             session,
@@ -825,12 +858,20 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
 
     mechanism_update = bool(CONTEXTUAL_ELEVATOR_MECHANISM_RE.search(text))
     if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text) or mechanism_update:
+        continuing_outage = bool(
+            re.search(
+                r"\b(?:still|again)\s+(?:out|down|dead|stuck|not\s+working)\b"
+                r"|\b(?:out|down|dead|stuck)\s+again\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
         return {
             "is_issue": True,
             "signal_type": "report",
             "category": "elevator",
             "asset": explicit_elevator_asset(text),
-            "event_type": "still_out" if re.search(r"\bstill|again\b", text, re.IGNORECASE) else "status_update",
+            "event_type": "still_out" if continuing_outage else "status_update",
             "severity": 4,
             "confidence": 78,
             "title": "Elevator outage update",
@@ -1219,36 +1260,55 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
 
         if cat == "elevator":
             if close_incident:
-                candidate = existing_incident if existing_incident and existing_incident.category == cat else None
-                if candidate is None:
-                    query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
-                    if asset and asset != "elevator_both":
-                        query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
-                    for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
-                        if rm.ts_epoch is None or row.last_ts_epoch is None or int(row.last_ts_epoch) <= int(rm.ts_epoch):
-                            candidate = row
+                def eligible_for_restore(row: Incident) -> bool:
+                    return bool(
+                        row.category == "elevator"
+                        and (
+                            rm.ts_epoch is None
+                            or row.last_ts_epoch is None
+                            or int(row.last_ts_epoch) <= int(rm.ts_epoch)
+                        )
+                    )
+
+                candidates: list[Incident] = []
+                if existing_incident and eligible_for_restore(existing_incident):
+                    candidates.append(existing_incident)
+
+                query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
+                if asset and asset != "elevator_both":
+                    query = query.filter(
+                        (Incident.asset == asset)
+                        | (Incident.asset == "elevator_both")
+                        | (Incident.asset.is_(None))
+                    )
+                for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
+                    if eligible_for_restore(row) and all(existing.incident_id != row.incident_id for existing in candidates):
+                        candidates.append(row)
+                        if asset != "elevator_both":
                             break
-                if not candidate:
+
+                if not candidates:
                     incident = _create_incident(session, cat, asset, rm, title, summary, 2, "closed", max(confidence, 60), True)
                     incident.end_ts = rm.ts_iso
                     incident.end_ts_epoch = rm.ts_epoch
                 else:
-                    _update_incident(
-                        session,
-                        candidate,
-                        rm,
-                        summary,
-                        2,
-                        confidence,
-                        needs_review,
-                        title=title,
-                        asset=asset,
-                        event_type=event_type,
-                    )
-                    candidate.status = "closed"
-                    candidate.end_ts = rm.ts_iso
-                    candidate.end_ts_epoch = rm.ts_epoch
-                    incident = candidate
+                    for candidate in candidates:
+                        _update_incident(
+                            session,
+                            candidate,
+                            rm,
+                            summary,
+                            2,
+                            confidence,
+                            needs_review,
+                            title=title,
+                            asset=asset,
+                            event_type=event_type,
+                        )
+                        candidate.status = "closed"
+                        candidate.end_ts = rm.ts_iso
+                        candidate.end_ts_epoch = rm.ts_epoch
+                    incident = candidates[0]
             else:
                 query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
                 if asset and asset != "elevator_both":

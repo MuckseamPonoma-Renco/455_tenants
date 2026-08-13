@@ -4,7 +4,11 @@ ELEVATOR = re.compile(r"\b(elevator|elevators|lift|lifts)\b", re.I)
 ELEVATOR_SIDE_REFERENCE = re.compile(r"\b(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\b", re.I)
 ELEVATOR_ASSET_NORTH = re.compile(r"\bnorth\b", re.I)
 ELEVATOR_ASSET_SOUTH = re.compile(r"\bsouth\b", re.I)
-ELEVATOR_ASSET_BOTH = re.compile(r"\b(both|two elevators|2 lifts|2 elevators)\b", re.I)
+ELEVATOR_ASSET_BOTH = re.compile(
+    r"\b(?:both|two elevators|2 lifts|2 elevators|all (?:elevators?|lifts?)|"
+    r"north\s*(?:&|and)\s*south|south\s*(?:&|and)\s*north)\b",
+    re.I,
+)
 ELEVATOR_ASSET_ZERO = re.compile(r"\b(?:zero|no)\s+(?:elevators?|lifts?)\b", re.I)
 ONLY_SIDE_WORKING = re.compile(
     r"\bonly\s+(?:the\s+)?(?P<side>north|south|left|right)\s+"
@@ -38,7 +42,12 @@ REDUCED_SERVICE = re.compile(
 )
 CONTINUING = re.compile(r"\b(still|again)\b", re.I)
 BACK = re.compile(
-    r"(back\s+(up|on|in\s+service)|working\s+now|working\s+normal(?:ly)?|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|2\s+lifts\s+working|both\s+(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?(?:working|functioning|operational|running)|both\s+(?:are\s+|were\s+)?(?:working|functioning|operational|running)|both\s+work\s+now|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
+    r"(back\s+(up|on|in\s+service)|working\s+now|working\s+normal(?:ly)?|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|(?:all|2)\s+(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?(?:working|functioning|operational|running)|both\s+(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?(?:working|functioning|operational|running)|both\s+(?:are\s+|were\s+)?(?:working|functioning|operational|running)|both\s+work\s+now|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
+    re.I,
+)
+CAUTIOUS_RESTORE = re.compile(
+    r"\b(?:might|may|seems?|appears?|apparently|possibly|probably)\b"
+    r"|[\"“”]\s*(?:working|functioning|operational|running)\s*[\"“”]",
     re.I,
 )
 IRREGULAR_OPERATION = re.compile(
@@ -60,7 +69,9 @@ VENTILATION = re.compile(r"\b(?:vent|vents|ventilation|airflow|air\s+flow)\b", r
 SEC = re.compile(r"lock|door|intercom|camera|security|stair|fire\s+door|handrail", re.I)
 APARTMENT_ENTRY = re.compile(
     r"\b(?:apartment|apt|unit)\b[^.!?\n]{0,80}\b(?:entry|enter|entered|access|advise\s+super|without\s+(?:me|anyone)\s+(?:home|there))\b"
-    r"|\b(?:entry|enter|entered|access)\b[^.!?\n]{0,80}\b(?:apartment|apt|unit)\b",
+    r"|\b(?:entry|enter|entered|access)\b[^.!?\n]{0,80}\b(?:apartment|apt|unit)\b"
+    r"|\b(?:try(?:ing|ied)?\s+to\s+)?(?:come|came)\s+(?:in|into)\b[^.!?\n]{0,80}\b(?:apartment|apt|unit)\b"
+    r"|\b(?:came|come)\s+to\b[^.!?\n]{0,80}\b(?:apartment|apt|unit)\b[^.!?\n]{0,100}\btry(?:ing|ied)?\s+to\s+enter\b",
     re.I,
 )
 QUESTION_ONLY = re.compile(r"\?$")
@@ -101,6 +112,23 @@ PERSONAL_SAFETY_REPORT = re.compile(
     r"\b(?:warn\s+women|"
     r"(?:hang(?:ing)?\s+out|linger(?:ing)?)\b[^.!?\n]{0,100}\b(?:in\s*front\s+of|outside)\s+(?:the\s+)?building|"
     r"walk(?:ed|ing)?\s+(?:up\s+)?(?:from\s+)?behind\b[^.!?\n]{0,100}\b(?:squeez(?:ed|ing)|touch(?:ed|ing)))\b",
+    re.I,
+)
+LAUNDRY = re.compile(r"\b(?:laundry|washer|washers|dryer|dryers)\b", re.I)
+LAUNDRY_PROBLEM = re.compile(
+    r"\b(?:not\s+working|doesn['’]?t\s+work|error|can['’]?t\s+connect|cannot\s+connect|"
+    r"no\s+(?:wi-?fi|internet|service)|app\s+(?:is\s+)?not\s+working|card\s+(?:is\s+)?(?:giving|showing))\b",
+    re.I,
+)
+ELECTRICAL = re.compile(r"\b(?:electrical|wiring|wire|wires|outlet|outlets|receptacle|oven)\b", re.I)
+ELECTRICAL_PROBLEM = re.compile(
+    r"\b(?:painted\s+over|upside\s+down|odd|unsafe|hazard|problem|issue|not\s+working|"
+    r"only\s+functioning|comes?\s+out\s+(?:of\s+)?the\s+wall|plug(?:s|ged)?\s+into|"
+    r"management\s+hasn['’]?t\s+helped|inspection)\b",
+    re.I,
+)
+FIRST_PERSON_BUILDING_CONDITION = re.compile(
+    r"\b(?:my|mine|our|ours|apartment|apt|unit|living\s+room|kitchen)\b",
     re.I,
 )
 
@@ -212,6 +240,41 @@ def classify_rules(text: str) -> dict:
             "kind": "issue",
         }
 
+    if APARTMENT_ENTRY.search(t):
+        return {
+            "is_issue": True,
+            "category": "security_access",
+            "asset": None,
+            "severity": 3,
+            "title": "Apartment entry / access concern",
+            "summary": "Tenant reports a concern about apartment entry or access.",
+            "kind": "issue",
+        }
+
+    if LAUNDRY.search(t) and LAUNDRY_PROBLEM.search(t):
+        return {
+            "is_issue": True,
+            "category": "other",
+            "asset": None,
+            "event_type": "new_issue",
+            "severity": 3,
+            "title": "Laundry facility issue",
+            "summary": "Tenant reports a laundry room, machine, card, or connectivity problem.",
+            "kind": "issue",
+        }
+
+    if ELECTRICAL.search(t) and ELECTRICAL_PROBLEM.search(t) and FIRST_PERSON_BUILDING_CONDITION.search(t):
+        return {
+            "is_issue": True,
+            "category": "other",
+            "asset": None,
+            "event_type": "new_issue",
+            "severity": 4,
+            "title": "Electrical wiring concern",
+            "summary": "Tenant reports an electrical wiring or outlet concern in an apartment.",
+            "kind": "issue",
+        }
+
     if QUESTION_ONLY.search(t) and DISCUSSION_QUESTION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
@@ -220,6 +283,17 @@ def classify_rules(text: str) -> dict:
 
     if _has_elevator_reference(t) and (BACK.search(t) or FLOOR_SERVICE_NORMAL.search(t)) and not ONLY_SIDE_WORKING.search(t):
         asset = _asset(t)
+        if CAUTIOUS_RESTORE.search(t):
+            return {
+                "is_issue": True,
+                "category": "elevator",
+                "asset": asset,
+                "event_type": "status_update",
+                "severity": 3,
+                "title": "Elevator working update",
+                "summary": "Tenant reports possible elevator operation without confirming a stable restoration.",
+                "kind": "issue",
+            }
         return {
             "is_issue": True,
             "category": "elevator",
@@ -347,17 +421,6 @@ def classify_rules(text: str) -> dict:
             "severity": 3,
             "title": "Building entrance safety concern",
             "summary": "Tenant reports a personal safety concern at the building entrance.",
-            "kind": "issue",
-        }
-
-    if APARTMENT_ENTRY.search(t):
-        return {
-            "is_issue": True,
-            "category": "security_access",
-            "asset": None,
-            "severity": 3,
-            "title": "Apartment entry / access concern",
-            "summary": "Tenant reports a concern about apartment entry or access.",
             "kind": "issue",
         }
 

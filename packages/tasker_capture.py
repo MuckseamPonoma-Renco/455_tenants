@@ -13,6 +13,10 @@ TEXT_SENDER_RE = re.compile(r"^(?:~\s*)?(?P<sender>[^:]{1,120}): (?P<text>.+)$")
 NEW_MESSAGES_RE = re.compile(r"^\d+\s+new messages?$", re.IGNORECASE)
 LIVE_CAPTURE_SOURCES = ("tasker", "whatsapp_web")
 CROSS_SOURCE_DUPLICATE_SOURCES = ("zip_import", "export")
+CROSS_SOURCE_SHORT_OPERATIONAL_RE = re.compile(
+    r"\b(?:north|south|both|elevators?|lifts?|still\s+out|out|down|working|moving|in\s+service)\b",
+    re.IGNORECASE,
+)
 
 
 def _clean(value: str | None) -> str:
@@ -151,7 +155,7 @@ def find_recent_cross_source_duplicate(
     if ts_epoch is None:
         return None
     target = cross_source_text_signature(text)
-    if len(target) < cross_source_duplicate_min_text_chars():
+    if len(target) < cross_source_duplicate_min_text_chars() and not CROSS_SOURCE_SHORT_OPERATIONAL_RE.search(target):
         return None
     window = cross_source_duplicate_window_seconds()
     if window <= 0:

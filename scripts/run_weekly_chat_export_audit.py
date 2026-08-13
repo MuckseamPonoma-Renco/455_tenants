@@ -57,7 +57,22 @@ def import_export(export_path: Path, *, llm_mode: str) -> None:
         ]
     env = os.environ.copy()
     env["AUTO_FILE_ENABLED"] = "0"
+    env["DISABLE_SHEETS_SYNC"] = "1"
     subprocess.run(cmd, cwd=ROOT, check=True, env=env)
+
+
+def sync_sheets_after_success() -> None:
+    from packages.worker_jobs import sync_all_sheets
+
+    previous = os.environ.get("DISABLE_SHEETS_SYNC")
+    os.environ["DISABLE_SHEETS_SYNC"] = "0"
+    try:
+        sync_all_sheets()
+    finally:
+        if previous is None:
+            os.environ.pop("DISABLE_SHEETS_SYNC", None)
+        else:
+            os.environ["DISABLE_SHEETS_SYNC"] = previous
 
 
 def retry_incomplete_llm_reviews(export_path: Path, *, since: str, llm_mode: str) -> dict[str, object]:
@@ -153,6 +168,11 @@ def main() -> None:
         action="store_true",
         help="Write the roster without failing when one or more required model reviews are unavailable.",
     )
+    parser.add_argument(
+        "--sync-sheets-after-success",
+        action="store_true",
+        help="Publish Sheets only after every required model review succeeds.",
+    )
     parser.add_argument("--out-dir", help="Output directory for audit artifacts")
     args = parser.parse_args()
 
@@ -193,11 +213,23 @@ def main() -> None:
             f"model review incomplete: {summary.get('llm_review_missing', 0)} missing, "
             f"{summary.get('llm_review_failed', 0)} failed"
         )
+    sheet_sync_complete = not args.sync_sheets_after_success
+    if args.sync_sheets_after_success and review_complete:
+        try:
+            sync_sheets_after_success()
+            sheet_sync_complete = True
+        except Exception as exc:
+            summary["ok"] = False
+            summary["error"] = f"post-audit sheet sync failed: {str(exc)[:300]}"
+    summary["sheet_sync_requested"] = bool(args.sync_sheets_after_success)
+    summary["sheet_sync_complete"] = bool(sheet_sync_complete)
     summary_path = out_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     if require_llm_review and not review_complete and not args.allow_incomplete_llm_review:
         raise SystemExit(2)
+    if args.sync_sheets_after_success and not sheet_sync_complete:
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":

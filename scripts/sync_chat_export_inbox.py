@@ -39,6 +39,15 @@ TRANSIENT_ICLOUD_COPY_ERRNOS = frozenset(
 )
 
 
+class ModelReviewIncompleteError(RuntimeError):
+    def __init__(self, summary: dict[str, Any]):
+        self.summary = summary
+        retry = summary.get("llm_review_retry")
+        retry_error = str(retry.get("error") or "") if isinstance(retry, dict) else ""
+        self.reason = "insufficient_quota" if retry_error == "insufficient_quota" else "model_review_incomplete"
+        super().__init__(str(summary.get("error") or "required model review is incomplete"))
+
+
 def _split_source_dirs(value: str | None) -> list[Path]:
     if not value:
         return []
@@ -290,6 +299,7 @@ def run_import_and_audit(export_path: Path, *, since: str) -> dict[str, Any]:
         since,
         "--out-dir",
         str(audit_dir),
+        "--sync-sheets-after-success",
     ]
     completed = subprocess.run(
         cmd,
@@ -298,14 +308,21 @@ def run_import_and_audit(export_path: Path, *, since: str) -> dict[str, Any]:
         stderr=subprocess.STDOUT,
         text=True,
     )
+    summary_path = audit_dir / "summary.json"
+    summary: dict[str, Any] | None = None
+    try:
+        parsed_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if isinstance(parsed_summary, dict):
+            summary = parsed_summary
+    except Exception:
+        summary = None
     if completed.returncode:
+        if summary is not None and summary.get("llm_review_complete") is False:
+            raise ModelReviewIncompleteError(summary)
         detail = completed.stdout[-2000:].strip()
         raise RuntimeError(f"weekly chat export import/audit failed ({completed.returncode}): {detail}")
-    summary_path = audit_dir / "summary.json"
-    try:
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"weekly chat export audit did not create a readable summary: {summary_path}") from exc
+    if summary is None:
+        raise RuntimeError(f"weekly chat export audit did not create a readable summary: {summary_path}")
     if int(summary.get("parsed_messages") or 0) <= 0:
         raise RuntimeError(f"weekly chat export audit parsed zero messages: {export_path}")
     return {

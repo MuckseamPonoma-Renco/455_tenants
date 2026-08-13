@@ -505,6 +505,208 @@ def test_elevator_zero_lifts_and_both_working_rules_are_classified():
     assert conditional["is_issue"] is False
 
 
+def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
+    restored = classify_rules("All lifts working this morning")
+    assert restored["is_issue"] is True
+    assert restored["category"] == "elevator"
+    assert restored["asset"] == "elevator_both"
+    assert restored["kind"] == "restore"
+
+    cautious_restore = classify_rules("Seems both lifts working")
+    assert cautious_restore["is_issue"] is True
+    assert cautious_restore["category"] == "elevator"
+    assert cautious_restore["asset"] == "elevator_both"
+    assert cautious_restore["event_type"] == "status_update"
+    assert cautious_restore["kind"] == "issue"
+
+    laundry = classify_rules(
+        "I bought a laundry card instead and it is giving me an error on every machine?"
+    )
+    assert laundry["is_issue"] is True
+    assert laundry["category"] == "other"
+    assert laundry["title"] == "Laundry facility issue"
+
+    electrical = classify_rules(
+        "A few of mine are painted over and the oven is wired to an outlet in the living room."
+    )
+    assert electrical["is_issue"] is True
+    assert electrical["category"] == "other"
+    assert electrical["title"] == "Electrical wiring concern"
+
+    entry = classify_rules(
+        "The super came to my apartment trying to enter even though I had not requested a visit?"
+    )
+    assert entry["is_issue"] is True
+    assert entry["category"] == "security_access"
+
+
+def test_non_elevator_problem_is_not_reframed_by_recent_elevator_context(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    outage = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'South elevator is out.',
+        'sender': 'Karen',
+        'ts_epoch': 1785520000,
+    })
+    laundry = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'The laundry app is not working because there is no WiFi in the basement.',
+        'sender': 'Nez',
+        'ts_epoch': 1785520060,
+    })
+
+    assert outage.status_code == 200, outage.text
+    assert laundry.status_code == 200, laundry.text
+    with get_session() as session:
+        decision = session.get(MessageDecision, laundry.json()['message_id'])
+        assert decision is not None
+        assert decision.is_issue is True
+        assert decision.category == 'other'
+        assert decision.event_type == 'new_issue'
+
+
+def test_contextual_elevator_operational_updates_and_hypothetical_guard(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    outage = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators are out.',
+        'sender': 'Karen',
+        'ts_epoch': 1785600000,
+    })
+    mechanic = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Mechanic is here',
+        'sender': 'Darby',
+        'ts_epoch': 1785600060,
+    })
+    still_out = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Still out.',
+        'sender': 'Karen',
+        'ts_epoch': 1785600090,
+    })
+    fixed_soon = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': '(Also just told they will be fixed “soon”)',
+        'sender': 'Molly',
+        'ts_epoch': 1785600100,
+    })
+    elapsed = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': "This is terrible. It’s been 12 hours. Even though they're being replaced, "
+                'we still deserve some explanation. My plans to do laundry are out.',
+        'sender': 'Nez',
+        'ts_epoch': 1785600110,
+    })
+    moving = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': "It's moving",
+        'sender': 'Karen',
+        'ts_epoch': 1785600115,
+    })
+    restored = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North & South working',
+        'sender': 'Karen',
+        'ts_epoch': 1785600120,
+    })
+    hypothetical = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': "Fingers crossed that it doesn't go out of service.",
+        'sender': 'Molly',
+        'ts_epoch': 1785600180,
+    })
+
+    assert outage.status_code == 200, outage.text
+    assert mechanic.status_code == 200, mechanic.text
+    assert still_out.status_code == 200, still_out.text
+    assert fixed_soon.status_code == 200, fixed_soon.text
+    assert elapsed.status_code == 200, elapsed.text
+    assert moving.status_code == 200, moving.text
+    assert restored.status_code == 200, restored.text
+    assert hypothetical.status_code == 200, hypothetical.text
+    with get_session() as session:
+        mechanic_decision = session.get(MessageDecision, mechanic.json()['message_id'])
+        still_out_decision = session.get(MessageDecision, still_out.json()['message_id'])
+        fixed_soon_decision = session.get(MessageDecision, fixed_soon.json()['message_id'])
+        elapsed_decision = session.get(MessageDecision, elapsed.json()['message_id'])
+        moving_decision = session.get(MessageDecision, moving.json()['message_id'])
+        restored_decision = session.get(MessageDecision, restored.json()['message_id'])
+        hypothetical_decision = session.get(MessageDecision, hypothetical.json()['message_id'])
+        assert mechanic_decision is not None
+        assert mechanic_decision.category == 'elevator'
+        assert mechanic_decision.event_type == 'status_update'
+        assert still_out_decision is not None
+        assert still_out_decision.category == 'elevator'
+        assert still_out_decision.event_type == 'still_out'
+        assert fixed_soon_decision is not None
+        assert fixed_soon_decision.category == 'elevator'
+        assert fixed_soon_decision.event_type == 'status_update'
+        assert elapsed_decision is not None
+        assert elapsed_decision.category == 'elevator'
+        assert elapsed_decision.event_type == 'status_update'
+        assert moving_decision is not None
+        assert moving_decision.category == 'elevator'
+        assert moving_decision.event_type == 'status_update'
+        assert restored_decision is not None
+        assert restored_decision.category == 'elevator'
+        assert restored_decision.event_type == 'restore'
+        assert json.loads(restored_decision.final_json or '{}').get('asset') == 'elevator_both'
+        assert hypothetical_decision is not None
+        assert hypothetical_decision.is_issue is False
+
+
+def test_both_elevators_restore_closes_all_eligible_open_elevator_incidents(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+
+    def incident(incident_id, asset, last_ts_epoch):
+        return Incident(
+            incident_id=incident_id,
+            category='elevator',
+            asset=asset,
+            severity=4,
+            status='open',
+            start_ts='2026-08-01T00:00:00Z',
+            start_ts_epoch=last_ts_epoch,
+            last_ts_epoch=last_ts_epoch,
+            title='Elevator outage',
+            summary='Elevator outage reported.',
+            proof_refs='',
+            report_count=1,
+            witness_count=1,
+            confidence=90,
+            needs_review=False,
+        )
+
+    with get_session() as session:
+        session.add_all(
+            [
+                incident('older-north', 'elevator_north', 1785590000),
+                incident('older-south', 'elevator_south', 1785591000),
+                incident('older-both', 'elevator_both', 1785592000),
+                incident('newer-both', 'elevator_both', 1785601000),
+            ]
+        )
+        session.commit()
+
+    response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'Both elevators working',
+        'sender': 'Karen',
+        'ts_epoch': 1785600000,
+    })
+    assert response.status_code == 200, response.text
+
+    with get_session() as session:
+        for incident_id in ('older-north', 'older-south', 'older-both'):
+            row = session.get(Incident, incident_id)
+            assert row.status == 'closed'
+            assert row.end_ts_epoch == 1785600000
+        assert session.get(Incident, 'newer-both').status == 'open'
+
+
 def test_contextual_elevator_followups_do_not_become_heat_issue(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
 

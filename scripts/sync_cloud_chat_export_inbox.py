@@ -19,7 +19,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from packages.local_env import load_local_env_file
-from scripts.sync_chat_export_inbox import DEFAULT_SINCE, _is_ready_export, run_import_and_audit
+from scripts.sync_chat_export_inbox import (
+    DEFAULT_SINCE,
+    ModelReviewIncompleteError,
+    _is_ready_export,
+    run_import_and_audit,
+)
 
 load_local_env_file(ROOT / ".env")
 
@@ -294,9 +299,25 @@ def run_once(
 
         records = pending_exports(client, config, max_bytes=max_bytes)
         processed: list[dict[str, Any]] = []
-        for record in records[:max_exports]:
+        blocked: list[dict[str, Any]] = []
+        # A stale blocked export must not prevent a newer iPhone upload from
+        # reaching the database. Receiver acknowledgement still waits for a
+        # complete model review.
+        for record in list(reversed(records))[:max_exports]:
             staged = download_export(client, record, dest_dir=dest_dir, max_bytes=max_bytes)
-            audit = run_import_and_audit(staged, since=since)["audit_summary"]
+            try:
+                audit = run_import_and_audit(staged, since=since)["audit_summary"]
+            except ModelReviewIncompleteError as exc:
+                if exc.reason != "insufficient_quota":
+                    raise
+                blocked.append(
+                    {
+                        "key": record["key"],
+                        "reason": exc.reason,
+                        "audit": compact_audit(exc.summary),
+                    }
+                )
+                continue
             acknowledgement = {
                 "key": record["key"],
                 "sha256": _sha256_file(staged),
@@ -310,12 +331,17 @@ def run_once(
             processed.append({"key": record["key"], "staged_export": str(staged), "audit": compact_audit(audit)})
 
         state["last_error"] = ""
+        state["last_blocked_model_review"] = blocked
         state["last_success_at"] = _now()
         _save_state(state_path, state)
+        action = "processed" if processed else "unchanged_skip"
+        if blocked:
+            action = "processed_with_blocked_model_review" if processed else "blocked_model_review"
         return {
             "ok": True,
-            "action": "processed" if processed else "unchanged_skip",
+            "action": action,
             "processed": processed,
+            "blocked_exports": blocked,
             "pending_exports": max(0, len(records) - len(processed)),
             "recovered_acknowledgements": recovered_acks,
             "state_path": str(state_path),
