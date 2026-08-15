@@ -771,6 +771,9 @@ def test_contextual_elevator_operational_updates_and_hypothetical_guard(client, 
         assert restored_decision.category == 'elevator'
         assert restored_decision.event_type == 'restore'
         assert json.loads(restored_decision.final_json or '{}').get('asset') == 'elevator_both'
+        filing_job = session.query(FilingJob).one()
+        assert filing_job.state == 'skipped'
+        assert 'no longer auto-eligible' in (filing_job.notes or '')
         assert hypothetical_decision is not None
         assert hypothetical_decision.is_issue is False
 

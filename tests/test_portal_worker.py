@@ -338,6 +338,38 @@ def test_claim_next_job_requeues_stale_claims(client, monkeypatch):
         assert 'approval reset because a claimed job went stale' in (reset.notes or '')
 
 
+def test_claim_next_job_retires_closed_awaiting_approval_jobs(client):
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    with get_session() as session:
+        incident = _elevator_incident("closed-before-approval", timestamp=now_epoch)
+        incident.status = "closed"
+        incident.end_ts = datetime.fromtimestamp(now_epoch, timezone.utc).isoformat()
+        incident.end_ts_epoch = now_epoch
+        session.add(incident)
+        session.flush()
+        session.add(
+            FilingJob(
+                dedupe_key="311:closed-before-approval",
+                incident_id=incident.incident_id,
+                state="awaiting_approval",
+                complaint_type="Elevator or Escalator Complaint",
+                form_target="elevator_not_working",
+                payload_json=json.dumps({"description": "South elevator not working."}),
+                created_at=datetime.now(timezone.utc).isoformat(),
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        session.commit()
+
+    with get_session() as session:
+        job, skipped = claim_next_job(session)
+        assert job is None
+        assert skipped == 1
+        retired = session.query(FilingJob).one()
+        assert retired.state == "skipped"
+        assert "no longer auto-eligible" in (retired.notes or "")
+
+
 def test_wait_for_url_change_passes_previous_url_by_keyword():
     recorded = {}
 

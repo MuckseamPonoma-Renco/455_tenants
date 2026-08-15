@@ -15,6 +15,7 @@ from packages.nyc311.drafts import build_filing_draft
 ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
 EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted"})
 CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"approved", "claimed", "submitted"})
+PRE_SUBMISSION_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "failed"})
 FILING_APPROVAL_PHRASE = "APPROVED \u2014 GO LIVE"
 APPROVAL_HASH_PREFIX = "approval_payload_sha256="
 
@@ -317,16 +318,41 @@ def _equivalent_job_note(job: FilingJob) -> str:
     return f"auto-skipped equivalent 311 filing job {reference} ({job.dedupe_key})"
 
 
-def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
-    if not incident_is_auto_eligible(inc):
-        return None
+def _retire_ineligible_job(job: FilingJob) -> bool:
+    if job.state not in PRE_SUBMISSION_JOB_STATES:
+        return False
+    job.state = "skipped"
+    job.claimed_at = None
+    job.updated_at = now_iso()
+    note = "auto-skipped because incident is no longer auto-eligible"
+    if note not in (job.notes or ""):
+        job.notes = _append_job_note(job.notes, note)
+    return True
 
+
+def retire_ineligible_filing_jobs(session) -> int:
+    jobs = session.scalars(select(FilingJob).where(FilingJob.state.in_(PRE_SUBMISSION_JOB_STATES))).all()
+    retired = 0
+    for job in jobs:
+        incident = session.get(Incident, job.incident_id) if job.incident_id else None
+        if incident is None or not incident_is_auto_eligible(incident):
+            retired += int(_retire_ineligible_job(job))
+    return retired
+
+
+def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
     dedupe_key = _dedupe_key(inc)
+    pending_job = None
     for row in session.new:
         if isinstance(row, FilingJob) and row.dedupe_key == dedupe_key:
-            return row
+            pending_job = row
+            break
 
-    existing_job = session.scalar(select(FilingJob).where(FilingJob.dedupe_key == dedupe_key))
+    existing_job = pending_job or session.scalar(select(FilingJob).where(FilingJob.dedupe_key == dedupe_key))
+    if not incident_is_auto_eligible(inc):
+        if existing_job is not None:
+            _retire_ineligible_job(existing_job)
+        return None
     if existing_job:
         return existing_job
 
@@ -385,6 +411,7 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
 
 def ensure_filing_jobs(session) -> list[FilingJob]:
     close_superseded_open_elevator_incidents(session)
+    retire_ineligible_filing_jobs(session)
     incidents = session.scalars(select(Incident).where(Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast())).all()
     jobs = []
     for inc in incidents:
@@ -395,6 +422,7 @@ def ensure_filing_jobs(session) -> list[FilingJob]:
 
 
 def claim_next_job(session) -> tuple[FilingJob | None, int]:
+    skipped = retire_ineligible_filing_jobs(session)
     stale_after_min = _env_int("CLAIM_STALE_MINUTES", 30)
     requeued = False
     if stale_after_min > 0:
@@ -417,7 +445,6 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
         .where(FilingJob.state == "approved")
         .order_by(FilingJob.priority.asc(), FilingJob.created_at.asc())
     ).all()
-    skipped = 0
     for row in rows:
         if _approval_payload_sha256(row) != _payload_sha256(row):
             row.state = "awaiting_approval"
