@@ -8,7 +8,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
 from sqlalchemy.orm import object_session
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
-from packages.incident.reconcile import close_superseded_open_elevator_incidents
+from packages.incident.dedupe import dedupe_open_elevator_continuations
+from packages.incident.reconcile import (
+    close_superseded_open_elevator_incidents,
+    repair_unbounded_elevator_restore_attachments,
+)
 from packages.nyc311.drafts import build_filing_draft
 
 
@@ -16,6 +20,7 @@ ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
 EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted"})
 CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"approved", "claimed", "submitted"})
 PRE_SUBMISSION_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "failed"})
+REFRESHABLE_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "failed"})
 FILING_APPROVAL_PHRASE = "APPROVED \u2014 GO LIVE"
 APPROVAL_HASH_PREFIX = "approval_payload_sha256="
 
@@ -340,6 +345,32 @@ def retire_ineligible_filing_jobs(session) -> int:
     return retired
 
 
+def _refresh_filing_job_draft(job: FilingJob, inc: Incident, draft, payload_json: str) -> FilingJob:
+    if job.state not in REFRESHABLE_JOB_STATES:
+        return job
+    changed = any(
+        (
+            job.complaint_type != draft.complaint_type,
+            job.form_target != draft.form_target,
+            job.payload_json != payload_json,
+        )
+    )
+    if not changed:
+        return job
+
+    job.priority = max(1, 100 - int(inc.severity or 0) * 10)
+    job.filing_channel = "portal_playwright"
+    job.complaint_type = draft.complaint_type
+    job.form_target = draft.form_target
+    job.payload_json = payload_json
+    job.notes = draft.description[:2000]
+    job.state = "awaiting_approval"
+    job.claimed_at = None
+    job.last_error = None
+    job.updated_at = now_iso()
+    return job
+
+
 def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
     dedupe_key = _dedupe_key(inc)
     pending_job = None
@@ -353,7 +384,7 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         if existing_job is not None:
             _retire_ineligible_job(existing_job)
         return None
-    if existing_job:
+    if existing_job and existing_job.state not in REFRESHABLE_JOB_STATES:
         return existing_job
 
     existing_case = session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == inc.incident_id))
@@ -365,6 +396,9 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         return None
 
     payload_json = draft.payload_json()
+    if existing_job is not None:
+        return _refresh_filing_job_draft(existing_job, inc, draft, payload_json)
+
     equivalent_job = _find_equivalent_filing_job(
         session,
         _filing_signature(draft.complaint_type, draft.form_target, payload_json),
@@ -410,6 +444,8 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
 
 
 def ensure_filing_jobs(session) -> list[FilingJob]:
+    repair_unbounded_elevator_restore_attachments(session)
+    dedupe_open_elevator_continuations(session)
     close_superseded_open_elevator_incidents(session)
     retire_ineligible_filing_jobs(session)
     incidents = session.scalars(select(Incident).where(Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast())).all()

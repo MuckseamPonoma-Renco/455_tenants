@@ -214,7 +214,9 @@ def _public_row_covers_source_row(public_row: PublicRow, source_row: PublicRow) 
         return True
     if _normalize_public_time(public_row.updated) != _normalize_public_time(source_row.updated):
         return False
-    if _normalize_text(public_row.category) != _normalize_text(source_row.category):
+    public_category = _normalize_text(public_row.category)
+    source_category = _normalize_text(source_row.category)
+    if source_category != public_category and source_category not in public_category:
         return False
     public_issue = _normalize_text(public_row.issue)
     source_issue = _normalize_text(source_row.issue)

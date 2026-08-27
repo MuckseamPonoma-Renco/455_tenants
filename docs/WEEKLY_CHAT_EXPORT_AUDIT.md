@@ -213,6 +213,6 @@ python scripts/configure_github_cloud_recovery.py \
 The generated recovery environment is allowlisted. It includes the database,
 private receiver, Sheets, building-policy, and OpenAI review settings needed by
 the recovery runner; it excludes local ingest/mobile filing tokens and NYC311
-contact fields. The workflow also forces `AUTO_FILE_ENABLED=0`.
+credentials. The workflow also forces `AUTO_FILE_ENABLED=0`.
 
 This moves full-export recovery, public Sheet refreshes, and elevator-watch maintenance off the Mac. It does not replace live WhatsApp Web capture, which still requires the local authenticated WhatsApp session.

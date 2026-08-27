@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 
-from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, ServiceRequestCase
+from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, ServiceRequestCase, WatchdogAction
 
 DEFAULT_DEDUPE_GAP_SECONDS = 7 * 24 * 3600
 
@@ -17,6 +17,7 @@ class DedupeSummary:
     moved_jobs: int = 0
     updated_decisions: int = 0
     updated_witnesses: int = 0
+    updated_watchdog_actions: int = 0
     clusters_merged: int = 0
     clusters_skipped_multi_case: int = 0
 
@@ -118,6 +119,12 @@ def _merge_cluster(session, canonical: Incident, cluster: list[Incident], summar
                 summary.updated_witnesses += 1
             session.delete(witness)
 
+        for action in session.scalars(
+            select(WatchdogAction).where(WatchdogAction.related_incident_id == inc.incident_id)
+        ).all():
+            action.related_incident_id = canonical.incident_id
+            summary.updated_watchdog_actions += 1
+
         incoming_jobs = sorted(
             session.scalars(select(FilingJob).where(FilingJob.incident_id == inc.incident_id)).all(),
             key=_job_rank,
@@ -146,6 +153,90 @@ def _merge_cluster(session, canonical: Incident, cluster: list[Incident], summar
     session.flush()
     canonical.witness_count = session.query(IncidentWitness).filter_by(incident_id=canonical.incident_id).count()
     summary.clusters_merged += 1
+
+
+def _incident_gap_seconds(left: Incident, right: Incident) -> int:
+    left_start = int(left.start_ts_epoch or left.last_ts_epoch or 0)
+    left_end = int(left.last_ts_epoch or left.start_ts_epoch or 0)
+    right_start = int(right.start_ts_epoch or right.last_ts_epoch or 0)
+    right_end = int(right.last_ts_epoch or right.start_ts_epoch or 0)
+    if left_end < right_start:
+        return right_start - left_end
+    if right_end < left_start:
+        return left_start - right_end
+    return 0
+
+
+def _continuation_only(session, incident: Incident) -> bool:
+    events = session.scalars(
+        select(MessageDecision.event_type).where(
+            MessageDecision.incident_id == incident.incident_id,
+            MessageDecision.is_issue.is_(True),
+        )
+    ).all()
+    return bool(events) and all(event in {"still_out", "status_update"} for event in events)
+
+
+def dedupe_open_elevator_continuations(
+    session,
+    *,
+    gap_seconds: int = DEFAULT_DEDUPE_GAP_SECONDS,
+    dry_run: bool = False,
+) -> DedupeSummary:
+    """Merge an unscoped continuation into the closest open elevator incident."""
+    summary = DedupeSummary()
+    used_ids: set[str] = set()
+
+    while True:
+        incidents = session.scalars(
+            select(Incident)
+            .where(Incident.category == "elevator", Incident.status != "closed")
+            .order_by(Incident.last_ts_epoch)
+        ).all()
+        latest_activity = max((int(row.last_ts_epoch or 0) for row in incidents), default=0)
+        if latest_activity:
+            incidents = [
+                row
+                for row in incidents
+                if int(row.last_ts_epoch or 0) >= latest_activity - gap_seconds
+            ]
+        pair: tuple[Incident, Incident] | None = None
+        for unknown in (row for row in incidents if row.asset is None and row.incident_id not in used_ids):
+            candidates = [
+                row
+                for row in incidents
+                if row.incident_id != unknown.incident_id
+                and row.incident_id not in used_ids
+                and row.asset is not None
+                and _incident_gap_seconds(unknown, row) <= gap_seconds
+                and _continuation_only(session, unknown)
+            ]
+            if not candidates:
+                continue
+            candidates.sort(key=lambda row: (_incident_gap_seconds(unknown, row), -int(row.last_ts_epoch or 0)))
+            if len(candidates) > 1 and _incident_gap_seconds(unknown, candidates[0]) == _incident_gap_seconds(unknown, candidates[1]):
+                continue
+            pair = (unknown, candidates[0])
+            break
+
+        if pair is None:
+            break
+        canonical = _pick_canonical(session, list(pair))
+        if canonical is None:
+            summary.clusters_skipped_multi_case += 1
+            used_ids.update(row.incident_id for row in pair)
+            continue
+        specific_asset = next((row.asset for row in pair if row.asset is not None), None)
+        if dry_run:
+            summary.merged_incidents += 1
+            summary.clusters_merged += 1
+            used_ids.update(row.incident_id for row in pair)
+            continue
+        _merge_cluster(session, canonical, list(pair), summary)
+        if canonical.asset is None:
+            canonical.asset = specific_asset
+
+    return summary
 
 
 def dedupe_open_incidents(session, *, gap_seconds: int = DEFAULT_DEDUPE_GAP_SECONDS, dry_run: bool = False) -> DedupeSummary:

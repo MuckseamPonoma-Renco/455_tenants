@@ -104,7 +104,7 @@ Fill in:
 - `GOOGLE_SHEETS_SPREADSHEET_ID`
 - optionally `GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID` for a separate clean tenant log; this should be a dedicated workbook because Google Sheets sharing is workbook-wide, not tab-wide
 - `GOOGLE_APPLICATION_CREDENTIALS`
-- building/contact fields used in filing drafts
+- building address fields used in anonymous filing drafts
 - optionally `PUBLIC_BASE_URL` so the Dashboard can expose the tenant report form link and Sheets can open captured WhatsApp media
 - optionally `PUBLIC_UPDATES_CHAT_NAMES` to scope the resident evidence log more tightly than the live watcher if you do not want every watched chat surfaced there
 

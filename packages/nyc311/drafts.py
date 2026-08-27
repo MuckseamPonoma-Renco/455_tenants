@@ -100,11 +100,7 @@ def build_filing_draft(inc: Incident) -> FilingDraft | None:
             "name": building_name,
             **address,
         },
-        "contact": {
-            "name": _env("NYC311_CONTACT_NAME"),
-            "phone": _env("NYC311_CONTACT_PHONE"),
-            "email": _env("NYC311_CONTACT_EMAIL"),
-        },
+        "submission": {"mode": "anonymous"},
         "incident": {
             "category": inc.category,
             "asset": inc.asset,

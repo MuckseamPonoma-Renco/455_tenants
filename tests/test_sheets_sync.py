@@ -487,6 +487,60 @@ def test_public_sanitizer_removes_standalone_person_names():
     assert "as per" not in text.casefold()
 
 
+def test_public_update_includes_concrete_laundry_machine_card_failure():
+    incident = Incident(
+        incident_id="laundry-card-failure",
+        category="other",
+        asset=None,
+        title="Washer #15 not reading card",
+        summary="Washer #15 would not read the laundry card.",
+        proof_refs="laundry-message",
+    )
+    raw = RawMessage(
+        message_id="laundry-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-laundry",
+        ts_iso="2026-08-20T00:04:00Z",
+        ts_epoch=1787184240,
+        text="Don't use washer number 15 - it won't read my Hercules card",
+        attachments=None,
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Laundry machine/card issue"
+    assert sheets_sync._public_event_summary(incident, raw) == (
+        "Washer #15 was reported unable to read a laundry card."
+    )
+
+
+def test_public_update_includes_mechanic_unable_to_repair_status():
+    incident = Incident(
+        incident_id="repair-not-complete",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator still down",
+        summary="Mechanic could not complete the repair.",
+        proof_refs="repair-message",
+    )
+    raw = RawMessage(
+        message_id="repair-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-repair",
+        ts_iso="2026-08-27T01:08:00Z",
+        ts_epoch=1787792880,
+        text="Mechanic is unable to repair tonight.",
+        attachments=None,
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Elevator repair not completed"
+    assert sheets_sync._public_event_summary(incident, raw) == "Elevator repair was reported not completed yet."
+
+
 def test_public_safe_summary_strips_named_tenant_report_prefix():
     text = sheets_sync._public_safe_summary_text("Tenant Nic reports that the south elevator is out at 2:07 PM.")
 

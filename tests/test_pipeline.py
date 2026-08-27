@@ -2,7 +2,16 @@ import json
 import zipfile
 
 from pathlib import Path
-from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.db import (
+    FilingJob,
+    Incident,
+    IncidentWitness,
+    MessageDecision,
+    RawMessage,
+    ServiceRequestCase,
+    WatchdogAction,
+    get_session,
+)
 from packages.incident.extractor import _normalize_choice
 from packages.incident.rules import classify_rules, explicit_elevator_asset
 from packages.nyc311.legal_export import export_legal_bundle
@@ -528,6 +537,13 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
     assert laundry["preserve_issue"] is True
     assert laundry["preserve_event_type"] is True
 
+    unreadable_card = classify_rules(
+        "Don't try to use washer number 15 - it won't read my Hercules card"
+    )
+    assert unreadable_card["is_issue"] is True
+    assert unreadable_card["category"] == "other"
+    assert unreadable_card["title"] == "Laundry facility issue"
+
     electrical = classify_rules(
         "A few of mine are painted over and the oven is wired to an outlet in the living room."
     )
@@ -544,6 +560,246 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
     assert entry["category"] == "security_access"
     assert entry["preserve_issue"] is True
     assert entry["preserve_event_type"] is True
+
+
+def test_external_news_and_general_advice_cannot_become_building_incidents(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'all')
+
+    def false_positive_model(message_text, *args, **kwargs):
+        return {
+            'is_issue': True,
+            'signal_type': 'report',
+            'category': 'elevator' if 'PIX11' in message_text else 'other',
+            'asset': None,
+            'event_type': 'outage' if 'PIX11' in message_text else 'status_update',
+            'severity': 4,
+            'confidence': 96,
+            'title': 'Incorrect model incident',
+            'summary': 'The model incorrectly treated reference material as a report.',
+            'refers_to_open_incident': False,
+            'close_incident': False,
+            'needs_review': False,
+        }
+
+    monkeypatch.setattr('packages.incident.extractor.llm_classify_message', false_positive_model)
+    monkeypatch.setattr('packages.incident.extractor.llm_review_decision', false_positive_model)
+
+    article_text = (
+        'Our letter is timed with this announcement. '
+        'MANHATTAN, N.Y. (PIX11) \u2014 The cases include buildings with broken elevators and no heat. '
+        'https://pix11.com/news/morning/new-york-city-to-fast-track-urgent-housing-cases/'
+    )
+    advisory_text = (
+        'Pet owners should use pet bounce. Everyone should clean the lint tray after each use. '
+        'Lint acts like kindling. A stuffed tray = fire hazard.'
+    )
+    responses = [
+        client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+            'chat_name': '455 Tenants',
+            'text': text,
+            'sender': 'Karen',
+            'ts_epoch': 1787699567 + offset,
+        })
+        for offset, text in enumerate((article_text, advisory_text))
+    ]
+    assert all(response.status_code == 200 for response in responses)
+
+    with get_session() as session:
+        decisions = [session.get(MessageDecision, response.json()['message_id']) for response in responses]
+        assert [decision.is_issue for decision in decisions] == [False, False]
+        assert decisions[0].chosen_source == 'guardrail_external_reference'
+        assert decisions[1].chosen_source == 'guardrail_general_advisory'
+        assert session.query(Incident).count() == 0
+
+    direct_report = classify_rules(
+        'Our north elevator is down now. MANHATTAN, N.Y. (PIX11) \u2014 Housing update. '
+        'https://pix11.com/news/morning/housing-update/'
+    )
+    assert direct_report['is_issue'] is True
+    assert direct_report['category'] == 'elevator'
+
+
+def test_nonissue_reclassification_retires_orphan_draft_and_watchdog(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+    from packages.incident.extractor import classify_and_upsert_incident
+
+    article_text = (
+        'Our letter is timed with this announcement. '
+        'MANHATTAN, N.Y. (PIX11) \u2014 Buildings with broken elevators were discussed. '
+        'https://pix11.com/news/morning/housing-update/'
+    )
+    with get_session() as session:
+        raw = RawMessage(
+            message_id='article-message',
+            chat_name='455 Tenants',
+            sender='Karen',
+            sender_hash='sender-a',
+            ts_epoch=1787699567,
+            text=article_text,
+            source='zip_import',
+        )
+        incident = Incident(
+            incident_id='false-article-incident',
+            category='elevator',
+            asset=None,
+            severity=4,
+            status='open',
+            start_ts_epoch=1787699567,
+            last_ts_epoch=1787699567,
+            title='Elevator outage',
+            summary='Incorrect article classification.',
+            proof_refs=raw.message_id,
+            report_count=1,
+            witness_count=1,
+            confidence=90,
+            needs_review=True,
+        )
+        session.add_all([raw, incident])
+        session.add(MessageDecision(
+            message_id=raw.message_id,
+            incident_id=incident.incident_id,
+            is_issue=True,
+            category='elevator',
+            event_type='outage',
+        ))
+        session.add(FilingJob(
+            dedupe_key='311:false-article-incident',
+            incident_id=incident.incident_id,
+            state='awaiting_approval',
+        ))
+        session.add(WatchdogAction(
+            action_type='elevator_outage',
+            severity='high',
+            title='Track false article',
+            status='open',
+            related_incident_id=incident.incident_id,
+        ))
+        session.commit()
+
+        classify_and_upsert_incident(session, raw, allow_filing_job=False)
+        session.commit()
+
+    with get_session() as session:
+        decision = session.get(MessageDecision, 'article-message')
+        job = session.query(FilingJob).one()
+        action = session.query(WatchdogAction).one()
+        assert decision.is_issue is False
+        assert decision.incident_id is None
+        assert session.get(Incident, 'false-article-incident') is None
+        assert job.state == 'skipped'
+        assert job.incident_id is None
+        assert action.status == 'completed'
+        assert action.related_incident_id is None
+
+
+def test_elevator_continuations_merge_and_refresh_anonymous_311_draft(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+    messages = (
+        (1787763180, 'One elevator down'),
+        (1787778180, 'ONE LIFT ONLY! STILL!'),
+        (1787778300, 'Wojtek says no mechanic in bldg. He says he will put in a call....'),
+        (1787792880, 'Mechanic is unable to repair tonight.'),
+        (1787831880, 'North elevator still down'),
+    )
+    message_ids = []
+    for ts_epoch, text in messages:
+        response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+            'chat_name': '455 Tenants',
+            'text': text,
+            'sender': 'Karen',
+            'ts_epoch': ts_epoch,
+        })
+        assert response.status_code == 200, response.text
+        message_ids.append(response.json()['message_id'])
+
+    with get_session() as session:
+        incidents = session.query(Incident).all()
+        assert len(incidents) == 1
+        assert incidents[0].asset == 'elevator_north'
+        assert incidents[0].report_count == 5
+        decisions = [session.get(MessageDecision, message_id) for message_id in message_ids]
+        assert [decision.event_type for decision in decisions] == [
+            'outage',
+            'still_out',
+            'status_update',
+            'status_update',
+            'still_out',
+        ]
+        assert len({decision.incident_id for decision in decisions}) == 1
+        job = session.query(FilingJob).one()
+        payload = json.loads(job.payload_json)
+        assert job.state == 'awaiting_approval'
+        assert payload['incident']['asset'] == 'elevator_north'
+        assert payload['incident']['report_count'] == 5
+        assert payload['description'] == 'North elevator dead.'
+        assert payload['submission'] == {'mode': 'anonymous'}
+        assert 'contact' not in payload
+
+
+def test_front_desk_phone_correction_closes_the_reported_issue(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'The front desk intercom is not working.',
+        'sender': 'Kendall',
+        'ts_epoch': 1787137860,
+    })
+    correction = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'I have the number Karen gave for the front desk and that works.',
+        'sender': 'Molly',
+        'ts_epoch': 1787139360,
+    })
+    assert first.status_code == 200, first.text
+    assert correction.status_code == 200, correction.text
+
+    with get_session() as session:
+        incident = session.query(Incident).one()
+        decision = session.get(MessageDecision, correction.json()['message_id'])
+        assert decision.event_type == 'restore'
+        assert decision.incident_id == incident.incident_id
+        assert incident.status == 'closed'
+        assert incident.end_ts_epoch == 1787139360
+
+
+def test_approved_311_draft_requires_new_approval_after_incident_changes(client, monkeypatch):
+    monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
+    first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'One elevator down',
+        'sender': 'Karen',
+        'ts_epoch': 1787763180,
+    })
+    assert first.status_code == 200, first.text
+    with get_session() as session:
+        job_id = session.query(FilingJob).one().job_id
+
+    preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
+    approval = client.post(
+        f'/mobile/filings/{job_id}/approve',
+        headers=mobile_headers(),
+        json={
+            'payload_sha256': preview.json()['preview']['payload_sha256'],
+            'approval_phrase': 'APPROVED \u2014 GO LIVE',
+        },
+    )
+    assert approval.status_code == 200, approval.text
+
+    update = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North elevator still down',
+        'sender': 'Molly',
+        'ts_epoch': 1787778180,
+    })
+    assert update.status_code == 200, update.text
+
+    with get_session() as session:
+        job = session.get(FilingJob, job_id)
+        payload = json.loads(job.payload_json)
+        assert job.state == 'awaiting_approval'
+        assert 'approval_payload_sha256=' not in (job.notes or '')
+        assert payload['incident']['asset'] == 'elevator_north'
+        assert payload['incident']['report_count'] == 2
 
 
 def test_reviewed_export_guardrails_override_model_drift(client, monkeypatch):

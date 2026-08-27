@@ -1,5 +1,7 @@
 import re
 
+from packages.incident.content_guardrails import nonreporting_content_reason
+
 ELEVATOR = re.compile(r"\b(elevator|elevators|lift|lifts)\b", re.I)
 ELEVATOR_SIDE_REFERENCE = re.compile(r"\b(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\b", re.I)
 ELEVATOR_ASSET_NORTH = re.compile(r"\bnorth\b", re.I)
@@ -37,6 +39,8 @@ OUT = re.compile(
 )
 REDUCED_SERVICE = re.compile(
     r"\b(?:currently\s+)?(?:only\s+)?one\s+(?:elevator|lift)\s+(?:in\s+service|working|running|operational)\b"
+    r"|\b(?:one|1)\s+(?:elevator|lift)\s+only\b"
+    r"|\bdown\s+to\s+(?:one|1)(?:\s+working)?\s+(?:elevator|lift)\b"
     r"|\b(?:elevator|lift)\s+service\s+(?:is\s+)?reduced\b",
     re.I,
 )
@@ -117,7 +121,8 @@ PERSONAL_SAFETY_REPORT = re.compile(
 LAUNDRY = re.compile(r"\b(?:laundry|washer|washers|dryer|dryers)\b", re.I)
 LAUNDRY_PROBLEM = re.compile(
     r"\b(?:not\s+working|doesn['’]?t\s+work|error|can['’]?t\s+connect|cannot\s+connect|"
-    r"no\s+(?:wi-?fi|internet|service)|app\s+(?:is\s+)?not\s+working|card\s+(?:is\s+)?(?:giving|showing))\b",
+    r"no\s+(?:wi-?fi|internet|service)|app\s+(?:is\s+)?not\s+working|card\s+(?:is\s+)?(?:giving|showing)|"
+    r"(?:won['’]?t|doesn['’]?t|can['’]?t|cannot)\s+(?:read|recognize|accept))\b",
     re.I,
 )
 ELECTRICAL = re.compile(r"\b(?:electrical|wiring|wire|wires|outlet|outlets|receptacle|oven)\b", re.I)
@@ -129,6 +134,11 @@ ELECTRICAL_PROBLEM = re.compile(
 )
 FIRST_PERSON_BUILDING_CONDITION = re.compile(
     r"\b(?:my|mine|our|ours|apartment|apt|unit|living\s+room|kitchen)\b",
+    re.I,
+)
+FRONT_DESK_PHONE_WORKS = re.compile(
+    r"\bnumber\b[^.!?\n]{0,100}\bfront\s+desk\b[^.!?\n]{0,100}\bworks?\b"
+    r"|\bfront\s+desk\b[^.!?\n]{0,100}\bnumber\b[^.!?\n]{0,100}\bworks?\b",
     re.I,
 )
 
@@ -219,6 +229,19 @@ def classify_rules(text: str) -> dict:
     if not t:
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
+    nonreport_reason = nonreporting_content_reason(t)
+    if nonreport_reason:
+        return {
+            "is_issue": False,
+            "category": "other",
+            "asset": None,
+            "severity": 1,
+            "title": "",
+            "summary": "",
+            "kind": "nonissue",
+            "nonreport_reason": nonreport_reason,
+        }
+
     if DISCUSSION_QUESTION.search(t) and RECORDKEEPING_DISCUSSION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
@@ -250,6 +273,20 @@ def classify_rules(text: str) -> dict:
             "title": "Apartment entry / access concern",
             "summary": "Tenant reports a concern about apartment entry or access.",
             "kind": "issue",
+            "preserve_issue": True,
+            "preserve_event_type": True,
+        }
+
+    if FRONT_DESK_PHONE_WORKS.search(t):
+        return {
+            "is_issue": True,
+            "category": "security_access",
+            "asset": None,
+            "event_type": "restore",
+            "severity": 2,
+            "title": "Front desk phone number confirmed working",
+            "summary": "Tenant confirms the front desk phone number works.",
+            "kind": "restore",
             "preserve_issue": True,
             "preserve_event_type": True,
         }

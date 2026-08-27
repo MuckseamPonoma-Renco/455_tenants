@@ -301,12 +301,21 @@ def test_observed_at_text_clamps_future_timestamp():
     assert parsed <= datetime.now(NY)
 
 
-def test_observed_at_text_clamps_old_timestamp(monkeypatch):
-    monkeypatch.setenv('PORTAL_OBSERVED_MAX_AGE_HOURS', '24')
+def test_observed_at_text_preserves_old_timestamp():
     old = datetime.now(timezone.utc) - timedelta(days=3)
-    observed = _observed_at_text({'incident': {'last_ts': old.isoformat()}})
+    observed = _observed_at_text({'incident': {'start_ts': old.isoformat()}})
     parsed = datetime.strptime(observed, '%m/%d/%Y %I:%M %p').replace(tzinfo=NY)
-    assert parsed >= datetime.now(NY) - timedelta(hours=2)
+    assert abs((parsed - old.astimezone(NY)).total_seconds()) < 60
+
+
+def test_observed_at_text_prefers_first_report_over_latest_update():
+    first = datetime.now(timezone.utc) - timedelta(days=2)
+    latest = datetime.now(timezone.utc) - timedelta(hours=1)
+    observed = _observed_at_text({
+        'incident': {'start_ts': first.isoformat(), 'last_ts': latest.isoformat()},
+    })
+    parsed = datetime.strptime(observed, '%m/%d/%Y %I:%M %p').replace(tzinfo=NY)
+    assert abs((parsed - first.astimezone(NY)).total_seconds()) < 60
 
 
 def test_claim_next_job_requeues_stale_claims(client, monkeypatch):

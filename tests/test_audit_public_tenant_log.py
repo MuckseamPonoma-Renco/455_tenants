@@ -59,6 +59,36 @@ def test_public_row_covers_source_row_merged_at_same_timestamp():
     assert _public_row_covers_source_row(live, source)
 
 
+def test_public_row_covers_source_row_with_mixed_categories_at_same_timestamp():
+    live = PublicRow(
+        updated="2026-08-19 7:11 AM",
+        issue="Front desk phone number not working / Both elevators",
+        category="Security / access / Elevator",
+        follow_up="",
+        summary=(
+            "The number they gave me for the front desk does not go to the front desk. "
+            "Both elevators were reported as down."
+        ),
+    )
+    elevator_source = PublicRow(
+        updated="2026-08-19 07:11 AM",
+        issue="Both elevators",
+        category="Elevator",
+        follow_up="",
+        summary="Both elevators were reported as down.",
+    )
+    security_source = PublicRow(
+        updated="2026-08-19 07:11 AM",
+        issue="Front desk phone number not working",
+        category="Security / access",
+        follow_up="",
+        summary="The number they gave me for the front desk does not go to the front desk.",
+    )
+
+    assert _public_row_covers_source_row(live, elevator_source)
+    assert _public_row_covers_source_row(live, security_source)
+
+
 def test_both_elevators_working_row_covers_same_time_side_restore():
     live = PublicRow(
         updated="2026-07-27 12:19 PM",

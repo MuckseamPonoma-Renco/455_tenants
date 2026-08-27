@@ -106,7 +106,8 @@ PUBLIC_REPAIR_NOT_ON_SITE_RE = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_REPAIR_NOT_COMPLETE_RE = re.compile(
-    r"\b(?:cannot|can't|could\s+not|couldn't)\s+repair\b|\bback\s+tomorrow\b|\bwill\s+be\s+back\b",
+    r"\b(?:cannot|can't|could\s+not|couldn't|unable\s+to)\s+repair\b"
+    r"|\bback\s+tomorrow\b|\bwill\s+be\s+back\b",
     re.IGNORECASE,
 )
 PUBLIC_APARTMENT_ENTRY_RE = re.compile(
@@ -189,6 +190,16 @@ PUBLIC_GENERIC_RESOLVED_FRAGMENT_RE = re.compile(
 PUBLIC_STAIR_SPILL_RE = re.compile(
     r"\b(?:spill|liquid|leak)\b[^.!?\n]{0,100}\b(?:stair|stairs|stairwell|hallway|corridor|floor)\b"
     r"|\b(?:stair|stairs|stairwell|hallway|corridor|floor)\b[^.!?\n]{0,100}\b(?:spill|liquid|leak)\b",
+    re.IGNORECASE,
+)
+PUBLIC_LAUNDRY_ISSUE_RE = re.compile(
+    r"\b(?:laundry|washer|washers|dryer|dryers)\b[^.!?\n]{0,160}\b(?:"
+    r"not\s+working|doesn['’]?t\s+work|error|can['’]?t\s+connect|cannot\s+connect|"
+    r"won['’]?t\s+(?:read|recognize|accept)|doesn['’]?t\s+(?:read|recognize|accept))\b",
+    re.IGNORECASE,
+)
+PUBLIC_LAUNDRY_MACHINE_NUMBER_RE = re.compile(
+    r"\b(?:washer|dryer)(?:\s+(?:number|no\.?))?\s*#?\s*(\d{1,3})\b",
     re.IGNORECASE,
 )
 PUBLIC_DEFAULT_REDACTED_NAMES = (
@@ -1897,6 +1908,8 @@ def _public_other_update_issue_label(text: str) -> str:
     clean = _clean_text(text)
     if PUBLIC_STAIR_SPILL_RE.search(clean):
         return "Stairwell liquid spill"
+    if PUBLIC_LAUNDRY_ISSUE_RE.search(clean):
+        return "Laundry machine/card issue"
     return ""
 
 
@@ -2189,6 +2202,11 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             return _public_elevator_outage_summary(asset, detection_text)
     if incident.category == "other" and PUBLIC_STAIR_SPILL_RE.search(text):
         return "Liquid spill was reported in the stairwell/common area."
+    if incident.category == "other" and PUBLIC_LAUNDRY_ISSUE_RE.search(text):
+        machine = PUBLIC_LAUNDRY_MACHINE_NUMBER_RE.search(text)
+        if machine:
+            return f"Washer #{machine.group(1)} was reported unable to read a laundry card."
+        return "A laundry machine/card problem was reported."
     context = _public_visible_context_text(text)
     summary = _truncate_public_text(_public_safe_summary_text(context), limit=320)
     if summary and summary[-1] not in ".!?":

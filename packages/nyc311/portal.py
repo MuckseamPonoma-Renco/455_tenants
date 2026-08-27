@@ -66,13 +66,6 @@ def _env(*names: str, default: str = "") -> str:
     return default
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(_env(name, default=str(default)))
-    except Exception:
-        return default
-
-
 def _safe_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
@@ -128,10 +121,8 @@ def _wait_for_submit_confirmation(page: Page, previous_url: str, timeout_ms: int
 
 def _observed_at_text(payload: dict[str, Any]) -> str:
     latest_allowed = datetime.now(NY) - timedelta(minutes=5)
-    max_age_hours = _env_int("PORTAL_OBSERVED_MAX_AGE_HOURS", 24)
-    oldest_allowed = latest_allowed - timedelta(hours=max_age_hours) if max_age_hours > 0 else None
     incident = payload.get("incident") or {}
-    for key in ("last_ts", "start_ts"):
+    for key in ("start_ts", "last_ts"):
         raw = incident.get(key)
         if not raw:
             continue
@@ -140,7 +131,7 @@ def _observed_at_text(payload: dict[str, Any]) -> str:
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=NY)
             observed = parsed.astimezone(NY)
-            if observed > latest_allowed or (oldest_allowed is not None and observed < oldest_allowed):
+            if observed > latest_allowed:
                 observed = latest_allowed
             return observed.strftime("%-m/%-d/%Y %-I:%M %p")
         except Exception:
