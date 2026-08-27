@@ -169,9 +169,9 @@ This does not replace live capture. If the Mac-side WhatsApp watcher is stalled,
 
 ## Independent Availability Monitor
 
-`.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and every 15 minutes. It validates that the API is reachable, Neon accepts a live query, the automation loop has a recent heartbeat, the database and Sheets are configured, host free storage is above the 10 GiB safety threshold, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. It sends no chat export, message text, file name, or spreadsheet data to GitHub.
+`.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and on manual request. It validates that the API is reachable, Neon accepts a live query, the automation loop has a recent heartbeat, the database and Sheets are configured, host free storage is above the 10 GiB safety threshold, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. It sends no chat export, message text, file name, or spreadsheet data to GitHub.
 
-This is an outage detector, not a cloud receiver. A failed check means the Mac or tunnel needs attention; it cannot unlock a FileVault-protected Mac, restore power, or import a new iCloud file while the Mac is unavailable.
+This check is intentionally not scheduled because the endpoint depends on the Mac and Cloudflare tunnel. Scheduled Mac-off recovery and monitoring belong to `.github/workflows/cloud-recovery.yml`; treating an expected powered-off Mac as a GitHub failure creates noisy failure notifications without recovering anything. Push and manual checks remain strict, so deployment regressions still fail visibly.
 
 After the private Cloudflare receiver is deployed, set the GitHub repository variable `REQUIRE_CLOUD_EXPORT_RECEIVER=true` or run `scripts/check_public_health.py --require-cloud-export-receiver` from an operator shell. That makes a missing Mac-off intake fail loudly instead of reading as a fully green system.
 
