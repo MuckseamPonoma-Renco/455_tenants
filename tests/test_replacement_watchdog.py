@@ -1,8 +1,10 @@
 import os
+from datetime import datetime, timezone
 
-from packages.db import AccessNeedPrivate, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction, get_session
+from packages.db import AccessNeedPrivate, FilingJob, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction, get_session
 from packages.project_watch.rules import ensure_action, evaluate_project_rules
 from packages.public_records import sync as public_record_sync
+from packages.public_records.elevator_scope import describes_elevator_replacement_scope
 from packages.public_records.sync import sync_public_records, upsert_public_record
 from packages.public_records.verification import apply_machine_verification
 from packages.sheets import sync as sheets_sync
@@ -114,6 +116,11 @@ def test_public_record_normalization_dedupes_unchanged_rows(client):
         assert first_state == "created"
         assert second_state == "unchanged"
         assert session.query(PublicRecordWatch).count() == 1
+
+
+def test_two_elevator_modernization_matches_replacement_project_scope():
+    assert describes_elevator_replacement_scope("Modernization of Two (2) Passenger Elevators.")
+    assert not describes_elevator_replacement_scope("Provide new door lock monitoring system.")
 
 
 def test_dob_extract_refresh_does_not_look_like_a_record_change(client):
@@ -515,6 +522,69 @@ def test_elevator_watch_public_view_keeps_manual_work_to_physical_checks(client,
     assert "No resident DOB search needed" in body_text
 
 
+def test_current_two_elevator_modernization_is_filing_not_issued_permit(client):
+    with get_session() as session:
+        upsert_public_record(session, "dob_now_elevator_applications", {
+            **_elevator_application_row("Pending Plan Examiner Assignment"),
+            "job_filing_number": "BMOD-I1",
+            "descriptionofwork": "Modernization of Two (2) Passenger Elevators.",
+            "filingstatus_or_filingincludes": "Alteration/Replacement",
+        })
+        evaluate_project_rules(session)
+        session.commit()
+
+        open_missing_filing_actions = session.query(WatchdogAction).filter_by(
+            action_type="no_public_filing_after_30_days",
+            status="open",
+        ).count()
+        assert open_missing_filing_actions == 0
+
+    response = client.get("/api/project", headers=auth_headers())
+    assert response.status_code == 200, response.text
+    public_view = {row["topic"]: row for row in response.json()["public_view"]}
+    filing = public_view["Full elevator replacement permit"]
+    assert "BMOD-I1" in filing["answer"]
+    assert "not an issued permit yet" in filing["answer"]
+    assert "Modernization of Two (2) Passenger Elevators." in filing["why_it_matters"]
+    assert "All ." not in filing["why_it_matters"]
+    assert "automatic watcher will track plan review" in filing["human_needed"]
+    assert public_view["Lobby posting / start-date notice"]["answer"] == "No hallway check is needed yet for replacement work."
+
+
+def test_public_service_view_uses_latest_incident_not_any_stale_both_outage(client):
+    with get_session() as session:
+        session.add_all([
+            Incident(
+                incident_id="old-both-outage",
+                category="elevator",
+                asset="elevator_both",
+                severity=5,
+                status="open",
+                start_ts_epoch=100,
+                last_ts_epoch=100,
+                title="Historical both-elevator outage",
+            ),
+            Incident(
+                incident_id="latest-north-outage",
+                category="elevator",
+                asset="elevator_north",
+                severity=4,
+                status="open",
+                start_ts_epoch=200,
+                last_ts_epoch=200,
+                title="North elevator still out",
+            ),
+        ])
+        session.commit()
+
+    response = client.get("/api/project", headers=auth_headers())
+    assert response.status_code == 200, response.text
+    public_view = {row["topic"]: row for row in response.json()["public_view"]}
+    answer = public_view["Actual elevator service reported by tenants"]["answer"]
+    assert "north elevator" in answer
+    assert "both-elevators outage" not in answer
+
+
 def test_tenant_queue_shows_management_request_when_no_current_replacement_filing(client, monkeypatch):
     with get_session() as session:
         upsert_public_record(session, "dob_now_elevator_applications", {
@@ -644,6 +714,66 @@ def test_existing_311_case_suppresses_tenant_visible_elevator_action(client):
         session.commit()
 
         action = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
+        assert action.status == "completed"
+
+
+def test_awaiting_approval_311_draft_suppresses_duplicate_watchdog_action(client):
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    with get_session() as session:
+        session.add(Incident(
+            incident_id="tenant-elevator-with-draft",
+            category="elevator",
+            asset="elevator_north",
+            severity=4,
+            status="open",
+            start_ts_epoch=now_epoch - (26 * 3600),
+            last_ts_epoch=now_epoch,
+            title="North elevator remains out",
+        ))
+        session.flush()
+        session.add(FilingJob(
+            dedupe_key="tenant-elevator-with-draft:nyc311",
+            incident_id="tenant-elevator-with-draft",
+            state="awaiting_approval",
+        ))
+        evaluate_project_rules(session)
+        session.commit()
+
+        duplicate_actions = session.query(WatchdogAction).filter_by(
+            action_type="active_phase_one_elevator_down",
+            related_incident_id="tenant-elevator-with-draft",
+            status="open",
+        ).count()
+        assert duplicate_actions == 0
+
+
+def test_stale_unresolved_incident_does_not_keep_watchdog_alert_open(client):
+    with get_session() as session:
+        session.add(Incident(
+            incident_id="stale-both-elevators",
+            category="elevator",
+            asset="elevator_both",
+            severity=5,
+            status="open",
+            start_ts_epoch=1,
+            last_ts_epoch=1,
+            title="Historical both-elevator outage",
+        ))
+        session.flush()
+        session.add(WatchdogAction(
+            action_type="both_elevators_down",
+            severity="critical",
+            title="Historical elevator alert",
+            status="open",
+            owner_role="operator",
+            related_incident_id="stale-both-elevators",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+        ))
+        evaluate_project_rules(session)
+        session.commit()
+
+        action = session.query(WatchdogAction).filter_by(related_incident_id="stale-both-elevators").one()
         assert action.status == "completed"
 
 

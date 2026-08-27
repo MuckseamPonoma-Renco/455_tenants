@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from packages.db import FilingJob, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction
+from packages.public_records.elevator_scope import describes_elevator_replacement_scope
 from packages.timeutil import parse_ts_to_epoch
+
+
+ACTIVE_ELEVATOR_OBSERVATION_MAX_AGE_HOURS = 7 * 24
 
 
 def now_iso() -> str:
@@ -199,17 +203,7 @@ def _is_current_replacement_filing(record: PublicRecordWatch) -> bool:
     text = _record_text(record)
     if "door lock monitoring" in text or "dlm" in text:
         return False
-    return any(
-        phrase in text
-        for phrase in (
-            "full elevator replacement",
-            "elevator replacement",
-            "replace elevator",
-            "replace existing elevator",
-            "replacement of elevator",
-            "new elevator",
-        )
-    )
+    return describes_elevator_replacement_scope(text)
 
 
 def _complete_open_actions(session, action_type: str, *, keep_related_incident_ids: set[str] | None = None) -> None:
@@ -234,7 +228,10 @@ def _incident_has_automated_followup(session, incident_id: str) -> bool:
         if not any(word in status for word in ("closed", "resolved", "dismissed", "cancel")):
             return True
     jobs = session.scalars(select(FilingJob).where(FilingJob.incident_id == incident_id)).all()
-    return any((job.state or "").casefold() in {"pending", "claimed", "submitted"} for job in jobs)
+    return any(
+        (job.state or "").casefold() in {"pending", "claimed", "awaiting_approval", "approved", "submitted"}
+        for job in jobs
+    )
 
 
 def evaluate_project_rules(session) -> list[WatchdogAction]:
@@ -367,7 +364,11 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
     active_one_elevator_incident_ids: set[str] = set()
     active_both_elevator_incident_ids: set[str] = set()
     for incident in open_elevator_incidents:
-        age_hours = ((now_epoch - int(incident.start_ts_epoch or incident.last_ts_epoch or now_epoch)) / 3600.0)
+        observed_epoch = int(incident.last_ts_epoch or incident.start_ts_epoch or now_epoch)
+        observation_age_hours = (now_epoch - observed_epoch) / 3600.0
+        if observation_age_hours > ACTIVE_ELEVATOR_OBSERVATION_MAX_AGE_HOURS:
+            continue
+        age_hours = ((now_epoch - int(incident.start_ts_epoch or observed_epoch)) / 3600.0)
         if incident.asset == "elevator_both":
             active_both_elevator_incident_ids.add(incident.incident_id)
             actions.append(

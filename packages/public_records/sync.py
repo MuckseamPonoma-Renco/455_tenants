@@ -18,6 +18,7 @@ from packages.db import (
 )
 from packages.project_watch.rules import action_for_changed_record, action_for_new_record, ensure_action, evaluate_project_rules, now_iso
 from packages.public_records.config import building_bbl_compact, building_bin, source_configs
+from packages.public_records.elevator_scope import describes_elevator_replacement_scope
 from packages.public_records.normalize import normalize_record, semantic_raw_hash
 from packages.public_records.nyc_open_data import fetch_rows, query_url
 from packages.public_records.verification import apply_machine_verification
@@ -411,6 +412,14 @@ def _record_description(row: PublicRecordWatch) -> str:
     return (row.status_detail or "").strip()
 
 
+def _description_excerpt(description: str, *, max_chars: int) -> str:
+    normalized = " ".join((description or "").split())
+    first_sentence = normalized.split(".", maxsplit=1)[0].strip()
+    if len(first_sentence) <= max_chars:
+        return first_sentence
+    return first_sentence[:max_chars].rsplit(" ", maxsplit=1)[0].rstrip(" ,;:")
+
+
 def _record_text(row: PublicRecordWatch) -> str:
     raw = _raw_record(row)
     pieces = [
@@ -457,17 +466,7 @@ def _looks_like_full_elevator_replacement(row: PublicRecordWatch) -> bool:
     text = _record_text(row)
     if "door lock monitoring" in text or "dlm" in text:
         return False
-    return any(
-        phrase in text
-        for phrase in (
-            "full elevator replacement",
-            "elevator replacement",
-            "replace elevator",
-            "replace existing elevator",
-            "replacement of elevator",
-            "new elevator",
-        )
-    )
+    return describes_elevator_replacement_scope(text)
 
 
 def _record_sort_key(row: PublicRecordWatch) -> tuple[str, str]:
@@ -482,10 +481,11 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
         key=_record_sort_key,
         reverse=True,
     )
-    current_replacement_permits = [
+    current_replacement_filings = [
         row for row in permit_records
         if _looks_like_full_elevator_replacement(row) and not _is_closed_or_expired(row)
     ]
+    issued_replacement_permits = [row for row in current_replacement_filings if row.permit_issued_at]
     active_official_records = sorted(
         [
             row for row in elevator_records
@@ -509,24 +509,35 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
 
     items: list[dict[str, Any]] = []
 
-    if current_replacement_permits:
-        record = current_replacement_permits[0]
+    if current_replacement_filings:
+        record = current_replacement_filings[0]
         permit_date = _plain_date(record.permit_issued_at)
-        answer = f"Yes: DOB filing {record.record_key} appears to be an active elevator replacement filing."
+        answer = f"DOB filing {record.record_key} appears to match the announced two-elevator project."
         if permit_date:
-            answer += f" Permit date: {permit_date}."
+            answer += f" Permit-issued date: {permit_date}."
+        else:
+            answer += f" It is not an issued permit yet; current status: {record.status or 'filed'}."
+        description = _record_description(record)
+        description_excerpt = _description_excerpt(description, max_chars=260)
         items.append({
             "topic": "Full elevator replacement permit",
             "answer": answer,
-            "why_it_matters": "This is the official signal that replacement work can move from management claim toward permitted construction.",
+            "why_it_matters": (
+                f"The official work description is: {description_excerpt}. " if description_excerpt else ""
+            ) + "A project filing confirms submitted scope, but construction is not permit-ready until an issued-permit date appears.",
             "checked_by": "Automatic DOB/Open Data check",
             "last_checked_at": last_official_sync,
-            "human_needed": "No DOB lookup needed. A resident photo is only needed for lobby notices.",
+            "human_needed": (
+                "No DOB lookup needed. A resident photo is only needed for lobby notices."
+                if permit_date
+                else "No DOB lookup needed. The automatic watcher will track plan review and permit issuance; management should confirm scope and expected start date."
+            ),
             "source_url": record.source_url,
         })
     elif permit_records:
         record = permit_records[0]
         description = _record_description(record)
+        description_excerpt = _description_excerpt(description, max_chars=180)
         date_bits = ", ".join(
             bit for bit in [
                 f"filed {_plain_date(record.filed_at)}" if _plain_date(record.filed_at) else "",
@@ -539,8 +550,8 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
             "answer": "No current full-replacement permit found in the official elevator permit records.",
             "why_it_matters": (
                 f"The system found elevator filing {record.record_key}"
-                f"{f' ({date_bits})' if date_bits else ''}, but it appears to be older or different work"
-                f"{f': {description[:180]}' if description else ''}."
+                f"{f' ({date_bits})' if date_bits else ''}, but its public scope does not explicitly establish a full replacement"
+                f"{f': {description_excerpt}' if description_excerpt else ''}."
             ),
             "checked_by": "Automatic DOB/Open Data check",
             "last_checked_at": last_official_sync,
@@ -600,12 +611,13 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
         })
 
     if open_incidents:
-        both_down = any(row.asset == "elevator_both" for row in open_incidents)
-        if both_down:
-            answer = "Tenant reports show an open both-elevators outage."
-        else:
-            answer = f"Tenant reports show {len(open_incidents)} open elevator issue(s)."
         latest = open_incidents[0]
+        asset_label = {
+            "elevator_north": "the north elevator",
+            "elevator_south": "the south elevator",
+            "elevator_both": "both elevators",
+        }.get(latest.asset, "at least one elevator")
+        answer = f"The latest unresolved tenant report concerns {asset_label}."
         items.append({
             "topic": "Actual elevator service reported by tenants",
             "answer": answer,
@@ -626,7 +638,7 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
             "source_url": "",
         })
 
-    if current_replacement_permits:
+    if issued_replacement_permits:
         items.append({
             "topic": "Lobby posting / start-date notice",
             "answer": "Resident photo/check needed if notices are posted.",
@@ -640,7 +652,7 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
         items.append({
             "topic": "Lobby posting / start-date notice",
             "answer": "No hallway check is needed yet for replacement work.",
-            "why_it_matters": "There is no current full-replacement permit in the official records, so residents should not be asked to hunt for postings yet.",
+            "why_it_matters": "There is no issued full-replacement permit in the official records, so residents should not be asked to hunt for postings yet.",
             "checked_by": "Automatic rule from permit status",
             "last_checked_at": last_official_sync,
             "human_needed": "Not now.",
