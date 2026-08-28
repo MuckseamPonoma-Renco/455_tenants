@@ -17,7 +17,7 @@ jobs:
       PUBLIC_HEALTH_URL: https://api.455tenants.com/health
       REQUIRE_CLOUD_EXPORT_RECEIVER: ${{ vars.REQUIRE_CLOUD_EXPORT_RECEIVER || 'false' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check public API, Neon, automation, host storage, WhatsApp capture, and iCloud import heartbeat
         shell: bash
         run: |

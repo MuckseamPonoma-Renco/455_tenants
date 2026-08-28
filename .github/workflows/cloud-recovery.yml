@@ -72,10 +72,10 @@ jobs:
           echo "enabled=true" >> "$GITHUB_OUTPUT"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.mode.outputs.enabled == 'true'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.mode.outputs.enabled == 'true'
         with:
           python-version: '3.12'

@@ -22,3 +22,12 @@ def test_cloud_capable_recovery_remains_scheduled() -> None:
 
     assert "schedule:" in triggers
     assert "cron:" in triggers
+
+
+def test_workflows_use_node_24_action_releases() -> None:
+    public_health = (REPO_ROOT / ".github" / "workflows" / "public-service-health.yml").read_text()
+    cloud_recovery = (REPO_ROOT / ".github" / "workflows" / "cloud-recovery.yml").read_text()
+
+    assert "actions/checkout@v7" in public_health
+    assert "actions/checkout@v7" in cloud_recovery
+    assert "actions/setup-python@v7" in cloud_recovery
