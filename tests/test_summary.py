@@ -12,20 +12,7 @@ def mobile_headers():
     return {'Authorization': 'Bearer mobile-token'}
 
 
-def approve_and_claim_next_filing(client):
-    with get_session() as session:
-        job = session.query(FilingJob).filter_by(state='awaiting_approval').one()
-        job_id = job.job_id
-    preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
-    approval = client.post(
-        f'/mobile/filings/{job_id}/approve',
-        headers=mobile_headers(),
-        json={
-            'payload_sha256': preview.json()['preview']['payload_sha256'],
-            'approval_phrase': 'APPROVED \u2014 GO LIVE',
-        },
-    )
-    assert approval.status_code == 200, approval.text
+def claim_next_filing(client):
     return client.post('/mobile/filings/claim_next', headers=mobile_headers()).json()['job']
 
 
@@ -40,9 +27,9 @@ def test_summary_endpoint_shows_portal_worker_stage(client):
     response = client.get('/api/summary', headers=auth_headers())
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload['stage'] == 'awaiting_filing_approval'
+    assert payload['stage'] == 'ready_for_portal_worker'
     assert payload['metrics']['filing_jobs_pending'] >= 1
-    assert any(action['title'] == 'Review the first complaint preview' for action in payload['actions'])
+    assert not any('approval' in action['detail'].lower() for action in payload['actions'])
 
 
 def test_briefing_endpoint_returns_fallback_without_llm(client):
@@ -67,7 +54,7 @@ def test_summary_stage_moves_to_tracking_live_after_submission(client):
         'sender': 'Karen',
         'ts_epoch': 1770000100,
     })
-    claim = approve_and_claim_next_filing(client)
+    claim = claim_next_filing(client)
     client.post(
         f"/mobile/filings/{claim['job_id']}/submitted",
         headers=mobile_headers(),

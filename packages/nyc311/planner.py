@@ -18,11 +18,12 @@ from packages.nyc311.drafts import build_filing_draft
 
 ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
 EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted"})
-CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"approved", "claimed", "submitted"})
+CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"claimed", "submitted"})
 PRE_SUBMISSION_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "failed"})
 REFRESHABLE_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "failed"})
 FILING_APPROVAL_PHRASE = "APPROVED \u2014 GO LIVE"
 APPROVAL_HASH_PREFIX = "approval_payload_sha256="
+CLAIM_HASH_PREFIX = "claimed_payload_sha256="
 
 
 ELEVATOR_ACTIONABLE_COMPLAINT_RE = re.compile(
@@ -196,7 +197,7 @@ def _equivalent_job_blocks_filing(
     signature: tuple[str, str, str, str, str],
     now: datetime,
 ) -> bool:
-    if job.state in {"pending", "claimed"}:
+    if job.state in {"awaiting_approval", "approved", "pending", "claimed"}:
         return True
     if job.state != "submitted":
         return False
@@ -255,6 +256,25 @@ def _payload_sha256(job: FilingJob) -> str:
     return hashlib.sha256((job.payload_json or "{}").encode("utf-8")).hexdigest()
 
 
+def _set_job_hash_note(job: FilingJob, prefix: str, digest: str) -> None:
+    hash_note = f"{prefix}{digest}"
+    parts = [
+        part
+        for part in (job.notes or "").split(" | ")
+        if part and not part.startswith(prefix)
+    ]
+    existing_notes = " | ".join(parts)
+    available = max(0, 2000 - len(hash_note) - 3)
+    job.notes = f"{existing_notes[:available]} | {hash_note}" if existing_notes else hash_note
+
+
+def _payload_hash_from_notes(job: FilingJob, prefix: str) -> str:
+    for part in reversed((job.notes or "").split(" | ")):
+        if part.startswith(prefix):
+            return part.removeprefix(prefix).strip()
+    return ""
+
+
 def filing_job_preview(job: FilingJob) -> dict[str, object]:
     try:
         payload = json.loads(job.payload_json or "{}")
@@ -274,17 +294,26 @@ def filing_job_preview(job: FilingJob) -> dict[str, object]:
 
 
 def _approval_payload_sha256(job: FilingJob) -> str:
-    for part in reversed((job.notes or "").split(" | ")):
-        if part.startswith(APPROVAL_HASH_PREFIX):
-            return part.removeprefix(APPROVAL_HASH_PREFIX).strip()
-    return ""
+    return _payload_hash_from_notes(job, APPROVAL_HASH_PREFIX)
+
+
+def _claimed_payload_sha256(job: FilingJob) -> str:
+    return _payload_hash_from_notes(job, CLAIM_HASH_PREFIX) or _approval_payload_sha256(job)
 
 
 def claimed_filing_job_is_current(session, job: FilingJob) -> bool:
-    if job.state != "claimed" or _approval_payload_sha256(job) != _payload_sha256(job):
+    if job.state != "claimed" or _claimed_payload_sha256(job) != _payload_sha256(job):
         return False
     incident = session.get(Incident, job.incident_id) if job.incident_id else None
-    return bool(incident is not None and incident_is_auto_eligible(incident))
+    if incident is None or not incident_is_auto_eligible(incident):
+        return False
+    draft = build_filing_draft(incident)
+    return bool(
+        draft is not None
+        and job.complaint_type == draft.complaint_type
+        and job.form_target == draft.form_target
+        and job.payload_json == draft.payload_json()
+    )
 
 
 def approve_filing_job(
@@ -307,10 +336,7 @@ def approve_filing_job(
     incident = session.get(Incident, job.incident_id) if job.incident_id else None
     if incident is None or not incident_is_auto_eligible(incident):
         raise ValueError("The filing incident is no longer eligible")
-    approval_note = f"{APPROVAL_HASH_PREFIX}{current_payload_sha256}"
-    existing_notes = job.notes or ""
-    available = max(0, 2000 - len(approval_note) - 3)
-    job.notes = f"{existing_notes[:available]} | {approval_note}" if existing_notes else approval_note
+    _set_job_hash_note(job, APPROVAL_HASH_PREFIX, current_payload_sha256)
     job.state = "approved"
     job.claimed_at = None
     job.last_error = None
@@ -364,7 +390,7 @@ def _refresh_filing_job_draft(job: FilingJob, inc: Incident, draft, payload_json
     job.form_target = draft.form_target
     job.payload_json = payload_json
     job.notes = draft.description[:2000]
-    job.state = "awaiting_approval"
+    job.state = "pending"
     job.claimed_at = None
     job.last_error = None
     job.updated_at = now_iso()
@@ -428,7 +454,7 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         dedupe_key=dedupe_key,
         incident_id=inc.incident_id,
         job_type="nyc311_file",
-        state="awaiting_approval",
+        state="pending",
         priority=max(1, 100 - int(inc.severity or 0) * 10),
         filing_channel="portal_playwright",
         complaint_type=draft.complaint_type,
@@ -459,6 +485,19 @@ def ensure_filing_jobs(session) -> list[FilingJob]:
 
 def claim_next_job(session) -> tuple[FilingJob | None, int]:
     skipped = retire_ineligible_filing_jobs(session)
+    if skipped:
+        session.flush()
+    legacy_rows = session.scalars(
+        select(FilingJob).where(FilingJob.state.in_(("awaiting_approval", "approved")))
+    ).all()
+    for row in legacy_rows:
+        row.state = "pending"
+        row.claimed_at = None
+        row.updated_at = now_iso()
+        note = "migrated from per-case approval to automatic filing"
+        if note not in (row.notes or ""):
+            row.notes = _append_job_note(row.notes, note)
+
     stale_after_min = _env_int("CLAIM_STALE_MINUTES", 30)
     requeued = False
     if stale_after_min > 0:
@@ -467,27 +506,24 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
         for row in claimed_rows:
             claimed_at = _parse_iso(row.claimed_at) or _parse_iso(row.updated_at) or _parse_iso(row.created_at)
             if claimed_at and claimed_at <= cutoff:
-                row.state = "awaiting_approval"
+                row.state = "pending"
                 row.claimed_at = None
                 row.updated_at = now_iso()
-                note = "approval reset because a claimed job went stale"
-                row.notes = f"{row.notes} | {note}"[:2000] if row.notes else note
+                note = "auto-requeued because a claimed job went stale"
+                row.notes = _append_job_note(row.notes, note)
                 requeued = True
-    if requeued:
+    if requeued or legacy_rows:
         session.flush()
 
     rows = session.scalars(
         select(FilingJob)
-        .where(FilingJob.state == "approved")
+        .where(FilingJob.state.in_(("pending", "failed")))
         .order_by(FilingJob.priority.asc(), FilingJob.created_at.asc())
+        .with_for_update(skip_locked=True)
     ).all()
+    max_attempts = max(1, _env_int("AUTO_FILE_MAX_PORTAL_ATTEMPTS", 3))
     for row in rows:
-        if _approval_payload_sha256(row) != _payload_sha256(row):
-            row.state = "awaiting_approval"
-            row.claimed_at = None
-            row.updated_at = now_iso()
-            row.notes = _append_job_note(row.notes, "approval reset because the filing payload changed")
-            skipped += 1
+        if row.state == "failed" and int(row.attempts or 0) >= max_attempts:
             continue
         incident = session.get(Incident, row.incident_id) if row.incident_id else None
         if incident is None or not incident_is_auto_eligible(incident):
@@ -497,6 +533,14 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
             row.notes = _append_job_note(row.notes, note)
             skipped += 1
             continue
+        draft = build_filing_draft(incident)
+        if draft is None:
+            row.state = "skipped"
+            row.updated_at = now_iso()
+            row.notes = _append_job_note(row.notes, "auto-skipped because no current filing draft is available")
+            skipped += 1
+            continue
+        _refresh_filing_job_draft(row, incident, draft, draft.payload_json())
         equivalent_job = _find_equivalent_filing_job(
             session,
             _job_filing_signature(row),
@@ -513,5 +557,6 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
         row.claimed_at = now_iso()
         row.updated_at = now_iso()
         row.attempts = int(row.attempts or 0) + 1
+        _set_job_hash_note(row, CLAIM_HASH_PREFIX, _payload_sha256(row))
         return row, skipped
     return None, skipped

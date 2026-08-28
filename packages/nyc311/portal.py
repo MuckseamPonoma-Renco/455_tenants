@@ -438,7 +438,7 @@ def submit_elevator_complaint(
             )
         if before_submit is not None and not before_submit():
             browser.close()
-            raise PortalSubmissionCancelled("Filing approval or incident state changed before final submission")
+            raise PortalSubmissionCancelled("Filing payload or incident state changed before final submission")
 
         previous_url = page.url
         page.locator("#NextButton").click(force=True, no_wait_after=True)

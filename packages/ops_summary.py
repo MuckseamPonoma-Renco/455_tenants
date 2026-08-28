@@ -128,12 +128,17 @@ def build_ops_summary(session) -> dict[str, Any]:
     if case_count > 0:
         stage = 'tracking_live'
         next_step = 'Keep the NYC311 portal worker available for new incidents and run case-status sync daily.'
-    if open_incidents and (job_counts.get('approved', 0) or job_counts.get('claimed', 0)):
+    if open_incidents and (
+        job_counts.get('pending', 0)
+        or job_counts.get('claimed', 0)
+        or job_counts.get('awaiting_approval', 0)
+        or job_counts.get('approved', 0)
+    ):
         stage = 'ready_for_portal_worker'
-        next_step = 'Run the Playwright NYC311 portal worker for the approved complaint.'
-    elif open_incidents and (job_counts.get('awaiting_approval', 0) or job_counts.get('failed', 0)):
-        stage = 'awaiting_filing_approval'
-        next_step = 'Review the current NYC311 filing preview and approve that exact payload before submission.'
+        next_step = 'The Playwright NYC311 worker will file the current eligible complaint automatically.'
+    elif open_incidents and job_counts.get('failed', 0):
+        stage = 'filing_attention_needed'
+        next_step = 'Inspect the failed portal attempt; automatic retries stop at the configured attempt limit.'
 
     alerts: list[dict[str, Any]] = []
     actions: list[dict[str, str]] = []
@@ -169,16 +174,11 @@ def build_ops_summary(session) -> dict[str, Any]:
             'detail': f'{recent_elevator_count} elevator incidents were recorded in the last 30 days.',
         })
 
-    if open_incidents and not case_count and (
-        job_counts.get('awaiting_approval', 0)
-        or job_counts.get('approved', 0)
-        or job_counts.get('claimed', 0)
-        or job_counts.get('failed', 0)
-    ):
+    if open_incidents and job_counts.get('failed', 0):
         actions.append({
             'kind': 'do_now',
-            'title': 'Review the first complaint preview',
-            'detail': 'Approve the unchanged payload with the exact approval phrase, then run the portal worker.',
+            'title': 'Inspect failed 311 filing attempts',
+            'detail': 'Review the saved portal screenshot and error before resetting a job that reached its retry limit.',
         })
 
     if case_count:

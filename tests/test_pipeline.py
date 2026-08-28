@@ -27,21 +27,7 @@ def mobile_headers():
     return {'Authorization': 'Bearer mobile-token'}
 
 
-def approve_and_claim_next_filing(client):
-    with get_session() as session:
-        job = session.query(FilingJob).filter_by(state='awaiting_approval').one()
-        job_id = job.job_id
-    preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
-    assert preview.status_code == 200, preview.text
-    approval = client.post(
-        f'/mobile/filings/{job_id}/approve',
-        headers=mobile_headers(),
-        json={
-            'payload_sha256': preview.json()['preview']['payload_sha256'],
-            'approval_phrase': 'APPROVED \u2014 GO LIVE',
-        },
-    )
-    assert approval.status_code == 200, approval.text
+def claim_next_filing(client):
     claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
     assert claim.status_code == 200, claim.text
     return claim
@@ -61,7 +47,7 @@ def test_tasker_ingest_creates_incident_and_queue(client):
         assert len(incidents) == 1
         assert incidents[0].category == 'elevator'
         assert len(jobs) == 1
-        assert jobs[0].state == 'awaiting_approval'
+        assert jobs[0].state == 'pending'
 
 
 def test_tasker_batch_ingest_creates_rows_and_queue(client):
@@ -728,7 +714,7 @@ def test_elevator_continuations_merge_and_refresh_anonymous_311_draft(client, mo
         assert len({decision.incident_id for decision in decisions}) == 1
         job = session.query(FilingJob).one()
         payload = json.loads(job.payload_json)
-        assert job.state == 'awaiting_approval'
+        assert job.state == 'pending'
         assert payload['incident']['asset'] == 'elevator_north'
         assert payload['incident']['report_count'] == 5
         assert payload['description'] == 'North elevator dead.'
@@ -762,7 +748,7 @@ def test_front_desk_phone_correction_closes_the_reported_issue(client, monkeypat
         assert incident.end_ts_epoch == 1787139360
 
 
-def test_approved_311_draft_requires_new_approval_after_incident_changes(client, monkeypatch):
+def test_pending_311_draft_refreshes_after_incident_changes(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
     first = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
         'chat_name': '455 Tenants',
@@ -773,17 +759,6 @@ def test_approved_311_draft_requires_new_approval_after_incident_changes(client,
     assert first.status_code == 200, first.text
     with get_session() as session:
         job_id = session.query(FilingJob).one().job_id
-
-    preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
-    approval = client.post(
-        f'/mobile/filings/{job_id}/approve',
-        headers=mobile_headers(),
-        json={
-            'payload_sha256': preview.json()['preview']['payload_sha256'],
-            'approval_phrase': 'APPROVED \u2014 GO LIVE',
-        },
-    )
-    assert approval.status_code == 200, approval.text
 
     update = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
         'chat_name': '455 Tenants',
@@ -796,8 +771,8 @@ def test_approved_311_draft_requires_new_approval_after_incident_changes(client,
     with get_session() as session:
         job = session.get(FilingJob, job_id)
         payload = json.loads(job.payload_json)
-        assert job.state == 'awaiting_approval'
-        assert 'approval_payload_sha256=' not in (job.notes or '')
+        assert job.state == 'pending'
+        assert 'claimed_payload_sha256=' not in (job.notes or '')
         assert payload['incident']['asset'] == 'elevator_north'
         assert payload['incident']['report_count'] == 2
 
@@ -1318,7 +1293,7 @@ def test_mobile_claim_submit_and_status_sync(client, monkeypatch):
         'sender': 'Karen',
         'ts_epoch': 1770000100,
     })
-    claim = approve_and_claim_next_filing(client)
+    claim = claim_next_filing(client)
     payload = claim.json()['job']
     assert payload is not None
     job_id = payload['job_id']
@@ -1346,21 +1321,42 @@ def test_mobile_claim_submit_and_status_sync(client, monkeypatch):
         assert case.agency == 'DOB'
 
 
-def test_mobile_filing_requires_exact_current_preview_approval(client):
+def test_mobile_filing_claims_current_payload_automatically(client):
     client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
         'chat_name': '455 Tenants',
         'text': 'North lift dead',
         'sender': 'Karen',
         'ts_epoch': 1770000100,
     })
-    unapproved_claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
-    assert unapproved_claim.status_code == 200
-    assert unapproved_claim.json()['job'] is None
-
     with get_session() as session:
         job_id = session.query(FilingJob).one().job_id
     preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
     assert preview.status_code == 200
+    payload_sha256 = preview.json()['preview']['payload_sha256']
+
+    claim = client.post('/mobile/filings/claim_next', headers=mobile_headers())
+    assert claim.status_code == 200
+    assert claim.json()['job']['job_id'] == job_id
+    assert claim.json()['job']['state'] == 'claimed'
+
+    with get_session() as session:
+        job = session.get(FilingJob, job_id)
+        assert f'claimed_payload_sha256={payload_sha256}' in (job.notes or '')
+
+
+def test_legacy_mobile_approval_rejects_wrong_or_stale_preview(client):
+    client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift dead',
+        'sender': 'Karen',
+        'ts_epoch': 1770000100,
+    })
+    with get_session() as session:
+        job = session.query(FilingJob).one()
+        job.state = 'awaiting_approval'
+        job_id = job.job_id
+        session.commit()
+    preview = client.get(f'/mobile/filings/{job_id}/preview', headers=mobile_headers())
     payload_sha256 = preview.json()['preview']['payload_sha256']
 
     wrong_phrase = client.post(
@@ -1399,7 +1395,7 @@ def test_mobile_submitted_accepts_bare_eight_digit_sr_number(client):
         'sender': 'Karen',
         'ts_epoch': 1770000105,
     })
-    claim = approve_and_claim_next_filing(client)
+    claim = claim_next_filing(client)
     job_id = claim.json()['job']['job_id']
 
     submitted = client.post(f'/mobile/filings/{job_id}/submitted', headers=mobile_headers(), json={
@@ -1423,7 +1419,7 @@ def test_mobile_submitted_is_idempotent_when_sr_case_already_exists(client):
         'sender': 'Karen',
         'ts_epoch': 1770000110,
     })
-    claim = approve_and_claim_next_filing(client)
+    claim = claim_next_filing(client)
     job_id = claim.json()['job']['job_id']
 
     update = client.post('/mobile/sr_updates', headers=mobile_headers(), json={
@@ -1458,7 +1454,7 @@ def test_legal_export_bundle(client):
         'sender': 'Tibor Simon',
         'ts_epoch': 1770000200,
     })
-    claim = approve_and_claim_next_filing(client).json()['job']
+    claim = claim_next_filing(client).json()['job']
     client.post(f"/mobile/filings/{claim['job_id']}/submitted", headers=mobile_headers(), json={'service_request_number': '311-12345678'})
     with get_session() as session:
         result = export_legal_bundle(session)
@@ -1913,7 +1909,7 @@ def test_no_side_elevator_ingest_queues_311_job(client):
         assert incident.asset == 'elevator_north'
         assert decision.is_issue is True
         assert job.incident_id == incident.incident_id
-        assert job.state == 'awaiting_approval'
+        assert job.state == 'pending'
 
 
 def test_311_auto_file_uses_classifier_decision_not_second_regex(client, monkeypatch):

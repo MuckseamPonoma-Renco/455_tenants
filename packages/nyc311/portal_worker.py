@@ -53,7 +53,7 @@ def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True)
             if job:
                 job.state = "skipped"
                 job.last_error = None
-                job.notes = _append_note(job.notes, "cancelled at portal review because approval or incident state changed")
+                job.notes = _append_note(job.notes, "cancelled at portal review because payload or incident state changed")
                 session.commit()
         _safe_sync_sheets()
         append_audit_event("PORTAL_FILING_CANCELLED", str(job_id), {"reason": str(exc)[:500]})

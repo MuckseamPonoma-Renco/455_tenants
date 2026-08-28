@@ -9,8 +9,8 @@ The core loop is:
 3. Backend decides whether it is a real building issue.
 4. Backend clusters it into an incident.
 5. Backend prepares a 311 filing job when eligible.
-6. The operator reviews that exact payload and supplies `APPROVED — GO LIVE`.
-7. A local Playwright worker claims only the approved job and files NYC311 through the web portal.
+6. A local Playwright worker claims the current eligible job and files NYC311 through the web portal automatically.
+7. The worker revalidates the incident and exact claim-bound payload immediately before submission.
 8. SR number comes back to the backend.
 9. Backend tracks the case and syncs the spreadsheet.
 
@@ -63,8 +63,9 @@ Model-review failures are stored explicitly. A weekly supervised audit fails clo
 when required reviews are missing or the OpenAI API reports an error; it does not
 mislabel those messages as successful non-issues.
 
-The final filing queue remains deterministic and approval-gated. Full chat exports
-and historical reprocessing cannot create live filing jobs.
+The final filing queue remains deterministic and currentness-gated. Weekly chat
+audits and cloud historical recovery force `AUTO_FILE_ENABLED=0`, so replayed
+history cannot create or submit a live filing job.
 
 ## What is finished in code
 
@@ -74,7 +75,7 @@ and historical reprocessing cannot create live filing jobs.
 - Bulk WhatsApp export ingestion with automatic reprocessing
 - Elevator outage / restore clustering with witness counting
 - Auto-extraction of SR numbers from chat messages like `311-25815998`
-- Auto-prepare eligible live incidents in an approval-gated 311 filing queue
+- Automatically queue and file eligible current incidents with claim-time and pre-submit validation
 - Filing worker API:
   - `GET /mobile/filings/{job_id}/preview`
   - `POST /mobile/filings/{job_id}/approve`

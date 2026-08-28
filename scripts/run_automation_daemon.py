@@ -211,6 +211,26 @@ def main() -> None:
     while True:
         did_work = False
         try:
+            processed = 0
+            while processed < burst_size:
+                result = _run_work_step(
+                    "portal filing",
+                    lambda: run_portal_filing_once(headless=headless, verify_lookup=verify_lookup),
+                    poll_seconds=poll_seconds,
+                )
+                if result is None:
+                    break
+                job_meta = result.get("job")
+                if job_meta is None and result.get("job_id") is None:
+                    break
+                processed += 1
+                did_work = True
+                _log(f"portal filing result: {result}")
+                if not result.get("ok"):
+                    break
+                if processed < burst_size and between_jobs_seconds:
+                    time.sleep(between_jobs_seconds)
+
             now = time.monotonic()
             if next_public_tenant_log_audit_at is not None and now >= next_public_tenant_log_audit_at:
                 result = _run_work_step("public Tenant Log QA", _public_tenant_log_qa, poll_seconds=poll_seconds)
@@ -233,25 +253,6 @@ def main() -> None:
                     did_work = True
                 next_status_sync_at = time.monotonic() + status_sync_seconds
 
-            processed = 0
-            while processed < burst_size:
-                result = _run_work_step(
-                    "portal filing",
-                    lambda: run_portal_filing_once(headless=headless, verify_lookup=verify_lookup),
-                    poll_seconds=poll_seconds,
-                )
-                if result is None:
-                    break
-                job_meta = result.get("job")
-                if job_meta is None and result.get("job_id") is None:
-                    break
-                processed += 1
-                did_work = True
-                _log(f"portal filing result: {result}")
-                if not result.get("ok"):
-                    break
-                if processed < burst_size and between_jobs_seconds:
-                    time.sleep(between_jobs_seconds)
         except KeyboardInterrupt:
             _record_audit_event("AUTOMATION_LOOP_STOPPED", None, {"reason": "keyboard_interrupt"})
             _write_automation_status(state="stopped", poll_seconds=poll_seconds)
