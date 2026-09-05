@@ -54,6 +54,11 @@ def _runner(*, cloud_ready: bool, github_ready: bool):
             return CommandResult(0 if github_ready else 1, "true\n" if github_ready else "", "")
         if args[:2] == ["fdesetup", "status"]:
             return CommandResult(0, "FileVault is On.\n", "")
+        if len(args) > 2 and args[1] == "-c" and "sync_replacement_watchdog" in args[2]:
+            assert "sync_replacement_watchdog_to_sheets" in args[2]
+            return CommandResult(0, json.dumps({"sheets_synced": True}), "")
+        if len(args) > 1 and args[1].endswith("audit_public_watchdog_tabs.py"):
+            return CommandResult(0, json.dumps({"ok": True}), "")
         raise AssertionError(f"unexpected command: {command}")
 
     return fake
@@ -98,6 +103,21 @@ def test_compact_report_keeps_verdict_without_raw_command_evidence(monkeypatch):
     assert compact["warnings"][0]["name"] == "filevault_boundary"
     assert "checks" not in compact
     assert "command" not in json.dumps(compact)
+
+
+def test_watchdog_readiness_refreshes_then_audits_public_tabs(monkeypatch):
+    monkeypatch.setattr(readiness.platform, "system", lambda: "Darwin")
+
+    report = build_report(
+        _args(include_watchdog_sync=True),
+        runner=_runner(cloud_ready=True, github_ready=True),
+    )
+
+    assert report["ok"] is True
+    assert [row["name"] for row in report["checks"][-2:]] == [
+        "replacement_watchdog",
+        "public_watchdog_tabs",
+    ]
 
 
 def test_next_action_names_model_quota_and_cloud_recovery_gaps():
