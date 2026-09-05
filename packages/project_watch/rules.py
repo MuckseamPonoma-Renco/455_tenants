@@ -1,16 +1,58 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from packages.db import FilingJob, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction
+from packages.db import (
+    FilingJob,
+    Incident,
+    MessageDecision,
+    PublicRecordWatch,
+    RawMessage,
+    ServiceRequestCase,
+    WatchdogAction,
+)
 from packages.public_records.elevator_scope import describes_elevator_replacement_scope
 from packages.timeutil import parse_ts_to_epoch
 
 
 ACTIVE_ELEVATOR_OBSERVATION_MAX_AGE_HOURS = 7 * 24
+ELEVATOR_DOWN_EVENT_TYPES = frozenset({"outage", "still_out"})
+ELEVATOR_DEGRADED_TEXT = re.compile(
+    r"\b(?:super|very|really|unusually)\s+slow\b"
+    r"|\b(?:moving|running|operating|travel(?:ing|ling))\s+slow(?:ly)?\b"
+    r"|\b(?:clunk(?:ed|ing)?|bang(?:ed|ing)?|bounc(?:e[sd]?|ing)|jolt(?:ed|ing)?|shake[sn]?|shook)\b"
+    r"|\brough\s+ride\b"
+    r"|\b(?:door|doors)\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)\b"
+    r"|\bslow\s+(?:door|doors)\b"
+    r"|\b(?:floor[- ]by[- ]floor|skipping\s+(?:a\s+)?floor|irregular\s+floor)\b"
+    r"|\bstopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor\b",
+    re.IGNORECASE,
+)
+ELEVATOR_DOWN_TEXT = re.compile(
+    r"\b(?:out\s+of\s+(?:service|order)|not\s+working|stuck|dead|shutdown|shut\s*off)\b"
+    r"|\b(?:elevators?|lifts?|it|they)\s+(?:(?:is|are|was|were|remain(?:s|ed)?)\s+)?"
+    r"(?:currently\s+)?(?:(?:still|again)\s+)?(?:out|down)\b"
+    r"|\b(?:north|south|left|right)(?:\s+(?:elevator|lift|one|side))?\s+"
+    r"(?:(?:is|are|was|were|remain(?:s|ed)?)\s+)?(?:currently\s+)?(?:(?:still|again)\s+)?(?:out|down)\b"
+    r"|\b(?:both|all)\s+(?:(?:elevators?|lifts?)\s+)?(?:(?:are|were|remain(?:s|ed)?)\s+)?"
+    r"(?:currently\s+)?(?:(?:still|again)\s+)?(?:out|down)\b"
+    r"|\b(?:still|again)\s+(?:out|down|dead|stuck|not\s+working)\b"
+    r"|\b(?:out|down|dead|stuck)\s+again\b"
+    r"|\b(?:down|back)\s+to\s+(?:one|1)(?:\s+working)?\s+(?:elevator|lift)\b"
+    r"|\bonly\s+(?:one|1)\s+(?:working\s+)?(?:elevator|lift)\b"
+    r"|\b(?:zero|no)\s+(?:elevators|lifts)\b",
+    re.IGNORECASE,
+)
+ELEVATOR_WORKING_TEXT = re.compile(
+    r"\b(?:working\s+(?:now|normal(?:ly)?|again)|currently\s+(?:working|functioning|running)|"
+    r"operational\s+again|restored|back\s+(?:up|on|in\s+service)|"
+    r"both\s+(?:elevators|lifts)?\s*(?:are\s+|were\s+)?(?:working|functioning|operational|running))\b",
+    re.IGNORECASE,
+)
 
 
 def now_iso() -> str:
@@ -234,6 +276,44 @@ def _incident_has_automated_followup(session, incident_id: str) -> bool:
     )
 
 
+def _latest_elevator_state(session, incident: Incident) -> str:
+    """Return the current tenant-observed state without treating every open row as an outage."""
+    latest = session.execute(
+        select(MessageDecision, RawMessage)
+        .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
+        .where(MessageDecision.incident_id == incident.incident_id)
+        .order_by(
+            RawMessage.ts_epoch.desc().nullslast(),
+            RawMessage.ts_iso.desc().nullslast(),
+            MessageDecision.created_at.desc().nullslast(),
+            MessageDecision.message_id.desc(),
+        )
+        .limit(1)
+    ).first()
+
+    if latest is None:
+        event_type = ""
+        evidence_text = f"{incident.title or ''} {incident.summary or ''}"
+    else:
+        decision, raw_message = latest
+        event_type = (decision.event_type or "").casefold()
+        evidence_text = raw_message.text or ""
+
+    # Explicit descriptions of slow/irregular operation are degraded service,
+    # even if an older classifier called the message an outage. Reduced service
+    # (for example, "only one elevator working") remains an outage.
+    text_is_down = bool(ELEVATOR_DOWN_TEXT.search(evidence_text))
+    if ELEVATOR_DEGRADED_TEXT.search(evidence_text) and not text_is_down:
+        return "degraded"
+    if ELEVATOR_WORKING_TEXT.search(evidence_text) and not text_is_down:
+        return "working"
+    if event_type in ELEVATOR_DOWN_EVENT_TYPES or text_is_down:
+        return "down"
+    if event_type == "restore":
+        return "working"
+    return "unknown"
+
+
 def evaluate_project_rules(session) -> list[WatchdogAction]:
     session.flush()
     actions: list[WatchdogAction] = []
@@ -363,10 +443,33 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
     ).all()
     active_one_elevator_incident_ids: set[str] = set()
     active_both_elevator_incident_ids: set[str] = set()
+    active_degraded_elevator_incident_ids: set[str] = set()
     for incident in open_elevator_incidents:
         observed_epoch = int(incident.last_ts_epoch or incident.start_ts_epoch or now_epoch)
         observation_age_hours = (now_epoch - observed_epoch) / 3600.0
         if observation_age_hours > ACTIVE_ELEVATOR_OBSERVATION_MAX_AGE_HOURS:
+            continue
+        current_state = _latest_elevator_state(session, incident)
+        if current_state == "degraded":
+            if not _incident_has_automated_followup(session, incident.incident_id):
+                active_degraded_elevator_incident_ids.add(incident.incident_id)
+                actions.append(
+                    ensure_action(
+                        session,
+                        action_type="active_elevator_degraded_service",
+                        severity="watch",
+                        title="Degraded elevator service needs follow-up",
+                        detail=(
+                            f"{incident.title} is reported as slow or irregular while still operating. "
+                            "Track the service problem without presenting it as an elevator outage."
+                        ),
+                        due_in_days=1,
+                        owner_role="operator",
+                        related_incident_id=incident.incident_id,
+                    )
+                )
+            continue
+        if current_state != "down":
             continue
         age_hours = ((now_epoch - int(incident.start_ts_epoch or observed_epoch)) / 3600.0)
         if incident.asset == "elevator_both":
@@ -406,6 +509,11 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
         session,
         "both_elevators_down",
         keep_related_incident_ids=active_both_elevator_incident_ids,
+    )
+    _complete_open_actions(
+        session,
+        "active_elevator_degraded_service",
+        keep_related_incident_ids=active_degraded_elevator_incident_ids,
     )
 
     replacement_progress_records = [

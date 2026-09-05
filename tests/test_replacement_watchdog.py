@@ -1,7 +1,19 @@
 import os
 from datetime import datetime, timezone
 
-from packages.db import AccessNeedPrivate, FilingJob, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction, get_session
+import pytest
+
+from packages.db import (
+    AccessNeedPrivate,
+    FilingJob,
+    Incident,
+    MessageDecision,
+    PublicRecordWatch,
+    RawMessage,
+    ServiceRequestCase,
+    WatchdogAction,
+    get_session,
+)
 from packages.project_watch.rules import ensure_action, evaluate_project_rules
 from packages.public_records import sync as public_record_sync
 from packages.public_records.elevator_scope import describes_elevator_replacement_scope
@@ -715,6 +727,192 @@ def test_existing_311_case_suppresses_tenant_visible_elevator_action(client):
 
         action = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
         assert action.status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("message_suffix", "message_text"),
+    [
+        ("slow", "The north elevator is super slow going down, but it is running."),
+        ("irregular", "The north elevator is bouncing and opening slowly, but it is running."),
+    ],
+)
+def test_running_elevator_issue_replaces_false_outage_with_degraded_service_action(
+    client,
+    message_suffix,
+    message_text,
+):
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    incident_id = f"{message_suffix}-running-elevator"
+    message_id = f"{message_suffix}-running-elevator-message"
+    with get_session() as session:
+        session.add(Incident(
+            incident_id=incident_id,
+            category="elevator",
+            asset="elevator_north",
+            severity=3,
+            status="open",
+            start_ts_epoch=now_epoch - (30 * 3600),
+            last_ts_epoch=now_epoch,
+            title="North elevator operating unusually slowly",
+            summary="Tenant reports the elevator is slow but running.",
+        ))
+        session.add(RawMessage(
+            message_id=message_id,
+            sender_hash="tenant",
+            ts_iso=datetime.fromtimestamp(now_epoch, tz=timezone.utc).isoformat(),
+            ts_epoch=now_epoch,
+            text=message_text,
+            source="test",
+        ))
+        session.add(MessageDecision(
+            message_id=message_id,
+            incident_id=incident_id,
+            event_type="outage",
+            category="elevator",
+            is_issue=True,
+        ))
+        session.add(WatchdogAction(
+            action_type="active_phase_one_elevator_down",
+            severity="yellow",
+            title="False outage action",
+            status="open",
+            owner_role="operator",
+            related_incident_id=incident_id,
+            created_at="2026-09-05T08:00:00Z",
+            updated_at="2026-09-05T08:00:00Z",
+        ))
+
+        evaluate_project_rules(session)
+        session.commit()
+
+        outage = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
+        degraded = session.query(WatchdogAction).filter_by(action_type="active_elevator_degraded_service").one()
+        assert outage.status == "completed"
+        assert degraded.status == "open"
+        assert degraded.severity == "watch"
+        assert "without presenting it as an elevator outage" in degraded.detail
+
+
+def test_latest_still_out_message_keeps_outage_action_and_closes_degraded_action(client):
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    with get_session() as session:
+        session.add(Incident(
+            incident_id="latest-still-out-elevator",
+            category="elevator",
+            asset="elevator_south",
+            severity=4,
+            status="open",
+            start_ts_epoch=now_epoch - (30 * 3600),
+            last_ts_epoch=now_epoch,
+            title="South elevator still out",
+        ))
+        session.add_all([
+            RawMessage(
+                message_id="older-irregular-elevator-message",
+                sender_hash="tenant",
+                ts_epoch=now_epoch - 60,
+                text="The south elevator is bouncing but running.",
+                source="test",
+            ),
+            RawMessage(
+                message_id="latest-still-out-elevator-message",
+                sender_hash="tenant",
+                ts_epoch=now_epoch,
+                text="The south elevator is still out.",
+                source="test",
+            ),
+            MessageDecision(
+                message_id="older-irregular-elevator-message",
+                incident_id="latest-still-out-elevator",
+                event_type="status_update",
+                category="elevator",
+                is_issue=True,
+            ),
+            MessageDecision(
+                message_id="latest-still-out-elevator-message",
+                incident_id="latest-still-out-elevator",
+                event_type="still_out",
+                category="elevator",
+                is_issue=True,
+            ),
+            WatchdogAction(
+                action_type="active_elevator_degraded_service",
+                severity="watch",
+                title="Old degraded-service action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="latest-still-out-elevator",
+                created_at="2026-09-05T08:00:00Z",
+                updated_at="2026-09-05T08:00:00Z",
+            ),
+        ])
+
+        evaluate_project_rules(session)
+        session.commit()
+
+        degraded = session.query(WatchdogAction).filter_by(action_type="active_elevator_degraded_service").one()
+        outage = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
+        assert degraded.status == "completed"
+        assert outage.status == "open"
+
+
+def test_latest_working_update_completes_stale_elevator_actions(client):
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    with get_session() as session:
+        session.add(Incident(
+            incident_id="working-elevator-left-open",
+            category="elevator",
+            asset="elevator_both",
+            severity=2,
+            status="open",
+            start_ts_epoch=now_epoch - (30 * 3600),
+            last_ts_epoch=now_epoch,
+            title="Elevators working now",
+        ))
+        session.add(RawMessage(
+            message_id="working-elevator-message",
+            sender_hash="tenant",
+            ts_epoch=now_epoch,
+            text="Both elevators are working now.",
+            source="test",
+        ))
+        session.add(MessageDecision(
+            message_id="working-elevator-message",
+            incident_id="working-elevator-left-open",
+            event_type="status_update",
+            category="elevator",
+            is_issue=True,
+        ))
+        session.add_all([
+            WatchdogAction(
+                action_type="both_elevators_down",
+                severity="critical",
+                title="Stale outage action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="working-elevator-left-open",
+                created_at="2026-09-05T08:00:00Z",
+                updated_at="2026-09-05T08:00:00Z",
+            ),
+            WatchdogAction(
+                action_type="active_elevator_degraded_service",
+                severity="watch",
+                title="Stale degraded-service action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="working-elevator-left-open",
+                created_at="2026-09-05T08:00:00Z",
+                updated_at="2026-09-05T08:00:00Z",
+            ),
+        ])
+
+        evaluate_project_rules(session)
+        session.commit()
+
+        incident_actions = session.query(WatchdogAction).filter_by(
+            related_incident_id="working-elevator-left-open"
+        ).all()
+        assert {action.status for action in incident_actions} == {"completed"}
 
 
 def test_awaiting_approval_311_draft_suppresses_duplicate_watchdog_action(client):
