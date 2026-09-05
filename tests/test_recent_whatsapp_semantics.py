@@ -36,6 +36,21 @@ def test_recent_export_phrases_have_stable_noncontaminating_rules(text, category
     assert result["event_type"] == event_type
 
 
+def test_explicit_laundry_asset_overrides_model_omission():
+    choice = extractor._normalize_explicit_asset_from_text(
+        "Washer #15 stole my detergent!",
+        {
+            "is_issue": True,
+            "signal_type": "report",
+            "category": "laundry",
+            "asset": None,
+            "event_type": "new_issue",
+        },
+    )
+
+    assert choice["asset"] == "washer_15"
+
+
 def test_fire_hose_short_followups_keep_one_fire_safety_incident(client, monkeypatch):
     monkeypatch.setattr("packages.incident.extractor.LLM_MODE", "off")
     messages = [

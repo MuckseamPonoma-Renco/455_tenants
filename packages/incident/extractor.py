@@ -14,6 +14,7 @@ from packages.incident.rules import (
     HISTORICAL_ELEVATOR_REFERENCE,
     classify_rules,
     explicit_elevator_asset,
+    explicit_laundry_asset,
     text_explicitly_supports_category,
 )
 from packages.llm.classifier import llm_classify_message, llm_review_decision
@@ -608,6 +609,10 @@ def _update_incident(
     inc.report_count = int(inc.report_count or 0) + 1
     inc.confidence = max(int(inc.confidence or 0), confidence)
     _maybe_promote_elevator_incident_identity(inc, title=title, asset=asset, event_type=event_type)
+    if inc.category == "laundry" and not inc.asset and explicit_laundry_asset(rm.text or "") == asset:
+        # A terse follow-up may have opened a generic laundry incident first.
+        # Promote it only when this message explicitly names one machine.
+        inc.asset = asset
     if summary and summary not in (inc.summary or ""):
         inc.summary = (inc.summary + " | " + summary)[:2000]
     _upsert_witness(session, inc.incident_id, rm.sender_hash)
@@ -656,10 +661,18 @@ def _normalized_llm_choice(llm: dict | None) -> dict | None:
     return out
 
 
-def _normalize_elevator_asset_from_text(text: str, choice: dict | None) -> dict | None:
+def _normalize_explicit_asset_from_text(text: str, choice: dict | None) -> dict | None:
     if not isinstance(choice, dict):
         return choice
-    if choice.get("category") != "elevator":
+    category = choice.get("category")
+    if category == "laundry":
+        explicit_asset = explicit_laundry_asset(text or "")
+        if not explicit_asset:
+            return choice
+        normalized = dict(choice)
+        normalized["asset"] = explicit_asset
+        return normalized
+    if category != "elevator":
         return choice
     explicit_asset = explicit_elevator_asset(text or "")
     normalized = dict(choice)
@@ -1378,12 +1391,12 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             recent_related=recent_related,
             recent_chat=recent_chat,
         )
-    llm_choice = _normalize_elevator_asset_from_text(rm.text or "", _normalized_llm_choice(llm))
+    llm_choice = _normalize_explicit_asset_from_text(rm.text or "", _normalized_llm_choice(llm))
     forced_nonreport, forced_source = _forced_nonreport_choice(rules, llm_choice)
     if forced_nonreport is not None:
         return forced_nonreport, rules, llm_choice, forced_source or "guardrail_nonreport"
     if _should_request_review(rule_choice, llm_choice, llm is not None):
-        review_choice = _normalize_elevator_asset_from_text(
+        review_choice = _normalize_explicit_asset_from_text(
             rm.text or "",
             _normalized_llm_choice(
             llm_review_decision(
@@ -1422,7 +1435,7 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             return review_choice, rules, llm_choice, "review_rule_state" if rule_state_locked else "review"
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
-    chosen = _normalize_choice(chosen)
+    chosen = _normalize_explicit_asset_from_text(rm.text or "", _normalize_choice(chosen))
     guarded_choice, guarded_source = _unsupported_other_issue_guardrail(rm.text or "", rule_choice, chosen)
     if guarded_choice is not None:
         return guarded_choice, rules, llm_choice, guarded_source or "guardrail_unsupported_other"

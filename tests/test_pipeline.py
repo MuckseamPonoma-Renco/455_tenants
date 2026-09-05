@@ -575,6 +575,18 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
     assert unreadable_card["is_issue"] is True
     assert unreadable_card["category"] == "laundry"
     assert unreadable_card["title"] == "Laundry facility issue"
+    assert unreadable_card["asset"] == "washer_15"
+
+    detergent_failure = classify_rules("Washer #15 stole my detergent!")
+    assert detergent_failure["is_issue"] is True
+    assert detergent_failure["category"] == "laundry"
+    assert detergent_failure["event_type"] == "new_issue"
+    assert detergent_failure["asset"] == "washer_15"
+
+    multiple_machines = classify_rules("They came out and fixed washers 14 and 15.")
+    assert multiple_machines["is_issue"] is True
+    assert multiple_machines["category"] == "laundry"
+    assert multiple_machines["asset"] is None
 
     electrical = classify_rules(
         "A few of mine are painted over and the oven is wired to an outlet in the living room."

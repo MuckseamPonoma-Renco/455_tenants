@@ -126,7 +126,13 @@ LAUNDRY_PROBLEM = re.compile(
     r"\b(?:not\s+working|doesn['’]?t\s+work|error|can['’]?t\s+connect|cannot\s+connect|"
     r"no\s+(?:wi-?fi|internet|service)|app\s+(?:is\s+)?not\s+working|card\s+(?:is\s+)?(?:giving|showing)|"
     r"(?:won['’]?t|doesn['’]?t|isn['’]?t|can['’]?t|cannot)\s+(?:read(?:ing)?|recognize|accept)|"
-    r"door\s+(?:isn['’]?t|not)\s+connect(?:ing)?|door\s+(?:isn['’]?t|not)\s+register(?:ing)?)\b",
+    r"door\s+(?:isn['’]?t|not)\s+connect(?:ing)?|door\s+(?:isn['’]?t|not)\s+register(?:ing)?|"
+    r"(?:stol(?:e|en)|ate|swallowed|kept)\b[^.!?\n]{0,60}\bdetergent|"
+    r"detergent\b[^.!?\n]{0,60}\b(?:stol(?:e|en)|not\s+dispens(?:e|ed|ing)))\b",
+    re.I,
+)
+LAUNDRY_NUMBERED_MACHINE = re.compile(
+    r"\b(?P<kind>washer|dryer)(?:\s+(?:number|no\.?))?\s*#?\s*(?P<number>\d{1,3})\b",
     re.I,
 )
 LAUNDRY_RESTORE = re.compile(
@@ -222,6 +228,19 @@ def _asset(text: str):
 
 def explicit_elevator_asset(text: str):
     return _asset(text or "")
+
+
+def explicit_laundry_asset(text: str) -> str | None:
+    """Return one explicitly named laundry machine, never a guessed asset."""
+
+    matches = {
+        (match.group("kind").casefold(), int(match.group("number")))
+        for match in LAUNDRY_NUMBERED_MACHINE.finditer(text or "")
+    }
+    if len(matches) != 1:
+        return None
+    kind, number = next(iter(matches))
+    return f"{kind}_{number}"
 
 
 def _has_elevator_reference(text: str) -> bool:
@@ -350,7 +369,7 @@ def classify_rules(text: str) -> dict:
         return {
             "is_issue": True,
             "category": "laundry",
-            "asset": None,
+            "asset": explicit_laundry_asset(t),
             "event_type": "restore",
             "severity": 2,
             "title": "Laundry machines repaired",
@@ -364,7 +383,7 @@ def classify_rules(text: str) -> dict:
         return {
             "is_issue": True,
             "category": "laundry",
-            "asset": None,
+            "asset": explicit_laundry_asset(t),
             "event_type": "new_issue",
             "severity": 3,
             "title": "Laundry facility issue",
