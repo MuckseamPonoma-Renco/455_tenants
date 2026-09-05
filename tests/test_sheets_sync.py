@@ -689,6 +689,55 @@ def test_public_update_includes_concrete_laundry_machine_card_failure():
     )
 
 
+def test_public_update_includes_washer_detergent_dispenser_failure_and_recurrence():
+    incident = Incident(
+        incident_id="laundry-detergent-failure",
+        category="laundry",
+        asset="washer_15",
+        title="Washer #15 detergent dispenser problem",
+        summary="Washer #15 failed to dispense detergent.",
+        proof_refs="detergent-message,detergent-recurrence",
+    )
+    initial = RawMessage(
+        message_id="detergent-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-detergent",
+        ts_iso="2026-09-05T17:31:00Z",
+        ts_epoch=1788629460,
+        text="Washer #15 stole my detergent ! I can call Hercules today",
+        source="whatsapp_web",
+    )
+    recurrence = RawMessage(
+        message_id="detergent-recurrence",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-detergent-recurrence",
+        ts_iso="2026-09-05T19:30:00Z",
+        ts_epoch=1788636600,
+        text="That's the one I reported! Please tell them it happened again and that it was reported as fixed on Thursday.",
+        source="whatsapp_web",
+    )
+    recurrence_decision = MessageDecision(
+        message_id=recurrence.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="laundry",
+        event_type="still_out",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, initial) is True
+    assert sheets_sync._public_event_issue_label(incident, initial) == "Washer #15 detergent dispenser issue"
+    assert sheets_sync._public_event_summary(incident, initial) == (
+        "Washer #15 was reported failing to dispense detergent."
+    )
+    assert sheets_sync._public_should_include_update(incident, recurrence, recurrence_decision) is True
+    assert sheets_sync._public_event_issue_label(incident, recurrence) == "Washer #15 detergent problem recurred"
+    assert sheets_sync._public_event_summary(incident, recurrence) == (
+        "Washer #15 detergent-dispenser problem was reported again after it was reported fixed on Thursday."
+    )
+
+
 def test_public_update_uses_dedicated_laundry_category_and_restore():
     incident = Incident(
         incident_id="laundry-restore",
