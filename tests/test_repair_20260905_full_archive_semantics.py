@@ -10,6 +10,7 @@ from packages.db import (
     get_session,
 )
 import scripts.repair_20260905_full_archive_semantics as repair_module
+from scripts.audit_whatsapp_export_decisions import llm_review_details
 
 
 def _sha(text: str) -> str:
@@ -314,6 +315,7 @@ def test_apply_migrates_protected_refs_prunes_false_positive_and_recomputes(clie
         assert relinked.event_type == "still_out"
         assert relinked.auto_file_candidate is False
         assert relinked.chosen_source == repair_module.CHOSEN_SOURCE
+        assert llm_review_details(relinked, text="Both are still out.")[0] == "completed"
         assert _json(relinked.final_json)["repair_id"] == repair_module.REPAIR_ID
         assert removed.is_issue is False
         assert removed.incident_id is None

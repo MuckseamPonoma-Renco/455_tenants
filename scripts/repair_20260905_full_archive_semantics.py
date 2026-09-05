@@ -48,7 +48,11 @@ from packages.incident.cross_source_reconciliation import (  # noqa: E402
 
 REPAIR_ID = "2026-09-05-full-archive-semantics-v1"
 REVIEWED_BY = "codex:2026-09-05-full-archive-semantic-audit"
-CHOSEN_SOURCE = "codex_full_archive_semantic_repair"
+# The audit reader intentionally trusts manual completion provenance only when
+# the chosen-source label begins with ``review``. Keep that contract explicit
+# so repaired rows count as completed reviews instead of remaining in the
+# legacy missing/failed roster.
+CHOSEN_SOURCE = "review_codex_full_archive_semantic_repair"
 
 
 @dataclass(frozen=True)
