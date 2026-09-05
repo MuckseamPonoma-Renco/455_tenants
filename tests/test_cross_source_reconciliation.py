@@ -11,7 +11,10 @@ from packages.db import (
     WatchdogAction,
     get_session,
 )
-from packages.incident.cross_source_reconciliation import reconcile_exact_cross_source_duplicates
+from packages.incident.cross_source_reconciliation import (
+    find_exact_cross_source_duplicate_pairs,
+    reconcile_exact_cross_source_duplicates,
+)
 from packages.incident.extractor import _merge_choices
 from packages.nyc311.planner import ensure_filing_job_for_incident
 from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate
@@ -115,6 +118,49 @@ def test_cross_source_match_accepts_short_operational_update_but_not_generic_rep
             ts_epoch=1784331082,
             sources=LIVE_CAPTURE_SOURCES,
         ) is None
+
+
+def test_reconciliation_pairs_short_directional_followup_but_not_generic_reply(client):
+    with get_session() as session:
+        session.add_all(
+            [
+                _raw(
+                    "archive-short-direction",
+                    source="zip_import",
+                    text="Same going up",
+                    ts_epoch=1784331000,
+                    sender="Molly",
+                ),
+                _raw(
+                    "live-short-direction",
+                    source="whatsapp_web",
+                    text="Same going up",
+                    ts_epoch=1784331017,
+                    sender="+1 (347) 581-0269",
+                ),
+                _raw(
+                    "archive-short-generic",
+                    source="zip_import",
+                    text="Thanks",
+                    ts_epoch=1784331100,
+                    sender="Molly",
+                ),
+                _raw(
+                    "live-short-generic",
+                    source="whatsapp_web",
+                    text="Thanks",
+                    ts_epoch=1784331117,
+                    sender="+1 (347) 581-0269",
+                ),
+            ]
+        )
+        session.commit()
+
+        pairs = find_exact_cross_source_duplicate_pairs(session)
+
+        assert [(row.archive_message_id, row.live_message_id) for row in pairs] == [
+            ("archive-short-direction", "live-short-direction")
+        ]
 
 
 def test_authoritative_rule_state_locks_still_out_and_restore():

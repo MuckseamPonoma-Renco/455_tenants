@@ -564,7 +564,7 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
         "I bought a laundry card instead and it is giving me an error on every machine?"
     )
     assert laundry["is_issue"] is True
-    assert laundry["category"] == "other"
+    assert laundry["category"] == "laundry"
     assert laundry["title"] == "Laundry facility issue"
     assert laundry["preserve_issue"] is True
     assert laundry["preserve_event_type"] is True
@@ -573,7 +573,7 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
         "Don't try to use washer number 15 - it won't read my Hercules card"
     )
     assert unreadable_card["is_issue"] is True
-    assert unreadable_card["category"] == "other"
+    assert unreadable_card["category"] == "laundry"
     assert unreadable_card["title"] == "Laundry facility issue"
 
     electrical = classify_rules(
@@ -956,7 +956,7 @@ def test_non_elevator_problem_is_not_reframed_by_recent_elevator_context(client,
         decision = session.get(MessageDecision, laundry.json()['message_id'])
         assert decision is not None
         assert decision.is_issue is True
-        assert decision.category == 'other'
+        assert decision.category == 'laundry'
         assert decision.event_type == 'new_issue'
 
 

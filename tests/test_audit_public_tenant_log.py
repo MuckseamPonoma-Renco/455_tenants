@@ -108,6 +108,63 @@ def test_both_elevators_working_row_covers_same_time_side_restore():
     assert _public_row_covers_source_row(live, source)
 
 
+def test_later_canonical_alarm_row_covers_duplicate_source_with_minor_title_drift():
+    live = PublicRow(
+        updated="2026-04-10 09:15 AM",
+        issue="Alarm rang on an unknown elevator",
+        category="Elevator",
+        follow_up="311-27091967 (In Progress)",
+        summary="Elevator alarm was reported.",
+    )
+    source = PublicRow(
+        updated="2026-04-09 08:06 PM",
+        issue="Alarm rung on unknown elevator",
+        category="Elevator",
+        follow_up="",
+        summary="Elevator alarm was reported.",
+    )
+
+    assert _public_row_covers_source_row(live, source)
+
+
+def test_renderer_wording_and_evidence_suffix_cover_same_cloudy_water_update():
+    live = PublicRow(
+        updated="2025-10-30 12:55 PM",
+        issue="Cloudy water alert possibly storm related",
+        category="Leaks / water damage",
+        follow_up="",
+        summary="Current cloudy water alert (assuming storm related) video omitted.",
+    )
+    source = PublicRow(
+        updated="2025-10-30 12:55 PM",
+        issue="Cloudy water alert likely storm related",
+        category="Leaks / water damage",
+        follow_up="",
+        summary="Current cloudy water alert (assuming storm related).",
+    )
+
+    assert _public_row_covers_source_row(live, source)
+
+
+def test_similar_reports_at_different_times_are_not_treated_as_sheet_coverage():
+    live = PublicRow(
+        updated="2026-06-04 07:24 AM",
+        issue="North elevator",
+        category="Elevator",
+        follow_up="",
+        summary="North elevator was reported as out.",
+    )
+    source = PublicRow(
+        updated="2026-06-03 09:52 PM",
+        issue="North elevator",
+        category="Elevator",
+        follow_up="",
+        summary="North elevator was reported as out.",
+    )
+
+    assert not _public_row_covers_source_row(live, source)
+
+
 def test_source_public_rows_keep_matching_updates_outside_duplicate_window():
     first = SourcePublicRow(
         message_id="msg-first",

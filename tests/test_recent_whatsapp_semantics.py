@@ -1,0 +1,125 @@
+import pytest
+
+from packages.db import Incident, MessageDecision, get_session
+from packages.incident.rules import classify_rules
+
+
+def _auth_headers():
+    return {"Authorization": "Bearer test-token"}
+
+
+@pytest.mark.parametrize(
+    ("text", "category", "event_type"),
+    [
+        (
+            "Washing machine 15 isn't reading cards; the door isn't connecting to register that it is shut.",
+            "laundry",
+            "new_issue",
+        ),
+        ("They came out and fixed washers 14 and 15.", "laundry", "restore"),
+        ("There is a lack of fire hoses in the stairwells.", "fire_safety", "new_issue"),
+        ("It looks like firehouses were removed again in stairwell B.", "fire_safety", "still_out"),
+        ("North lift super slow descending. Really slow.", "elevator", "status_update"),
+    ],
+)
+def test_recent_export_phrases_have_stable_noncontaminating_rules(text, category, event_type):
+    result = classify_rules(text)
+
+    assert result["is_issue"] is True
+    assert result["category"] == category
+    assert result["event_type"] == event_type
+
+
+def test_fire_hose_short_followups_keep_one_fire_safety_incident(client, monkeypatch):
+    monkeypatch.setattr("packages.incident.extractor.LLM_MODE", "off")
+    messages = [
+        (1788445860, "There is a lack of fire hoses in the stairwells."),
+        (1788446160, "I was wondering the same thing!"),
+        (1788449820, "Yay, looks like replaced or in process of being replaced while I was out."),
+        (1788472320, "It looks like firehouses were removed again in stairwell B."),
+    ]
+    ids = []
+    for ts_epoch, text in messages:
+        response = client.post(
+            "/ingest/whatsapp_web",
+            headers=_auth_headers(),
+            json={"chat_name": "455 Tenants", "sender": "Tenant", "ts_epoch": ts_epoch, "text": text},
+        )
+        assert response.status_code == 200, response.text
+        ids.append(response.json()["message_id"])
+
+    with get_session() as session:
+        decisions = [session.get(MessageDecision, message_id) for message_id in ids]
+        assert all(decision is not None and decision.category == "fire_safety" for decision in decisions)
+        assert len({decision.incident_id for decision in decisions}) == 1
+        incident = session.get(Incident, decisions[0].incident_id)
+        assert incident is not None
+        assert incident.status == "open"
+        assert incident.asset == "stairwell_fire_hoses"
+
+
+def test_laundry_restore_closes_laundry_incident_not_elevator(client, monkeypatch):
+    monkeypatch.setattr("packages.incident.extractor.LLM_MODE", "off")
+    issue = client.post(
+        "/ingest/whatsapp_web",
+        headers=_auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "sender": "Tenant One",
+            "ts_epoch": 1788351360,
+            "text": "Washing machine 15 isn't reading cards and the door isn't connecting.",
+        },
+    )
+    restore = client.post(
+        "/ingest/whatsapp_web",
+        headers=_auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "sender": "Tenant Two",
+            "ts_epoch": 1788442560,
+            "text": "They came out and fixed washers 14 and 15.",
+        },
+    )
+    assert issue.status_code == restore.status_code == 200
+
+    with get_session() as session:
+        issue_decision = session.get(MessageDecision, issue.json()["message_id"])
+        restore_decision = session.get(MessageDecision, restore.json()["message_id"])
+        assert issue_decision.category == restore_decision.category == "laundry"
+        assert issue_decision.incident_id == restore_decision.incident_id
+        incident = session.get(Incident, issue_decision.incident_id)
+        assert incident.status == "closed"
+
+
+def test_direction_followup_inherits_north_slow_elevator(client, monkeypatch):
+    monkeypatch.setattr("packages.incident.extractor.LLM_MODE", "off")
+    slow = client.post(
+        "/ingest/whatsapp_web",
+        headers=_auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "sender": "Tenant One",
+            "ts_epoch": 1788487200,
+            "text": "North lift super slow descending. Really slow.",
+        },
+    )
+    confirmation = client.post(
+        "/ingest/whatsapp_web",
+        headers=_auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "sender": "Tenant Two",
+            "ts_epoch": 1788487260,
+            "text": "Same going up.",
+        },
+    )
+    assert slow.status_code == confirmation.status_code == 200
+
+    with get_session() as session:
+        slow_decision = session.get(MessageDecision, slow.json()["message_id"])
+        confirmation_decision = session.get(MessageDecision, confirmation.json()["message_id"])
+        assert slow_decision.category == confirmation_decision.category == "elevator"
+        assert slow_decision.incident_id == confirmation_decision.incident_id
+        incident = session.get(Incident, slow_decision.incident_id)
+        assert incident.asset == "elevator_north"
+        assert incident.status == "open"

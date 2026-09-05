@@ -36,7 +36,16 @@ RECENT_INCIDENT_CONTEXT_DAYS = int(os.environ.get("RECENT_INCIDENT_CONTEXT_DAYS"
 RECENT_INCIDENT_CONTEXT_LIMIT = int(os.environ.get("RECENT_INCIDENT_CONTEXT_LIMIT", "16"))
 LLM_MODE = os.environ.get("LLM_MODE", "uncertain").lower().strip()
 BUILDING_TZ = ZoneInfo(os.environ.get("BUILDING_TIMEZONE", "America/New_York"))
-VALID_CATEGORIES = {"elevator", "heat_hot_water", "leaks_water_damage", "pests", "security_access", "other"}
+VALID_CATEGORIES = {
+    "elevator",
+    "heat_hot_water",
+    "leaks_water_damage",
+    "pests",
+    "security_access",
+    "fire_safety",
+    "laundry",
+    "other",
+}
 NONISSUE_GUARDRAIL_CONFIDENCE = int(os.environ.get("NONISSUE_GUARDRAIL_CONFIDENCE", "85"))
 AUTHORITATIVE_RULE_EVENT_TYPES = {"outage", "still_out", "restore"}
 SOURCE_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)")
@@ -151,6 +160,7 @@ CONTEXTUAL_RESTORE_CAUTION_RE = re.compile(
 )
 CONTEXTUAL_NON_ELEVATOR_TOPIC_RE = re.compile(
     r"\b(?:wi-?fi|internet|laundry|washer|dryer|laundry\s+app|laundry\s+card|"
+    r"washing\s+machine|fire\s*hose|firehouse|standpipe|sprinkler|"
     r"electrical|wiring|outlet|outlets|oven)\b",
     re.IGNORECASE,
 )
@@ -161,6 +171,18 @@ CONTEXTUAL_HYPOTHETICAL_RE = re.compile(
 )
 CONTEXTUAL_CONFIRMATION_RE = re.compile(
     r"\b(?:same\s+(?:thing\s+)?happened\s+to\s+me|same\s+here)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_TOPIC_CONFIRMATION_RE = re.compile(
+    r"\b(?:i\s+was\s+wondering\s+the\s+same\s+thing|same\s+here|me\s+too)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_REPLACEMENT_PROGRESS_RE = re.compile(
+    r"\b(?:looks?\s+like\s+)?(?:replaced|replacement|in\s+(?:the\s+)?process\s+of\s+being\s+replaced)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_ELEVATOR_DIRECTION_RE = re.compile(
+    r"^\s*same\s+going\s+(?:up|down)\W*$",
     re.IGNORECASE,
 )
 REVIEWED_NONISSUE_CONTEXT_RE = re.compile(
@@ -278,6 +300,14 @@ def _recent_related_context(session, rm: RawMessage) -> list[dict]:
         "lock",
         "intercom",
         "security",
+        "fire hose",
+        "firehose",
+        "standpipe",
+        "sprinkler",
+        "laundry",
+        "washer",
+        "washing machine",
+        "dryer",
         "mold",
         "boiler",
     ]
@@ -816,6 +846,98 @@ def _llm_reviews_every_meaningful_message() -> bool:
     return (LLM_MODE or "uncertain").lower().strip() in {"all", "supervised"}
 
 
+def _latest_issue_context(
+    session,
+    rm: RawMessage,
+    *,
+    max_age_seconds: int,
+    categories: set[str] | None = None,
+) -> tuple[MessageDecision, Incident | None] | None:
+    if rm.ts_epoch is None or not rm.chat_name:
+        return None
+    query = (
+        session.query(MessageDecision, RawMessage, Incident)
+        .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
+        .outerjoin(Incident, Incident.incident_id == MessageDecision.incident_id)
+        .filter(
+            RawMessage.message_id != rm.message_id,
+            RawMessage.chat_name == rm.chat_name,
+            RawMessage.ts_epoch.isnot(None),
+            RawMessage.ts_epoch <= int(rm.ts_epoch),
+            RawMessage.ts_epoch >= int(rm.ts_epoch) - int(max_age_seconds),
+            MessageDecision.is_issue.is_(True),
+        )
+    )
+    if categories:
+        query = query.filter(MessageDecision.category.in_(sorted(categories)))
+    row = query.order_by(RawMessage.ts_epoch.desc(), RawMessage.message_id.desc()).first()
+    if not row:
+        return None
+    decision, _raw, incident = row
+    return decision, incident
+
+
+def _contextual_topic_followup_choice(session, rm: RawMessage) -> dict | None:
+    """Resolve short follow-ups from the nearest issue, without elevator bleed."""
+    text = (rm.text or "").strip()
+    if not text:
+        return None
+
+    categories: set[str] | None = None
+    max_age_seconds = 15 * 60
+    title = "Building issue corroborated"
+    summary = "Tenant corroborates the immediately preceding building issue."
+    severity = 2
+
+    if CONTEXTUAL_ELEVATOR_DIRECTION_RE.search(text):
+        categories = {"elevator"}
+        title = "Elevator direction performance update"
+        summary = "Tenant reports the same elevator performance problem in the other direction."
+        severity = 3
+    elif CONTEXTUAL_REPLACEMENT_PROGRESS_RE.search(text):
+        categories = {"fire_safety"}
+        max_age_seconds = 4 * 3600
+        title = "Stairwell fire-hose replacement update"
+        summary = "Tenant reports apparent progress replacing the stairwell fire hoses."
+        severity = 3
+    elif not CONTEXTUAL_TOPIC_CONFIRMATION_RE.search(text):
+        return None
+
+    previous = _latest_issue_context(
+        session,
+        rm,
+        max_age_seconds=max_age_seconds,
+        categories=categories,
+    )
+    if previous is None:
+        return None
+    decision, incident = previous
+    category = str(decision.category or "other")
+    asset = incident.asset if incident is not None else None
+    if category == "fire_safety":
+        asset = "stairwell_fire_hoses"
+        if CONTEXTUAL_TOPIC_CONFIRMATION_RE.search(text):
+            title = "Missing stairwell fire hoses corroborated"
+            summary = "A second tenant corroborates the missing stairwell fire-hose concern."
+            severity = 4
+    return {
+        "is_issue": True,
+        "signal_type": "report",
+        "category": category,
+        "asset": asset,
+        "event_type": "status_update",
+        "severity": severity,
+        "confidence": 88,
+        "title": title,
+        "summary": summary,
+        "refers_to_open_incident": True,
+        "close_incident": False,
+        "needs_review": False,
+        "preserve_issue": True,
+        "preserve_event_type": True,
+    }
+
+
 def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -> dict | None:
     if rm.ts_epoch is None or not rm.chat_name:
         return None
@@ -1205,7 +1327,7 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
     rules = classify_rules(rm.text)
     rule_choice = _rule_choice(rules)
     reviewed_nonissue = bool(not rule_choice and REVIEWED_NONISSUE_CONTEXT_RE.search(rm.text or ""))
-    context_choice = _contextual_elevator_followup_choice(session, rm, rules)
+    context_choice = _contextual_topic_followup_choice(session, rm) or _contextual_elevator_followup_choice(session, rm, rules)
     if context_choice and (
         not rule_choice
         or (rule_choice.get("category") == "heat_hot_water" and context_choice.get("category") == "elevator")
@@ -1479,10 +1601,15 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
                         best = candidate
                         break
                     delta = int(rm.ts_epoch) - int(candidate.last_ts_epoch)
-                    if 0 <= delta <= OTHER_WINDOW_SECONDS:
+                    merge_window_seconds = (
+                        ELEVATOR_CONTINUATION_MAX_SECONDS
+                        if cat in {"fire_safety", "laundry"} and event_type in {"restore", "still_out", "status_update"}
+                        else OTHER_WINDOW_SECONDS
+                    )
+                    if 0 <= delta <= merge_window_seconds:
                         best = candidate
                         break
-                    if delta > OTHER_WINDOW_SECONDS:
+                    if delta > merge_window_seconds:
                         break
             if close_incident:
                 if best:

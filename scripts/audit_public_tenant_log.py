@@ -114,6 +114,15 @@ def _normalize_text(value: object) -> str:
     return " ".join(str(value or "").replace("\u202f", " ").split()).casefold()
 
 
+def _coverage_text(value: object) -> str:
+    """Normalize only known renderer wording variants used for source coverage."""
+    clean = _normalize_text(value)
+    clean = re.sub(r"\b(?:likely|possibly)\b", "possibly", clean)
+    clean = re.sub(r"\balarm\s+rung\b", "alarm rang", clean)
+    clean = re.sub(r"\s+video\s+omitted\.?$", ".", clean)
+    return clean
+
+
 def _normalize_public_time(value: object) -> str:
     clean = " ".join(str(value or "").replace("\u202f", " ").split())
     for fmt in ("%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M"):
@@ -212,14 +221,32 @@ def _source_row_dicts(rows: list[SourcePublicRow], *, limit: int) -> list[dict[s
 def _public_row_covers_source_row(public_row: PublicRow, source_row: PublicRow) -> bool:
     if public_row.content_key == source_row.content_key:
         return True
-    if _normalize_public_time(public_row.updated) != _normalize_public_time(source_row.updated):
-        return False
+    public_time = _row_time(public_row.updated)
+    source_time = _row_time(source_row.updated)
+    exact_time = _normalize_public_time(public_row.updated) == _normalize_public_time(source_row.updated)
+    within_renderer_dedupe_window = bool(
+        public_time is not None
+        and source_time is not None
+        and abs((public_time - source_time).total_seconds()) <= sheets_sync.PUBLIC_DUPLICATE_WINDOW_SECONDS
+    )
+    cross_time_alarm_alias = False
+    if not exact_time:
+        cross_time_alarm_alias = (
+            within_renderer_dedupe_window
+            and "alarm rang" in _coverage_text(public_row.issue)
+            and "alarm rang" in _coverage_text(source_row.issue)
+            and _coverage_text(public_row.summary) == _coverage_text(source_row.summary)
+        )
+        if not cross_time_alarm_alias:
+            return False
     public_category = _normalize_text(public_row.category)
     source_category = _normalize_text(source_row.category)
     if source_category != public_category and source_category not in public_category:
         return False
-    public_issue = _normalize_text(public_row.issue)
-    source_issue = _normalize_text(source_row.issue)
+    if cross_time_alarm_alias:
+        return True
+    public_issue = _coverage_text(public_row.issue)
+    source_issue = _coverage_text(source_row.issue)
     if (
         _normalize_text(public_row.category) == "elevator"
         and "working" in public_issue
@@ -230,8 +257,8 @@ def _public_row_covers_source_row(public_row: PublicRow, source_row: PublicRow) 
         return True
     if public_issue != source_issue and source_issue not in public_issue:
         return False
-    public_summary = _normalize_text(public_row.summary)
-    source_summary = _normalize_text(source_row.summary)
+    public_summary = _coverage_text(public_row.summary)
+    source_summary = _coverage_text(source_row.summary)
     return public_summary == source_summary or source_summary in public_summary
 
 

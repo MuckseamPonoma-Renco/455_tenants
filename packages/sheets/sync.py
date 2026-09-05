@@ -33,6 +33,7 @@ PUBLIC_FROZEN_ROWS = 1
 PUBLIC_THUMBNAIL_HEIGHT = 110
 PUBLIC_THUMBNAIL_WIDTH = 240
 LEGACY_PUBLIC_UPDATE_TABS = ("PublicUpdates",)
+STALE_PUBLIC_QA_TAB_PREFIX = "QA Draft "
 PUBLIC_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)")
 PUBLIC_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 PUBLIC_UNIT_LINE_RE = re.compile(r"^(?:apt\.?|apartment|unit)?\s*\d{1,3}[A-Z]?(?:\s+here)?\.?$", re.IGNORECASE)
@@ -132,7 +133,7 @@ PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"\b("
     r"zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|"
     r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
-    r"out\s+of\s+(?:service|order)|not\s+working|broken|stuck|dead|"
+    r"out\s+of\s+(?:service|order)|not\s+working|broken|stuck|dead|died|"
     r"stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
     r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
@@ -147,13 +148,20 @@ PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"(?:back|down)\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
     r"reduced\s+service|malfunction(?:ing)?|"
     r"clunk(?:ed|ing)?|bang(?:ed|ing)?|bounce[sd]?|jolt(?:ed|ing)?|shake[sn]?|shook|"
-    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door"
+    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door|"
+    r"(?:super|very|really)\s+slow|moving\s+slow(?:ly)?|running\s+slow(?:ly)?|slow\s+(?:ascending|descending)"
     r")\b",
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_IRREGULAR_OPERATION_RE = re.compile(
     r"\b(?:clunk(?:ed|ing)?|bang(?:ed|ing)?|bounce[sd]?|jolt(?:ed|ing)?|shake[sn]?|shook|"
-    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door)\b",
+    r"rough\s+ride|door\s+(?:opened|opening|opens)\s+(?:slow(?:ly)?|in\s+slo-?mo)|slow\s+door|"
+    r"(?:super|very|really)\s+slow|moving\s+slow(?:ly)?|running\s+slow(?:ly)?|slow\s+(?:ascending|descending))\b",
+    re.IGNORECASE,
+)
+PUBLIC_ELEVATOR_SLOW_OPERATION_RE = re.compile(
+    r"\b(?:(?:super|very|really)\s+slow|moving\s+slow(?:ly)?|running\s+slow(?:ly)?|"
+    r"slow\s+(?:ascending|descending)|(?:ascending|descending)\s+slow(?:ly)?)\b",
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_SAME_CONFIRMATION_RE = re.compile(
@@ -167,7 +175,7 @@ PUBLIC_ELEVATOR_CALL_RESPONSE_RE = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_WORKING_STATUS_RE = re.compile(
-    r"\b(?:working\s+(?:normal(?:ly)?|now|rn)|working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service)|both\s+work\s+now)\b",
+    r"\b(?:working\s+(?:normal(?:ly)?|now|rn)|working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service)|both\s+(?:elevators?|lifts?)?\s*work(?:\s+(?:now|this\s+(?:am|morning)))?)\b",
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE = re.compile(
@@ -193,9 +201,25 @@ PUBLIC_STAIR_SPILL_RE = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_LAUNDRY_ISSUE_RE = re.compile(
-    r"\b(?:laundry|washer|washers|dryer|dryers)\b[^.!?\n]{0,160}\b(?:"
+    r"\b(?:laundry|washer|washers|dryer|dryers|washing\s+machines?)\b[^.!?\n]{0,160}\b(?:"
     r"not\s+working|doesn['’]?t\s+work|error|can['’]?t\s+connect|cannot\s+connect|"
-    r"won['’]?t\s+(?:read|recognize|accept)|doesn['’]?t\s+(?:read|recognize|accept))\b",
+    r"(?:won['’]?t|doesn['’]?t|isn['’]?t|can['’]?t)\s+(?:read(?:ing)?|recognize|accept)|"
+    r"door\s+(?:isn['’]?t|not)\s+(?:connect(?:ing)?|register(?:ing)?))\b",
+    re.IGNORECASE,
+)
+PUBLIC_LAUNDRY_RESTORE_RE = re.compile(
+    r"\b(?:laundry|washer|washers|dryer|dryers|washing\s+machines?)\b[^.!?\n]{0,160}\b(?:"
+    r"fixed|repaired|restored|working\s+(?:again|now)|back\s+in\s+service)\b"
+    r"|\b(?:fixed|repaired|restored)\b[^.!?\n]{0,160}\b(?:washer|washers|dryer|dryers|washing\s+machines?)\b",
+    re.IGNORECASE,
+)
+PUBLIC_FIRE_HOSE_RE = re.compile(r"\b(?:fire\s*hoses?|firehouses?)\b", re.IGNORECASE)
+PUBLIC_FIRE_HOSE_MISSING_RE = re.compile(
+    r"\b(?:lack\s+of|missing|removed|not\s+(?:there|present|installed)|no)\b",
+    re.IGNORECASE,
+)
+PUBLIC_FIRE_HOSE_PROGRESS_RE = re.compile(
+    r"\b(?:replac(?:e|ed|ement|ing)|install(?:ed|ing|ation)?|put\s+back|restor(?:e|ed|ing)|in\s+process)\b",
     re.IGNORECASE,
 )
 PUBLIC_LAUNDRY_MACHINE_NUMBER_RE = re.compile(
@@ -467,6 +491,25 @@ def _sheet_title_to_id_map(svc, sheet_id: str) -> dict[str, int]:
         if isinstance(title, str) and isinstance(sheet_gid, int):
             out[title] = sheet_gid
     return out
+
+
+def _hide_stale_public_qa_tabs(svc, sheet_id: str, *, active_tab: str) -> None:
+    """Keep old QA previews available to operators without exposing them as live data."""
+    requests = [
+        {
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_gid, "hidden": True},
+                "fields": "hidden",
+            }
+        }
+        for title, sheet_gid in _sheet_title_to_id_map(svc, sheet_id).items()
+        if title != active_tab and title.startswith(STALE_PUBLIC_QA_TAB_PREFIX)
+    ]
+    if requests:
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=sheet_id,
+            body={"requests": requests},
+        ).execute()
 
 
 def _set_spreadsheet_title(svc, sheet_id: str, title: str) -> None:
@@ -1111,6 +1154,10 @@ def _latest_case_for_incident(cases: list[ServiceRequestCase]) -> ServiceRequest
 def _raw_message_is_public(raw: RawMessage | None, allowed_chat_names: set[str]) -> bool:
     if raw is None:
         return False
+    # The building report form is a first-party tenant intake surface. Its
+    # generated chat label is intentionally separate from WhatsApp's group name.
+    if _clean_text(raw.source).casefold() == "report_form":
+        return True
     if not allowed_chat_names:
         return True
     return _clean_text(raw.chat_name).casefold() in allowed_chat_names
@@ -1660,6 +1707,8 @@ def _public_category_label(category: str | None) -> str:
         return "Other"
     labels = {
         "elevator": "Elevator",
+        "fire_safety": "Fire safety",
+        "laundry": "Laundry",
         "pests": "Pest activity",
         "leaks_water_damage": "Leaks / water damage",
         "security_access": "Security / access",
@@ -1786,7 +1835,7 @@ def _public_elevator_asset_from_text(text: str, fallback_asset: str | None) -> s
             for segment in segments
         )
 
-    affected_status = r"(?:out|down|dead|broken|stuck|stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|not\s+working|out\s+of\s+(?:service|order))"
+    affected_status = r"(?:out|down|dead|died|broken|stuck|stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|not\s+working|out\s+of\s+(?:service|order))"
     working_status = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
     north_affected = side_has("north", affected_status)
     south_affected = side_has("south", affected_status)
@@ -1926,6 +1975,7 @@ def _public_should_include_update(
     if raw is None:
         return True
     text = _clean_text(raw.text)
+    context_text = _public_update_detection_text(raw)
     if not text:
         return False
     decision_event = _clean_text(getattr(decision, "event_type", ""))
@@ -1969,6 +2019,10 @@ def _public_should_include_update(
         )
     if incident.category == "other":
         return bool(_public_other_update_issue_label(text))
+    if incident.category == "laundry":
+        return bool(PUBLIC_LAUNDRY_ISSUE_RE.search(context_text) or PUBLIC_LAUNDRY_RESTORE_RE.search(context_text))
+    if incident.category == "fire_safety":
+        return bool(PUBLIC_FIRE_HOSE_RE.search(context_text))
     return True
 
 
@@ -1999,6 +2053,7 @@ def _public_is_actionable_311_update(incident: Incident, raw: RawMessage | None)
 
 def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str:
     text = _clean_text(getattr(raw, "text", ""))
+    context_text = _public_update_detection_text(raw)
     if _public_has_apartment_entry_concern(text):
         if PUBLIC_UNDER_SINK_LEAK_RE.search(text):
             return "Under-sink leak and apartment entry concern"
@@ -2077,6 +2132,18 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
             return "Elevator repair expected"
         if repair_label == "Repair not completed":
             return "Elevator repair not completed"
+    if incident.category == "laundry":
+        machine = PUBLIC_LAUNDRY_MACHINE_NUMBER_RE.search(context_text)
+        suffix = f" #{machine.group(1)}" if machine else ""
+        if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
+            return f"Laundry machine{suffix} repaired"
+        return f"Laundry machine{suffix} issue"
+    if incident.category == "fire_safety" and PUBLIC_FIRE_HOSE_RE.search(context_text):
+        if PUBLIC_FIRE_HOSE_PROGRESS_RE.search(text):
+            return "Fire-hose replacement in progress"
+        if PUBLIC_FIRE_HOSE_MISSING_RE.search(context_text):
+            return "Fire hoses missing"
+        return "Fire-hose safety update"
     if incident.category == "other":
         other_label = _public_other_update_issue_label(text)
         if other_label:
@@ -2108,6 +2175,12 @@ def _public_elevator_text_is_reduced_service(text: str) -> bool:
 
 def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
     lowered = _clean_text(text).casefold()
+    if PUBLIC_ELEVATOR_SLOW_OPERATION_RE.search(text):
+        if asset == "elevator_north":
+            return "North elevator was reported running unusually slowly."
+        if asset == "elevator_south":
+            return "South elevator was reported running unusually slowly."
+        return "Elevator was reported running unusually slowly."
     if PUBLIC_ELEVATOR_IRREGULAR_OPERATION_RE.search(text):
         if asset == "elevator_north":
             return "North elevator was reported making a loud clunk, bouncing, or opening slowly."
@@ -2150,6 +2223,7 @@ def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
 
 def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
     text = _clean_text(getattr(raw, "text", ""))
+    context_text = _public_update_detection_text(raw)
     if _public_has_apartment_entry_concern(text):
         if PUBLIC_UNDER_SINK_LEAK_RE.search(text):
             return "Resident reported an under-sink leak and possible apartment entry while no one was home."
@@ -2200,6 +2274,21 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             return "Elevator repair was reported not completed yet."
         if _public_elevator_text_is_actionable(detection_text):
             return _public_elevator_outage_summary(asset, detection_text)
+    if incident.category == "laundry":
+        machine = PUBLIC_LAUNDRY_MACHINE_NUMBER_RE.search(context_text)
+        if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
+            if machine:
+                return f"Laundry machine #{machine.group(1)} was reported repaired."
+            return "Laundry machines were reported repaired."
+        if machine:
+            return f"Laundry machine #{machine.group(1)} was reported unusable because of a card or door-connection failure."
+        return "A laundry machine problem was reported."
+    if incident.category == "fire_safety" and PUBLIC_FIRE_HOSE_RE.search(context_text):
+        if PUBLIC_FIRE_HOSE_PROGRESS_RE.search(text):
+            return "Replacement of the building's fire hoses was reported in progress."
+        if PUBLIC_FIRE_HOSE_MISSING_RE.search(context_text):
+            return "Building fire hoses were reported missing or removed."
+        return "A building fire-hose safety update was reported."
     if incident.category == "other" and PUBLIC_STAIR_SPILL_RE.search(text):
         return "Liquid spill was reported in the stairwell/common area."
     if incident.category == "other" and PUBLIC_LAUNDRY_ISSUE_RE.search(text):
@@ -2344,10 +2433,6 @@ def _public_merge_same_time_group(group: list[list[object]]) -> list[object]:
         return group[0]
 
     ordered = sorted(group, key=lambda row: 0 if row[3] else 1)
-    if any(row[3] for row in ordered):
-        filtered = [row for row in ordered if row[3] or "working" not in _clean_text(str(row[1])).casefold()]
-        if filtered:
-            ordered = filtered
     preview_row = next((row for row in ordered if row[4]), None)
     evidence_row = next((row for row in ordered if row[5]), None)
     return [
@@ -2544,6 +2629,7 @@ def sync_public_updates_to_sheets():
     tab = _public_updates_tab()
     _set_spreadsheet_title(svc, sheet_id, PUBLIC_WORKBOOK_TITLE)
     _ensure_tab_exists(svc, sheet_id, tab, rename_single_existing=True)
+    _hide_stale_public_qa_tabs(svc, sheet_id, active_tab=tab)
 
     allowed_chat_names = _allowed_public_chat_names()
     now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
@@ -2920,6 +3006,7 @@ def sync_project_status_to_sheets():
 
     project = state["project"]
     official_records = state["official_records"]
+    registered_owners = state.get("registered_owners") or []
     open_actions = [row for row in state["actions"] if row.get("status") == "open"]
     records_needing_verification = [row for row in official_records if row.get("needs_human_verification")]
     machine_verified_records = [row for row in official_records if row.get("machine_verified_at")]
@@ -2941,6 +3028,15 @@ def sync_project_status_to_sheets():
             ["management_claim", "summary", "claimed", project.get("management_summary") or "", "management_pdf", project.get("updated_at") or ""],
         ]
     )
+    for owner in registered_owners:
+        values.append([
+            "official_owner",
+            "registered_corporate_owner",
+            "HPD verified",
+            owner.get("organization") or "",
+            owner.get("source_url") or "HPD Registration Contacts",
+            owner.get("last_seen_at") or "",
+        ])
     for milestone in state["management_claims"]["milestones"]:
         values.append([
             "milestone",

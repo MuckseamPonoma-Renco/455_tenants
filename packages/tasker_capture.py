@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from packages.audit import sender_hash
@@ -14,7 +15,8 @@ NEW_MESSAGES_RE = re.compile(r"^\d+\s+new messages?$", re.IGNORECASE)
 LIVE_CAPTURE_SOURCES = ("tasker", "whatsapp_web")
 CROSS_SOURCE_DUPLICATE_SOURCES = ("zip_import", "export")
 CROSS_SOURCE_SHORT_OPERATIONAL_RE = re.compile(
-    r"\b(?:north|south|both|elevators?|lifts?|still\s+out|out|down|working|moving|in\s+service)\b",
+    r"\b(?:north|south|both|elevators?|lifts?|still\s+out|out|down|working|moving|in\s+service|"
+    r"fire\s*hoses?|firehouses?|washers?|dryers?|same\s+going\s+(?:up|down))\b",
     re.IGNORECASE,
 )
 
@@ -142,7 +144,23 @@ def _recent_duplicate_candidates(
 
 def cross_source_text_signature(text: str | None) -> str:
     clean = _clean(text).translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'}))
+    # Live capture can omit a trailing reaction emoji that the exported archive
+    # preserves. Ignore pictographic symbols for cross-source identity while
+    # retaining ordinary punctuation and text.
+    clean = "".join(
+        " " if unicodedata.category(char) in {"So", "Sk"} or char in {"\ufe0f", "\u200d"} else char
+        for char in clean
+    )
     return re.sub(r"\s+", " ", clean).casefold()
+
+
+def is_cross_source_duplicate_candidate(text: str | None) -> bool:
+    """Keep generic short replies distinct while admitting operational updates."""
+    target = cross_source_text_signature(text)
+    return bool(target) and (
+        len(target) >= cross_source_duplicate_min_text_chars()
+        or bool(CROSS_SOURCE_SHORT_OPERATIONAL_RE.search(target))
+    )
 
 
 def find_recent_cross_source_duplicate(
@@ -155,7 +173,7 @@ def find_recent_cross_source_duplicate(
     if ts_epoch is None:
         return None
     target = cross_source_text_signature(text)
-    if len(target) < cross_source_duplicate_min_text_chars() and not CROSS_SOURCE_SHORT_OPERATIONAL_RE.search(target):
+    if not is_cross_source_duplicate_candidate(text):
         return None
     window = cross_source_duplicate_window_seconds()
     if window <= 0:

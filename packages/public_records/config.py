@@ -337,6 +337,37 @@ def source_configs() -> tuple[SourceConfig, ...]:
             query_templates=({"bin": "{bin}"}, {"boro": "{borough_upper}", "housenumber": "455", "streetname": "OCEAN PARKWAY"}, {"block": "5390", "lot": "74"}),
         ),
         SourceConfig(
+            key="hpd_registration_contacts",
+            name="HPD Registration Contacts",
+            dataset_id=os.environ.get("NYC_HPD_REGISTRATION_CONTACTS_DATASET", "feu5-w2e2"),
+            record_type="hpd_registration_contact",
+            useful_fields=(
+                "registrationcontactid",
+                "registrationid",
+                "type",
+                "contactdescription",
+                "corporationname",
+                "title",
+                "firstname",
+                "middleinitial",
+                "lastname",
+                "businesshousenumber",
+                "businessstreetname",
+                "businessapartment",
+                "businesscity",
+                "businessstate",
+                "businesszip",
+            ),
+            required_fields=("registrationcontactid", "registrationid", "type"),
+            filter_fields=("registrationid", "registrationcontactid", "type", "corporationname"),
+            elevator_specific=False,
+            notes=(
+                "Official HPD contacts joined through the building's current registration ID. "
+                "Only organization-level owner names are exposed in tenant-facing summaries."
+            ),
+            query_templates=({"registrationid": "{registrationid}"},),
+        ),
+        SourceConfig(
             key="hpd_violations",
             name="Housing Maintenance Code Violations",
             dataset_id=os.environ.get("NYC_HPD_VIOLATIONS_DATASET", "wvxf-dwi5"),

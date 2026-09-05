@@ -101,6 +101,28 @@ class _LegacyPublicTabService(_FakeService):
         return _LegacyPublicTabSpreadsheets(calls)
 
 
+class _StaleQaTabService(_FakeService):
+    def spreadsheets(self):
+        calls = self.calls
+
+        class _StaleQaTabSpreadsheets(_FakeSpreadsheets):
+            def get(self, **kwargs):
+                return _FakeRequest(
+                    calls,
+                    "get",
+                    kwargs,
+                    response={
+                        "sheets": [
+                            {"properties": {"title": "Tenant Log", "sheetId": 7}},
+                            {"properties": {"title": "QA Draft 2026-05-05", "sheetId": 88}},
+                            {"properties": {"title": "WeeklyDigest", "sheetId": 12}},
+                        ]
+                    },
+                )
+
+        return _StaleQaTabSpreadsheets(calls)
+
+
 def test_service_uses_bounded_authorized_http(monkeypatch, tmp_path):
     credentials_path = tmp_path / "sheets-service-account.json"
     credentials_path.write_text("{}", encoding="utf-8")
@@ -172,6 +194,24 @@ def test_clear_legacy_public_update_tabs_clears_stale_internal_public_tab(monkey
     clear_call = next(kwargs for kind, kwargs in service.calls if kind == "clear")
     assert clear_call["spreadsheetId"] == "internal-sheet-123"
     assert clear_call["range"] == "'PublicUpdates'!A:ZZ"
+
+
+def test_hide_stale_public_qa_tabs_preserves_tab_but_hides_it():
+    service = _StaleQaTabService()
+
+    sheets_sync._hide_stale_public_qa_tabs(service, "public-sheet", active_tab="Tenant Log")
+
+    body = next(kwargs["body"] for kind, kwargs in service.calls if kind == "batchUpdate")
+    assert body == {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": 88, "hidden": True},
+                    "fields": "hidden",
+                }
+            }
+        ]
+    }
 
 
 def test_public_status_summary_uses_last_evidence_when_last_report_missing():
@@ -512,6 +552,97 @@ def test_public_update_includes_concrete_laundry_machine_card_failure():
     assert sheets_sync._public_event_issue_label(incident, raw) == "Laundry machine/card issue"
     assert sheets_sync._public_event_summary(incident, raw) == (
         "Washer #15 was reported unable to read a laundry card."
+    )
+
+
+def test_public_update_uses_dedicated_laundry_category_and_restore():
+    incident = Incident(
+        incident_id="laundry-restore",
+        category="laundry",
+        title="Laundry machines repaired",
+        proof_refs="laundry-restore-message",
+    )
+    raw = RawMessage(
+        message_id="laundry-restore-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-laundry-restore",
+        ts_iso="2026-09-03T16:00:00Z",
+        ts_epoch=1788451200,
+        text="Washing machines 14 and 15 were repaired",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_category_label(incident, raw) == "Laundry"
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Laundry machine repaired"
+    assert sheets_sync._public_event_summary(incident, raw) == "Laundry machines were reported repaired."
+
+
+def test_public_update_uses_fire_safety_context_for_replacement_progress():
+    incident = Incident(
+        incident_id="fire-hose-progress",
+        category="fire_safety",
+        title="Fire-hose replacement",
+        proof_refs="fire-hose-progress-message",
+    )
+    raw = RawMessage(
+        message_id="fire-hose-progress-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-fire-progress",
+        ts_iso="2026-09-03T14:00:00Z",
+        ts_epoch=1788444000,
+        text="Yay, looks like replaced or in process",
+        attachments='{"message_context":{"reply_text":"The fire hoses are missing"}}',
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_category_label(incident, raw) == "Fire safety"
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Fire-hose replacement in progress"
+    assert sheets_sync._public_event_summary(incident, raw) == (
+        "Replacement of the building's fire hoses was reported in progress."
+    )
+
+
+def test_report_form_message_is_public_even_with_whatsapp_chat_allowlist():
+    raw = RawMessage(
+        message_id="report-form-message",
+        chat_name="455 Report Form",
+        sender="Resident report",
+        sender_hash="hash-form",
+        ts_iso="2026-09-04T14:00:00Z",
+        ts_epoch=1788530400,
+        text="North elevator is not responding",
+        source="report_form",
+    )
+
+    assert sheets_sync._raw_message_is_public(raw, {"455 tenants"}) is True
+
+
+def test_public_slow_elevator_summary_does_not_call_it_an_outage():
+    incident = Incident(
+        incident_id="slow-north",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator slow",
+        proof_refs="slow-north-message",
+    )
+    raw = RawMessage(
+        message_id="slow-north-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-slow",
+        ts_iso="2026-09-01T14:00:00Z",
+        ts_epoch=1788271200,
+        text="North lift is super slow descending",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_summary(incident, raw) == (
+        "North elevator was reported running unusually slowly."
     )
 
 
@@ -1467,6 +1598,41 @@ def test_sync_public_updates_collapses_same_minute_status_rows(client, monkeypat
     assert rows[0][3] == "311-27374123 (In Progress)"
     assert "South elevator was reported as out." in rows[0][6]
     assert "Elevator mechanic was reported on site." in rows[0][6]
+
+
+def test_same_minute_merge_keeps_working_update_when_other_row_has_311_case():
+    rows = [
+        [
+            "2026-05-05 10:13 AM",
+            "South elevator",
+            "Elevator",
+            "311-27372033 (In Progress)",
+            "",
+            "",
+            "South elevator was reported as still out.",
+            "",
+            "",
+        ],
+        [
+            "2026-05-05 10:13 AM",
+            "North elevator working",
+            "Elevator",
+            "",
+            "",
+            "",
+            "North elevator was reported working.",
+            "",
+            "",
+        ],
+    ]
+
+    merged = sheets_sync._public_merge_same_time_group(rows)
+
+    assert merged[1] == "South elevator / North elevator working"
+    assert merged[3] == "311-27372033 (In Progress)"
+    assert merged[6] == (
+        "South elevator was reported as still out. North elevator was reported working."
+    )
 
 
 def test_sync_public_updates_uses_decision_messages_beyond_capped_proof_refs(client, monkeypatch):

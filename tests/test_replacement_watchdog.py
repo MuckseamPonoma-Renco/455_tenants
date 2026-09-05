@@ -409,12 +409,15 @@ def test_successful_contact_refresh_retires_replaced_owner_under_same_registrati
         owners = public_record_sync.registered_owner_organizations(session)
         former = session.query(PublicRecordWatch).filter_by(record_key="old-contact").one()
         current = session.query(PublicRecordWatch).filter_by(record_key="new-contact").one()
+        former_visible_public = former.visible_public
+        former_verification_status = former.machine_verification_status
+        current_visible_public = current.visible_public
         session.commit()
 
     assert result["registration_contacts_retired"] == 1
-    assert former.visible_public is False
-    assert former.machine_verification_status == "retired_from_current_registration"
-    assert current.visible_public is True
+    assert former_visible_public is False
+    assert former_verification_status == "retired_from_current_registration"
+    assert current_visible_public is True
     assert [owner["organization"] for owner in owners] == ["CURRENT OWNER LLC"]
 
 
