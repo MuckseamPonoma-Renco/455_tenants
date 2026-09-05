@@ -12,6 +12,7 @@ from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
 from packages.incident.content_guardrails import nonreporting_content_reason
 from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted
+from packages.sheets.public_semantic_overrides import PublicSemanticOverride, get_public_semantic_override
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
@@ -2132,6 +2133,12 @@ def _public_elevator_event_text(raw: RawMessage | None) -> str:
     return text if decisive else _public_update_detection_text(raw)
 
 
+def _public_semantic_override(raw: RawMessage | None) -> PublicSemanticOverride | None:
+    if raw is None:
+        return None
+    return get_public_semantic_override(raw.message_id, raw.text)
+
+
 def _public_should_include_update(
     incident: Incident,
     raw: RawMessage | None,
@@ -2139,6 +2146,9 @@ def _public_should_include_update(
 ) -> bool:
     if raw is None:
         return True
+    semantic_override = _public_semantic_override(raw)
+    if semantic_override is not None:
+        return semantic_override.include
     text = _clean_text(raw.text)
     context_text = _public_update_detection_text(raw)
     if not text:
@@ -2359,6 +2369,9 @@ def _public_non_elevator_summary(incident: Incident, raw: RawMessage | None) -> 
 
 
 def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str:
+    semantic_override = _public_semantic_override(raw)
+    if semantic_override is not None:
+        return semantic_override.issue_label
     text = _clean_text(getattr(raw, "text", ""))
     context_text = _public_update_detection_text(raw)
     if incident.category == "security_access" and PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
@@ -2470,6 +2483,9 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
 
 
 def _public_event_category_label(incident: Incident, raw: RawMessage | None) -> str:
+    semantic_override = _public_semantic_override(raw)
+    if semantic_override is not None:
+        return semantic_override.category_label
     text = _clean_text(getattr(raw, "text", ""))
     if _public_has_apartment_entry_concern(text):
         if PUBLIC_UNDER_SINK_LEAK_RE.search(text):
@@ -2550,6 +2566,9 @@ def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
 
 
 def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
+    semantic_override = _public_semantic_override(raw)
+    if semantic_override is not None:
+        return semantic_override.summary
     text = _clean_text(getattr(raw, "text", ""))
     context_text = _public_update_detection_text(raw)
     if incident.category == "security_access" and PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
@@ -2680,7 +2699,11 @@ def _public_update_rows(
                 continue
             seen_messages.add(message_id)
             source_text_key = re.sub(r"\W+", " ", _public_update_detection_text(raw).casefold()).strip()
-            preview_cell, open_cell = _public_raw_evidence_cells(raw)
+            semantic_override = _public_semantic_override(raw)
+            if semantic_override is not None and not semantic_override.show_evidence:
+                preview_cell, open_cell = "", ""
+            else:
+                preview_cell, open_cell = _public_raw_evidence_cells(raw)
             cases = case_map.get(incident.incident_id, []) if _public_is_actionable_311_update(incident, raw) else []
             rows.append((
                 int(raw.ts_epoch or _incident_last_epoch(incident) or 0),
