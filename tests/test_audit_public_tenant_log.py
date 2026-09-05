@@ -21,6 +21,34 @@ def test_public_row_key_includes_follow_up_cell():
     assert base.key != wrong_follow_up.key
 
 
+def test_live_readback_requests_the_complete_tenant_log_columns(monkeypatch):
+    calls = []
+
+    class Request:
+        def execute(self):
+            return {"values": [["Public update log"]]}
+
+    class Values:
+        def get(self, **kwargs):
+            calls.append(kwargs)
+            return Request()
+
+    class Spreadsheets:
+        def values(self):
+            return Values()
+
+    class Service:
+        def spreadsheets(self):
+            return Spreadsheets()
+
+    monkeypatch.setattr(public_audit.sheets_sync, "_service", lambda: Service())
+    monkeypatch.setattr(public_audit.sheets_sync, "_public_sheet_id", lambda: "public-sheet")
+    monkeypatch.setattr(public_audit.sheets_sync, "_public_updates_tab", lambda: "Tenant Log")
+
+    assert public_audit._live_values() == [["Public update log"]]
+    assert calls == [{"spreadsheetId": "public-sheet", "range": "Tenant Log!A:G"}]
+
+
 def test_public_row_covers_source_row_with_aggregate_follow_up():
     live = PublicRow(
         updated="2026-06-27 11:43 AM",

@@ -194,7 +194,7 @@ def _live_values() -> list[list[object]]:
     return (
         svc.spreadsheets()
         .values()
-        .get(spreadsheetId=sheet_id, range=f"{tab}!A1:G500")
+        .get(spreadsheetId=sheet_id, range=f"{tab}!A:G")
         .execute()
         .get("values", [])
     )
