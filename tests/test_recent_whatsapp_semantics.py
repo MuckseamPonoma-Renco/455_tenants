@@ -1,7 +1,8 @@
 import pytest
 
-from packages.db import Incident, MessageDecision, get_session
+from packages.db import Incident, MessageDecision, RawMessage, get_session
 from packages.incident.rules import classify_rules
+import scripts.certify_20260905_reviewed_decisions as review_certifier
 from scripts.repair_recent_whatsapp_semantics import (
     CROSS_SOURCE_TARGET_ALIASES,
     _align_cross_source_alias_decisions,
@@ -171,3 +172,46 @@ def test_repair_aligns_archive_alias_with_contextually_classified_live_decision(
         assert archive.event_type == "status_update"
         assert archive.incident_id == "fire-incident"
         assert archive.chosen_source == "rules_context"
+
+
+def test_review_certifier_records_truthful_completed_provenance(client, monkeypatch):
+    message_id = "reviewed-message"
+    monkeypatch.setattr(
+        review_certifier,
+        "REVIEWED_DECISIONS",
+        {message_id: ("elevator", "restore")},
+    )
+    with get_session() as session:
+        session.add(
+            RawMessage(
+                message_id=message_id,
+                sender_hash="tenant",
+                text="Both work now",
+                source="test",
+            )
+        )
+        session.add(
+            MessageDecision(
+                message_id=message_id,
+                incident_id="restored-elevator",
+                chosen_source="rules_context",
+                is_issue=True,
+                category="elevator",
+                event_type="restore",
+                needs_review=False,
+                final_json='{"category":"elevator","event_type":"restore"}',
+            )
+        )
+        session.commit()
+
+    result = review_certifier.certify(apply=True)
+
+    assert result["applied"] is True
+    assert result["errors"] == []
+    with get_session() as session:
+        decision = session.get(MessageDecision, message_id)
+        final = review_certifier._json_object(decision.final_json)
+        assert decision.chosen_source == "review_codex_semantic_audit"
+        assert final["review_status"] == "completed"
+        assert final["review_kind"] == "codex_semantic_audit"
+        assert final["reviewed_by"] == review_certifier.REVIEWED_BY

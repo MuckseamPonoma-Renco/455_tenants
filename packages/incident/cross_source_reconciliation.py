@@ -212,16 +212,12 @@ def _preview_row(index: _ReconciliationIndex, pair: CrossSourceDuplicatePair, *,
 
 
 def _is_issue_identity_pair(index: _ReconciliationIndex, pair: CrossSourceDuplicatePair) -> bool:
-    """Return whether a duplicate has already changed incident/public state."""
+    """Return whether either alias has already changed incident/public state."""
     archive_decision = index.decisions_by_message_id.get(pair.archive_message_id)
     live_decision = index.decisions_by_message_id.get(pair.live_message_id)
-    return bool(
-        archive_decision
-        and live_decision
-        and archive_decision.is_issue
-        and live_decision.is_issue
-        and archive_decision.incident_id
-        and live_decision.incident_id
+    return any(
+        decision and decision.is_issue and decision.incident_id
+        for decision in (archive_decision, live_decision)
     )
 
 

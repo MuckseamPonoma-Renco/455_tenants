@@ -338,3 +338,60 @@ def test_reconciliation_rosters_identity_only_alias_without_deleting_evidence(cl
     with get_session() as session:
         assert session.get(RawMessage, archive_message_id) is not None
         assert session.get(RawMessage, live_message_id) is not None
+
+
+def test_reconciliation_resolves_issue_nonissue_alias_conflict(client):
+    archive = _raw(
+        "archive-stale-nonissue",
+        source="zip_import",
+        text="Two working!",
+        ts_epoch=1785170400,
+        sender="Tenant",
+    )
+    live = _raw(
+        "live-correct-restore",
+        source="whatsapp_web",
+        text="Two working!",
+        ts_epoch=1785170440,
+        sender="+1 (347) 581-0269",
+    )
+    with get_session() as session:
+        incident = _incident(
+            "restored-elevators",
+            start=1785170000,
+            proof_refs=live.message_id,
+        )
+        incident.status = "closed"
+        session.add_all(
+            [
+                archive,
+                live,
+                incident,
+                MessageDecision(
+                    message_id=archive.message_id,
+                    is_issue=False,
+                    event_type="non_issue",
+                ),
+                MessageDecision(
+                    message_id=live.message_id,
+                    incident_id=incident.incident_id,
+                    is_issue=True,
+                    category="elevator",
+                    event_type="restore",
+                ),
+            ]
+        )
+        session.commit()
+
+        summary = reconcile_exact_cross_source_duplicates(session)
+        session.commit()
+
+        assert summary.issue_identity_pairs == 1
+        assert summary.reconciled == 1
+        assert summary.identity_only_pairs == 0
+        assert session.get(RawMessage, archive.message_id) is None
+        assert session.get(RawMessage, live.message_id) is not None
+        decision = session.get(MessageDecision, live.message_id)
+        assert decision.is_issue is True
+        assert decision.event_type == "restore"
+        assert decision.incident_id == incident.incident_id
