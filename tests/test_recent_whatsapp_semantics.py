@@ -1,6 +1,7 @@
 import pytest
 
 from packages.db import Incident, MessageDecision, RawMessage, get_session
+from packages.incident import extractor
 from packages.incident.rules import classify_rules
 import scripts.certify_20260905_reviewed_decisions as review_certifier
 from scripts.repair_recent_whatsapp_semantics import (
@@ -132,6 +133,16 @@ def test_direction_followup_inherits_north_slow_elevator(client, monkeypatch):
 
 def test_limited_fire_stair_followup_attaches_to_exact_access_incident(client, monkeypatch):
     monkeypatch.setattr("packages.incident.extractor.LLM_MODE", "off")
+    elevator = client.post(
+        "/ingest/whatsapp_web",
+        headers=_auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "sender": "Tenant Zero",
+            "ts_epoch": 1784813100,
+            "text": "North elevator is out.",
+        },
+    )
     initial = client.post(
         "/ingest/whatsapp_web",
         headers=_auth_headers(),
@@ -152,7 +163,7 @@ def test_limited_fire_stair_followup_attaches_to_exact_access_incident(client, m
             "text": "1 lift, 1 functional fire stair.",
         },
     )
-    assert initial.status_code == followup.status_code == 200
+    assert elevator.status_code == initial.status_code == followup.status_code == 200
 
     with get_session() as session:
         initial_decision = session.get(MessageDecision, initial.json()["message_id"])
@@ -162,9 +173,34 @@ def test_limited_fire_stair_followup_attaches_to_exact_access_incident(client, m
         assert followup_decision.chosen_source == "rules_context"
         assert followup_decision.incident_id == initial_decision.incident_id
         incident = session.get(Incident, initial_decision.incident_id)
+        elevator_decision = session.get(MessageDecision, elevator.json()["message_id"])
+        elevator_incident = session.get(Incident, elevator_decision.incident_id)
         assert incident.status == "open"
         assert incident.severity == 4
         assert incident.report_count == 2
+        assert elevator_incident.report_count == 1
+
+
+def test_authoritative_review_lock_preserves_exact_context_incident():
+    locked, changed = extractor._lock_authoritative_rule_state(
+        {
+            "is_issue": True,
+            "category": "security_access",
+            "event_type": "status_update",
+            "preserve_issue": True,
+            "preserve_event_type": True,
+            "target_incident_id": "stair-door-incident",
+        },
+        {
+            "is_issue": True,
+            "category": "security_access",
+            "event_type": "status_update",
+            "confidence": 90,
+        },
+    )
+
+    assert changed is False
+    assert locked["target_incident_id"] == "stair-door-incident"
 
 
 def test_limited_fire_stair_fragment_without_context_remains_nonissue(client, monkeypatch):
@@ -183,6 +219,41 @@ def test_limited_fire_stair_fragment_without_context_remains_nonissue(client, mo
 
     with get_session() as session:
         decision = session.get(MessageDecision, response.json()["message_id"])
+        assert decision.is_issue is False
+        assert decision.incident_id is None
+
+
+def test_limited_fire_stair_followup_does_not_reuse_closed_context(client, monkeypatch):
+    monkeypatch.setattr("packages.incident.extractor.LLM_MODE", "off")
+    initial = client.post(
+        "/ingest/whatsapp_web",
+        headers=_auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "sender": "Tenant One",
+            "ts_epoch": 1784813160,
+            "text": "One of the lobby fire stair doors is stuck closed.",
+        },
+    )
+    with get_session() as session:
+        initial_decision = session.get(MessageDecision, initial.json()["message_id"])
+        incident = session.get(Incident, initial_decision.incident_id)
+        incident.status = "closed"
+        session.commit()
+
+    followup = client.post(
+        "/ingest/whatsapp_web",
+        headers=_auth_headers(),
+        json={
+            "chat_name": "455 Tenants",
+            "sender": "Tenant Two",
+            "ts_epoch": 1784813400,
+            "text": "1 lift, 1 functional fire stair.",
+        },
+    )
+    assert followup.status_code == 200
+    with get_session() as session:
+        decision = session.get(MessageDecision, followup.json()["message_id"])
         assert decision.is_issue is False
         assert decision.incident_id is None
 
@@ -284,6 +355,16 @@ def test_review_certifier_records_truthful_completed_provenance(client, monkeypa
         assert final["review_kind"] == "codex_semantic_audit"
         assert final["reviewed_by"] == review_certifier.REVIEWED_BY
         assert final["needs_review"] is False
+        assert session.get(Incident, "restored-elevator").needs_review is False
+
+    with get_session() as session:
+        session.get(Incident, "restored-elevator").needs_review = True
+        session.commit()
+
+    rerun = review_certifier.certify(apply=True)
+    assert rerun["to_certify"] == []
+    assert rerun["already_certified"] == [message_id]
+    with get_session() as session:
         assert session.get(Incident, "restored-elevator").needs_review is False
 
 

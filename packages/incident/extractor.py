@@ -921,8 +921,10 @@ def _contextual_topic_followup_choice(session, rm: RawMessage) -> dict | None:
     if previous is None:
         return None
     decision, incident = previous
+    if incident is None or incident.status == "closed":
+        return None
     category = str(decision.category or "other")
-    asset = incident.asset if incident is not None else None
+    asset = incident.asset
     if category == "fire_safety":
         asset = "stairwell_fire_hoses"
         if CONTEXTUAL_TOPIC_CONFIRMATION_RE.search(text):
@@ -944,7 +946,7 @@ def _contextual_topic_followup_choice(session, rm: RawMessage) -> dict | None:
         "needs_review": False,
         "preserve_issue": True,
         "preserve_event_type": True,
-        "target_incident_id": incident.incident_id if incident is not None else None,
+        "target_incident_id": incident.incident_id,
     }
 
 
@@ -1104,6 +1106,8 @@ def _lock_authoritative_rule_state(rule_choice: dict | None, choice: dict | None
         )
         locked["event_type"] = rule_event_type
         locked["close_incident"] = rule_closes_incident
+    if rule_choice.get("target_incident_id"):
+        locked["target_incident_id"] = rule_choice.get("target_incident_id")
     if changed:
         # Preserve the rule's state, but surface the disagreement for the
         # private roster instead of silently trusting the model's override.

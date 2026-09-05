@@ -76,6 +76,8 @@ def certify(*, apply: bool) -> dict[str, object]:
                 incident_note = " with incident" if expected_is_issue else " without issue incident"
                 errors.append(f"{message_id}: expected {expected}{incident_note}, got {actual}")
                 continue
+            if apply and decision.incident_id:
+                touched_incident_ids.add(decision.incident_id)
             final = _json_object(decision.final_json)
             if (
                 str(decision.chosen_source or "") == "review_codex_semantic_audit"
@@ -99,8 +101,6 @@ def certify(*, apply: bool) -> dict[str, object]:
                 decision.final_json = json.dumps(final, sort_keys=True)
                 decision.chosen_source = "review_codex_semantic_audit"
                 decision.needs_review = False
-                if decision.incident_id:
-                    touched_incident_ids.add(decision.incident_id)
 
         if apply and not errors:
             session.flush()
