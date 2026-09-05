@@ -278,7 +278,7 @@ def _incident_has_automated_followup(session, incident_id: str) -> bool:
 
 def _latest_elevator_state(session, incident: Incident) -> str:
     """Return the current tenant-observed state without treating every open row as an outage."""
-    latest = session.execute(
+    recent = session.execute(
         select(MessageDecision, RawMessage)
         .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
         .where(MessageDecision.incident_id == incident.incident_id)
@@ -288,29 +288,30 @@ def _latest_elevator_state(session, incident: Incident) -> str:
             MessageDecision.created_at.desc().nullslast(),
             MessageDecision.message_id.desc(),
         )
-        .limit(1)
-    ).first()
+        .limit(20)
+    ).all()
 
-    if latest is None:
-        event_type = ""
-        evidence_text = f"{incident.title or ''} {incident.summary or ''}"
-    else:
-        decision, raw_message = latest
-        event_type = (decision.event_type or "").casefold()
-        evidence_text = raw_message.text or ""
+    evidence = [
+        ((decision.event_type or "").casefold(), raw_message.text or "")
+        for decision, raw_message in recent
+    ]
+    if not evidence:
+        evidence = [("", f"{incident.title or ''} {incident.summary or ''}")]
 
-    # Explicit descriptions of slow/irregular operation are degraded service,
-    # even if an older classifier called the message an outage. Reduced service
-    # (for example, "only one elevator working") remains an outage.
-    text_is_down = bool(ELEVATOR_DOWN_TEXT.search(evidence_text))
-    if ELEVATOR_DEGRADED_TEXT.search(evidence_text) and not text_is_down:
-        return "degraded"
-    if ELEVATOR_WORKING_TEXT.search(evidence_text) and not text_is_down:
-        return "working"
-    if event_type in ELEVATOR_DOWN_EVENT_TYPES or text_is_down:
-        return "down"
-    if event_type == "restore":
-        return "working"
+    # A terse contextual follow-up such as "Same going up" carries no state
+    # words itself. Walk backward to the newest explicit state instead of
+    # converting the incident to unknown. Reduced service (for example,
+    # "only one elevator working") remains an outage.
+    for event_type, evidence_text in evidence:
+        text_is_down = bool(ELEVATOR_DOWN_TEXT.search(evidence_text))
+        if ELEVATOR_DEGRADED_TEXT.search(evidence_text) and not text_is_down:
+            return "degraded"
+        if ELEVATOR_WORKING_TEXT.search(evidence_text) and not text_is_down:
+            return "working"
+        if event_type in ELEVATOR_DOWN_EVENT_TYPES or text_is_down:
+            return "down"
+        if event_type == "restore":
+            return "working"
     return "unknown"
 
 

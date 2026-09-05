@@ -1007,6 +1007,7 @@ def test_running_elevator_issue_replaces_false_outage_with_degraded_service_acti
     now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
     incident_id = f"{message_suffix}-running-elevator"
     message_id = f"{message_suffix}-running-elevator-message"
+    followup_message_id = f"{message_suffix}-running-elevator-followup"
     with get_session() as session:
         session.add(Incident(
             incident_id=incident_id,
@@ -1015,7 +1016,7 @@ def test_running_elevator_issue_replaces_false_outage_with_degraded_service_acti
             severity=3,
             status="open",
             start_ts_epoch=now_epoch - (30 * 3600),
-            last_ts_epoch=now_epoch,
+            last_ts_epoch=now_epoch + 1,
             title="North elevator operating unusually slowly",
             summary="Tenant reports the elevator is slow but running.",
         ))
@@ -1031,6 +1032,21 @@ def test_running_elevator_issue_replaces_false_outage_with_degraded_service_acti
             message_id=message_id,
             incident_id=incident_id,
             event_type="outage",
+            category="elevator",
+            is_issue=True,
+        ))
+        session.add(RawMessage(
+            message_id=followup_message_id,
+            sender_hash="tenant-two",
+            ts_iso=datetime.fromtimestamp(now_epoch + 1, tz=timezone.utc).isoformat(),
+            ts_epoch=now_epoch + 1,
+            text="Same going up",
+            source="test",
+        ))
+        session.add(MessageDecision(
+            message_id=followup_message_id,
+            incident_id=incident_id,
+            event_type="status_update",
             category="elevator",
             is_issue=True,
         ))
