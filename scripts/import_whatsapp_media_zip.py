@@ -275,6 +275,32 @@ def _placeholder_targets_are_coherent(targets: list[RawMessage]) -> bool:
     return len(identities) == 1
 
 
+def _prefer_exact_placeholder_identity(
+    session,
+    message: MediaMessage,
+    targets: list[RawMessage],
+) -> list[RawMessage]:
+    """Resolve historical chat-label aliases only when the exact ID is valid.
+
+    Restored collision rows use the current ``455 Tenants`` chat label while
+    older imports may have an otherwise identical ``Tenants WhatsApp`` row.
+    The immutable exact physical ID is authoritative, but only after it has
+    independently passed the timestamp, sender, occurrence, and media-kind
+    filters in ``_exact_placeholder_targets``.  Same-chat/kind peers can share
+    the manifest; cross-identity rows remain outside the selected group.
+    """
+
+    exact = session.get(RawMessage, message.message_id)
+    if exact is None or not any(row.message_id == exact.message_id for row in targets):
+        return targets
+    identity = (_clean(exact.chat_name).casefold(), omitted_media_kind(exact.text))
+    return [
+        row
+        for row in targets
+        if (_clean(row.chat_name).casefold(), omitted_media_kind(row.text)) == identity
+    ]
+
+
 def _merge_placeholder_media(
     session,
     message: MediaMessage,
@@ -287,6 +313,7 @@ def _merge_placeholder_media(
     targets = _exact_placeholder_targets(session, message)
     if not targets:
         return False
+    targets = _prefer_exact_placeholder_identity(session, message, targets)
     if not _placeholder_targets_are_coherent(targets):
         stats["ambiguous_placeholder_media_messages"] += 1
         return True

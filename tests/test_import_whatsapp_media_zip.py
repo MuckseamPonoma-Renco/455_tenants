@@ -352,6 +352,73 @@ def test_media_merge_blocks_cross_chat_or_kind_placeholder_ambiguity(client):
         assert session.get(RawMessage, second_target_id).attachments is None
 
 
+def test_media_merge_prefers_exact_restored_id_over_historical_chat_label_peer(client):
+    exact_id = "2" * 64
+    historical_id = "3" * 64
+    filename = "0005A-PHOTO.jpg"
+    message = _media_message(message_id=exact_id, occurrence=1, filename=filename)
+    with get_session() as session:
+        session.add_all(
+            [
+                _raw(
+                    exact_id,
+                    text="image omitted",
+                    source="zip_import",
+                    attachments="omitted:image",
+                    chat_name="455 Tenants",
+                ),
+                _raw(
+                    historical_id,
+                    text="image omitted",
+                    source="zip_import",
+                    attachments="omitted:image",
+                    chat_name="Tenants WhatsApp",
+                ),
+            ]
+        )
+        session.add_all([_target_decision(exact_id), _target_decision(historical_id)])
+        session.commit()
+
+    first_stats = _stats()
+    with get_session() as session:
+        assert _merge_placeholder_media(
+            session,
+            message,
+            stats=first_stats,
+            aliases_by_export_filename=_media_aliases_by_export_filename(session),
+            accounted_alias_ids=set(),
+        )
+        session.commit()
+
+    assert first_stats["matched_placeholder_media_messages"] == 1
+    assert first_stats["ambiguous_placeholder_media_messages"] == 0
+    assert first_stats["merged_existing"] == 1
+    with get_session() as session:
+        exact = session.get(RawMessage, exact_id)
+        historical = session.get(RawMessage, historical_id)
+        assert {
+            item.get("export_filename")
+            for item in attachment_items(exact.attachments)
+            if item.get("export_filename")
+        } == {filename}
+        assert historical.attachments == "omitted:image"
+
+    second_stats = _stats()
+    with get_session() as session:
+        assert _merge_placeholder_media(
+            session,
+            message,
+            stats=second_stats,
+            aliases_by_export_filename=_media_aliases_by_export_filename(session),
+            accounted_alias_ids=set(),
+        )
+        session.commit()
+
+    assert second_stats["matched_placeholder_media_messages"] == 1
+    assert second_stats["ambiguous_placeholder_media_messages"] == 0
+    assert second_stats["merged_existing"] == 0
+
+
 def test_media_merge_preserves_proof_referenced_or_manually_reviewed_aliases(client):
     placeholder_id = "b" * 64
     proof_alias_id = "c" * 64
