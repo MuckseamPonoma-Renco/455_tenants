@@ -151,7 +151,7 @@ def cross_source_text_signature(text: str | None) -> str:
         " " if unicodedata.category(char) in {"So", "Sk"} or char in {"\ufe0f", "\u200d"} else char
         for char in clean
     )
-    return re.sub(r"\s+", " ", clean).casefold()
+    return re.sub(r"\s+", " ", clean).strip().casefold()
 
 
 def is_cross_source_duplicate_candidate(text: str | None) -> bool:

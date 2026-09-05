@@ -222,6 +222,10 @@ PUBLIC_FIRE_HOSE_PROGRESS_RE = re.compile(
     r"\b(?:replac(?:e|ed|ement|ing)|install(?:ed|ing|ation)?|put\s+back|restor(?:e|ed|ing)|in\s+process)\b",
     re.IGNORECASE,
 )
+PUBLIC_CONTEXTUAL_CORROBORATION_RE = re.compile(
+    r"\b(?:i\s+was\s+wondering\s+the\s+same\s+thing|same\s+here|me\s+too)\b",
+    re.IGNORECASE,
+)
 PUBLIC_LAUNDRY_MACHINE_NUMBER_RE = re.compile(
     r"\b(?:washer|dryer)(?:\s+(?:number|no\.?))?\s*#?\s*(\d{1,3})\b",
     re.IGNORECASE,
@@ -2022,7 +2026,13 @@ def _public_should_include_update(
     if incident.category == "laundry":
         return bool(PUBLIC_LAUNDRY_ISSUE_RE.search(context_text) or PUBLIC_LAUNDRY_RESTORE_RE.search(context_text))
     if incident.category == "fire_safety":
-        return bool(PUBLIC_FIRE_HOSE_RE.search(context_text))
+        return bool(
+            PUBLIC_FIRE_HOSE_RE.search(context_text)
+            or (
+                decision_category == "fire_safety"
+                and decision_event in {"new_issue", "still_out", "status_update", "restore"}
+            )
+        )
     return True
 
 
@@ -2138,11 +2148,13 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
         if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
             return f"Laundry machine{suffix} repaired"
         return f"Laundry machine{suffix} issue"
-    if incident.category == "fire_safety" and PUBLIC_FIRE_HOSE_RE.search(context_text):
+    if incident.category == "fire_safety":
         if PUBLIC_FIRE_HOSE_PROGRESS_RE.search(text):
             return "Fire-hose replacement in progress"
         if PUBLIC_FIRE_HOSE_MISSING_RE.search(context_text):
             return "Fire hoses missing"
+        if PUBLIC_CONTEXTUAL_CORROBORATION_RE.search(text):
+            return "Fire-hose concern corroborated"
         return "Fire-hose safety update"
     if incident.category == "other":
         other_label = _public_other_update_issue_label(text)
@@ -2283,11 +2295,13 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
         if machine:
             return f"Laundry machine #{machine.group(1)} was reported unusable because of a card or door-connection failure."
         return "A laundry machine problem was reported."
-    if incident.category == "fire_safety" and PUBLIC_FIRE_HOSE_RE.search(context_text):
+    if incident.category == "fire_safety":
         if PUBLIC_FIRE_HOSE_PROGRESS_RE.search(text):
             return "Replacement of the building's fire hoses was reported in progress."
         if PUBLIC_FIRE_HOSE_MISSING_RE.search(context_text):
             return "Building fire hoses were reported missing or removed."
+        if PUBLIC_CONTEXTUAL_CORROBORATION_RE.search(text):
+            return "A second tenant corroborated the missing building fire hoses."
         return "A building fire-hose safety update was reported."
     if incident.category == "other" and PUBLIC_STAIR_SPILL_RE.search(text):
         return "Liquid spill was reported in the stairwell/common area."

@@ -606,6 +606,59 @@ def test_public_update_uses_fire_safety_context_for_replacement_progress():
     )
 
 
+def test_public_update_uses_reviewed_fire_decision_when_live_capture_has_no_reply_metadata():
+    incident = Incident(
+        incident_id="fire-hose-live-context",
+        category="fire_safety",
+        title="Fire-hose replacement",
+    )
+    progress = RawMessage(
+        message_id="fire-hose-live-progress",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-fire-progress-live",
+        ts_iso="2026-09-03T15:37:00Z",
+        ts_epoch=1788449820,
+        text="Yay looks like replaced/in process of being replaced while I was out",
+        source="whatsapp_web",
+    )
+    progress_decision = MessageDecision(
+        message_id=progress.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="fire_safety",
+        event_type="status_update",
+    )
+    corroboration = RawMessage(
+        message_id="fire-hose-live-corroboration",
+        chat_name="455 Tenants",
+        sender="Tenant Two",
+        sender_hash="hash-fire-corroboration-live",
+        ts_iso="2026-09-03T14:36:00Z",
+        ts_epoch=1788446160,
+        text="I was wondering the same thing!",
+        source="whatsapp_web",
+    )
+    corroboration_decision = MessageDecision(
+        message_id=corroboration.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="fire_safety",
+        event_type="status_update",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, progress, progress_decision) is True
+    assert sheets_sync._public_event_issue_label(incident, progress) == "Fire-hose replacement in progress"
+    assert sheets_sync._public_event_summary(incident, progress) == (
+        "Replacement of the building's fire hoses was reported in progress."
+    )
+    assert sheets_sync._public_should_include_update(incident, corroboration, corroboration_decision) is True
+    assert sheets_sync._public_event_issue_label(incident, corroboration) == "Fire-hose concern corroborated"
+    assert sheets_sync._public_event_summary(incident, corroboration) == (
+        "A second tenant corroborated the missing building fire hoses."
+    )
+
+
 def test_report_form_message_is_public_even_with_whatsapp_chat_allowlist():
     raw = RawMessage(
         message_id="report-form-message",

@@ -17,7 +17,11 @@ from packages.incident.cross_source_reconciliation import (
 )
 from packages.incident.extractor import _merge_choices
 from packages.nyc311.planner import ensure_filing_job_for_incident
-from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate
+from packages.tasker_capture import (
+    LIVE_CAPTURE_SOURCES,
+    cross_source_text_signature,
+    find_recent_cross_source_duplicate,
+)
 
 
 def _incident(incident_id: str, *, start: int, proof_refs: str, report_count: int = 1) -> Incident:
@@ -161,6 +165,14 @@ def test_reconciliation_pairs_short_directional_followup_but_not_generic_reply(c
         assert [(row.archive_message_id, row.live_message_id) for row in pairs] == [
             ("archive-short-direction", "live-short-direction")
         ]
+
+
+def test_cross_source_signature_ignores_trailing_emoji_without_leaving_space():
+    assert cross_source_text_signature(
+        "Yay looks like replaced/in process of being replaced while I was out 🎉"
+    ) == cross_source_text_signature(
+        "Yay looks like replaced/in process of being replaced while I was out"
+    )
 
 
 def test_authoritative_rule_state_locks_still_out_and_restore():
