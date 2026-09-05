@@ -4,8 +4,12 @@ import json
 import zipfile
 from pathlib import Path
 
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 from packages.audit import sender_hash
-from packages.db import Incident, MessageDecision, RawMessage, get_session
+from packages.db import Base, Incident, MessageDecision, RawMessage, get_session
 from packages.timeutil import parse_ts_to_epoch
 from packages.whatsapp.attachments import (
     attachment_items,
@@ -222,6 +226,59 @@ def test_media_merge_removes_multiple_safe_aliases_and_transfers_their_full_mani
             for item in attachment_items(canonical.attachments)
             if item.get("export_filename")
         } == {filename, earlier_filename}
+
+
+def test_media_merge_deletes_decision_before_raw_alias_with_foreign_keys_enforced():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    placeholder_id = "4" * 64
+    alias_id = "5" * 64
+    filename = "0002A-PHOTO.jpg"
+    message = _media_message(message_id=alias_id, occurrence=1, filename=filename)
+    with session_factory() as session:
+        session.add_all(
+            [
+                _raw(placeholder_id, text="image omitted", source="zip_import"),
+                _raw(
+                    alias_id,
+                    text="Photo attached",
+                    source="export_media",
+                    attachments=message.manifest,
+                ),
+            ]
+        )
+        session.commit()
+        session.add_all(
+            [_target_decision(placeholder_id), _synthetic_nonissue_decision(alias_id)]
+        )
+        session.commit()
+
+    with session_factory() as session:
+        assert _merge_placeholder_media(
+            session,
+            message,
+            stats=_stats(),
+            aliases_by_export_filename=_generic_aliases_by_export_filename(session),
+            accounted_alias_ids=set(),
+        )
+        session.commit()
+
+    with session_factory() as session:
+        assert session.get(MessageDecision, alias_id) is None
+        assert session.get(RawMessage, alias_id) is None
+    engine.dispose()
 
 
 def test_media_merge_refuses_to_delete_issue_alias(client):

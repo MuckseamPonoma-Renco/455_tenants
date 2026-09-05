@@ -322,10 +322,17 @@ def _merge_placeholder_media(
             target.attachments = merged
             stats["merged_existing"] += 1
 
+    # RawMessage has no ORM relationship to MessageDecision, so SQLAlchemy's
+    # unit-of-work sorter does not infer the FK delete dependency.  Flush every
+    # child deletion before marking any parent row for deletion.  This is still
+    # one transaction: a later failure or commit error rolls both phases back.
     for alias in safe_aliases:
         decision = session.get(MessageDecision, alias.message_id)
         if decision is not None:
             session.delete(decision)
+    if safe_aliases:
+        session.flush()
+    for alias in safe_aliases:
         session.delete(alias)
         stats["reconciled_media_alias_rows"] += 1
     return True
