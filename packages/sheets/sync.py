@@ -12,7 +12,12 @@ from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
 from packages.incident.content_guardrails import nonreporting_content_reason
 from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted
-from packages.sheets.public_semantic_overrides import PublicSemanticOverride, get_public_semantic_override
+from packages.sheets.public_semantic_overrides import (
+    PublicSemanticOverride,
+    PublicSemanticOverrideError,
+    get_public_semantic_override,
+    load_public_semantic_overrides,
+)
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 from packages.verification.coverage import compute_daily_coverage, detect_gaps
@@ -2139,6 +2144,40 @@ def _public_semantic_override(raw: RawMessage | None) -> PublicSemanticOverride 
     return get_public_semantic_override(raw.message_id, raw.text)
 
 
+def _validate_public_semantic_override_sources(
+    raw_map: dict[str, RawMessage],
+    decision_map: dict[str, MessageDecision],
+    incident_ids: set[str],
+) -> None:
+    overrides = load_public_semantic_overrides()
+    override_ids = set(overrides)
+    present_ids = override_ids.intersection(raw_map)
+    if not present_ids:
+        # Fresh and isolated databases do not use the building's audited
+        # historical ledger. Once any ledger row is present, require it all.
+        return
+    missing_raw_ids = sorted(override_ids - set(raw_map))
+    if missing_raw_ids:
+        raise PublicSemanticOverrideError(
+            "audited public semantic ledger is incomplete: "
+            f"missing {len(missing_raw_ids)} raw message(s)"
+        )
+    missing_links: list[str] = []
+    for message_id, override in overrides.items():
+        raw = raw_map[message_id]
+        get_public_semantic_override(message_id, raw.text, overrides=overrides)
+        if not override.include:
+            continue
+        decision = decision_map.get(message_id)
+        if decision is None or not decision.incident_id or decision.incident_id not in incident_ids:
+            missing_links.append(message_id)
+    if missing_links:
+        raise PublicSemanticOverrideError(
+            "audited public semantic ledger has "
+            f"{len(missing_links)} included message(s) without a live incident link"
+        )
+
+
 def _public_should_include_update(
     incident: Incident,
     raw: RawMessage | None,
@@ -2992,6 +3031,7 @@ def sync_public_updates_to_sheets():
 
     allowed_chat_names = _allowed_public_chat_names()
     now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    semantic_override_ids = set(load_public_semantic_overrides())
 
     with get_session() as session:
         incidents = session.query(Incident).all()
@@ -3003,24 +3043,38 @@ def sync_public_updates_to_sheets():
             if incident_ids_all
             else []
         )
+        if semantic_override_ids:
+            override_decisions = (
+                session.query(MessageDecision)
+                .filter(MessageDecision.message_id.in_(sorted(semantic_override_ids)))
+                .all()
+            )
+            decision_rows = list(
+                {
+                    row.message_id: row
+                    for row in [*decision_rows, *override_decisions]
+                }.values()
+            )
         message_ids_by_incident: dict[str, list[str]] = {}
         decision_map: dict[str, MessageDecision] = {}
         for decision in decision_rows:
+            decision_map[decision.message_id] = decision
             if not decision.incident_id:
                 continue
             message_ids_by_incident.setdefault(decision.incident_id, []).append(decision.message_id)
-            decision_map[decision.message_id] = decision
         proof_message_ids = {
             message_id
             for incident in incidents
             for message_id in [item.strip() for item in (incident.proof_refs or "").split(",") if item.strip()]
         }
         proof_message_ids.update(decision_map.keys())
+        proof_message_ids.update(semantic_override_ids)
         raw_map = (
             {row.message_id: row for row in session.query(RawMessage).filter(RawMessage.message_id.in_(sorted(proof_message_ids))).all()}
             if proof_message_ids
             else {}
         )
+        _validate_public_semantic_override_sources(raw_map, decision_map, set(incident_ids_all))
         public_incidents = [
             row
             for row in incidents

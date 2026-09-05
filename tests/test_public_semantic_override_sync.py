@@ -1,5 +1,8 @@
+import pytest
+
 from packages.db import Incident, MessageDecision, RawMessage
 from packages.sheets import sync as sheets_sync
+from packages.sheets.public_semantic_overrides import PublicSemanticOverride, PublicSemanticOverrideError
 
 
 RESTORE_MESSAGE_ID = "a1f33f3c5ea919e042d082a0a25768ffafe85230ce57490f155c16b1971086be"
@@ -90,3 +93,52 @@ def test_audited_evidence_suppression_is_enforced_in_rendered_row(monkeypatch):
     assert len(rows) == 1
     assert rows[0][1:3] == ["Both elevators working", "Elevator"]
     assert rows[0][4:7] == ["", "", "Both elevators were reported working."]
+
+
+def _override(message_id: str, *, include: bool) -> PublicSemanticOverride:
+    return PublicSemanticOverride(
+        message_id=message_id,
+        raw_text_sha256="0" * 64,
+        include=include,
+        issue_label="Issue" if include else "",
+        category_label="Category" if include else "",
+        summary="Neutral summary." if include else "",
+        show_evidence=False,
+        reason="Audited test entry.",
+    )
+
+
+def test_semantic_ledger_validation_rejects_a_partial_archive(monkeypatch):
+    first_id = "1" * 64
+    second_id = "2" * 64
+    overrides = {
+        first_id: _override(first_id, include=True),
+        second_id: _override(second_id, include=False),
+    }
+    monkeypatch.setattr(sheets_sync, "load_public_semantic_overrides", lambda: overrides)
+
+    with pytest.raises(PublicSemanticOverrideError, match="missing 1 raw message"):
+        sheets_sync._validate_public_semantic_override_sources(
+            {first_id: _raw(first_id, "first")},
+            {},
+            {"incident-under-test"},
+        )
+
+
+def test_semantic_ledger_validation_requires_included_rows_to_remain_linked(monkeypatch):
+    message_id = "3" * 64
+    overrides = {message_id: _override(message_id, include=True)}
+    raw = _raw(message_id, "source")
+    monkeypatch.setattr(sheets_sync, "load_public_semantic_overrides", lambda: overrides)
+    monkeypatch.setattr(
+        sheets_sync,
+        "get_public_semantic_override",
+        lambda selected_id, text, *, overrides: overrides[selected_id],
+    )
+
+    with pytest.raises(PublicSemanticOverrideError, match="without a live incident link"):
+        sheets_sync._validate_public_semantic_override_sources(
+            {message_id: raw},
+            {},
+            {"incident-under-test"},
+        )
