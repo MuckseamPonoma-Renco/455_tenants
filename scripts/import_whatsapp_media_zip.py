@@ -19,7 +19,7 @@ from packages.local_env import load_local_env_file
 
 load_local_env_file(ROOT / ".env")
 
-from packages.audit import append_audit_event, compute_message_id, sender_hash
+from packages.audit import append_audit_event, sender_hash
 from packages.db import Incident, MessageDecision, RawMessage, get_session
 from packages.incident.extractor import classify_and_upsert_incident
 from packages.sheets.sync import (
@@ -40,6 +40,7 @@ from packages.whatsapp.attachments import (
     strip_reply_context_from_text,
 )
 from packages.whatsapp.media import DEFAULT_MEDIA_DIR, STAGED_RUNTIME_ROOT, media_root
+from packages.whatsapp.identity import iter_physical_message_identities
 from packages.whatsapp.parser import ParsedMessage, is_media_placeholder_text, parse_export_text
 
 ATTACHED_SPLIT_RE = re.compile(r"\s*,\s*")
@@ -56,6 +57,8 @@ ISSUE_RE = re.compile(
 @dataclass
 class MediaMessage:
     index: int
+    message_id: str
+    physical_occurrence: int
     parsed: ParsedMessage
     ts_epoch: int | None
     ts_iso: str | None
@@ -239,6 +242,11 @@ def _neighbor_text(parsed_messages: list[ParsedMessage], message: MediaMessage) 
 
 
 def _find_existing_target(session, parsed_messages: list[ParsedMessage], message: MediaMessage) -> RawMessage | None:
+    exact = session.get(RawMessage, message.message_id)
+    if exact is not None:
+        return exact
+    if message.physical_occurrence > 1:
+        return None
     match = _best_text_match(session, message)
     if match is not None:
         return match
@@ -253,7 +261,7 @@ def _upsert_unmatched_media(session, message: MediaMessage) -> tuple[RawMessage,
     sender = _clean(message.parsed.sender)
     chat_name = _clean(message.parsed.chat_name)
     ts = message.ts_iso or message.parsed.ts_iso or ""
-    mid = compute_message_id(chat_name, sender, ts, message.text_for_storage)
+    mid = message.message_id
     existing = session.get(RawMessage, mid)
     if existing:
         existing.attachments = merge_attachment_manifests(existing.attachments, message.manifest)
@@ -325,7 +333,9 @@ def import_media_zip(zip_path: Path, *, chat_name: str, repair_reply_context: bo
         parsed = parse_export_text(zf.read(txt_name).decode("utf-8", errors="replace"), chat_name=chat_name)
 
         media_messages: list[MediaMessage] = []
-        for idx, message in enumerate(parsed):
+        identities = list(iter_physical_message_identities(parsed))
+        for idx, identity in enumerate(identities):
+            message = identity.message
             attachment_names = _attachment_names(message.attachments, names)
             if not attachment_names:
                 continue
@@ -333,6 +343,8 @@ def import_media_zip(zip_path: Path, *, chat_name: str, repair_reply_context: bo
             media_messages.append(
                 MediaMessage(
                     index=idx,
+                    message_id=identity.message_id,
+                    physical_occurrence=identity.occurrence,
                     parsed=message,
                     ts_epoch=ts_epoch,
                     ts_iso=epoch_to_iso(ts_epoch) or message.ts_iso,

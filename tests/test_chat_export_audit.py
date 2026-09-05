@@ -70,6 +70,92 @@ def test_run_audit_creates_review_roster_for_missing_and_review_rows(client, tmp
     assert rows[0]["suspect_reasons"] == "no_db_match"
 
 
+def test_run_audit_counts_identical_physical_occurrences_separately(client, tmp_path):
+    export_path = tmp_path / "WhatsApp Chat - 455 Tenants.txt"
+    export_path.write_text(
+        "[8/31/26, 1:51:44 PM] Millie: image omitted\n"
+        "[8/31/26, 1:51:44 PM] Millie: image omitted\n",
+        encoding="utf-8",
+    )
+    parsed = iter_export_messages(export_path)
+    assert parsed[0].message_id != parsed[1].message_id
+
+    with get_session() as session:
+        first = parsed[0]
+        session.add(
+            RawMessage(
+                message_id=first.message_id,
+                chat_name=first.chat_name,
+                sender=first.sender,
+                sender_hash=sender_hash(first.sender),
+                ts_iso=first.ts_iso,
+                ts_epoch=first.ts_epoch,
+                text=first.text,
+                attachments="omitted:image",
+                source="zip_import",
+            )
+        )
+        session.add(
+            MessageDecision(
+                message_id=first.message_id,
+                chosen_source="media_placeholder",
+                is_issue=False,
+                confidence=0,
+                needs_review=False,
+            )
+        )
+        session.commit()
+
+    out_dir = tmp_path / "audit"
+    summary = run_audit(export_path, since="2026-06-05", out_dir=out_dir)
+
+    assert summary["audited_messages"] == 2
+    assert summary["unique_physical_message_ids"] == 2
+    assert summary["colliding_base_message_ids"] == 1
+    assert summary["collision_followup_occurrences"] == 1
+    assert summary["matched_messages"] == 1
+    assert summary["missing_db_messages"] == 1
+    assert summary["ok"] is False
+
+    with (out_dir / "review_roster.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["physical_occurrence"] == "2"
+    assert rows[0]["export_message_id"].endswith("~2")
+    assert rows[0]["suspect_reasons"] == "no_db_match"
+
+    with get_session() as session:
+        second = parsed[1]
+        session.add(
+            RawMessage(
+                message_id=second.message_id,
+                chat_name=second.chat_name,
+                sender=second.sender,
+                sender_hash=sender_hash(second.sender),
+                ts_iso=second.ts_iso,
+                ts_epoch=second.ts_epoch,
+                text=second.text,
+                attachments="omitted:image",
+                source="zip_import",
+            )
+        )
+        session.add(
+            MessageDecision(
+                message_id=second.message_id,
+                chosen_source="media_placeholder",
+                is_issue=False,
+                confidence=0,
+                needs_review=False,
+            )
+        )
+        session.commit()
+
+    complete = run_audit(export_path, since="2026-06-05", out_dir=tmp_path / "complete-audit")
+    assert complete["matched_messages"] == 2
+    assert complete["missing_db_messages"] == 0
+    assert complete["ok"] is True
+
+
 def test_required_model_review_counts_completed_missing_and_failed_rows(client, tmp_path):
     export_path = tmp_path / "WhatsApp Chat - 455 Tenants.txt"
     export_path.write_text(

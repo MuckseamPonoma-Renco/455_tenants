@@ -24,6 +24,7 @@ from packages.tasker_capture import (
 from packages.timeutil import epoch_to_iso, parse_ts_to_epoch
 from packages.whatsapp.attachments import merge_attachment_manifests, strip_reply_context_from_text
 from packages.whatsapp.export import parse_export_path
+from packages.whatsapp.identity import iter_physical_message_identities
 
 router = APIRouter()
 EXPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -323,27 +324,30 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
     job_ids = []
     seen_mids = set()
     with get_session() as session:
-        for msg in parsed:
+        for identity in iter_physical_message_identities(parsed):
+            msg = identity.message
             ts_epoch = parse_ts_to_epoch(msg.ts_iso)
-            mid = compute_message_id(msg.chat_name, msg.sender, msg.ts_iso or '', msg.text)
+            mid = identity.message_id
             if mid in seen_mids or session.get(RawMessage, mid):
                 deduped += 1
                 continue
-            duplicate = find_recent_duplicate(
-                session,
-                chat_name=msg.chat_name,
-                sender=msg.sender,
-                text=msg.text,
-                ts_epoch=ts_epoch,
-                require_chat_match=False,
-            )
-            if duplicate is None:
-                duplicate = find_recent_cross_source_duplicate(
+            duplicate = None
+            if identity.occurrence == 1:
+                duplicate = find_recent_duplicate(
                     session,
+                    chat_name=msg.chat_name,
+                    sender=msg.sender,
                     text=msg.text,
                     ts_epoch=ts_epoch,
-                    sources=LIVE_CAPTURE_SOURCES,
+                    require_chat_match=False,
                 )
+                if duplicate is None:
+                    duplicate = find_recent_cross_source_duplicate(
+                        session,
+                        text=msg.text,
+                        ts_epoch=ts_epoch,
+                        sources=LIVE_CAPTURE_SOURCES,
+                    )
             if duplicate:
                 deduped += 1
                 continue

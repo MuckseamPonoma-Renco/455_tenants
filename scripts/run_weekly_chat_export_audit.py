@@ -207,6 +207,15 @@ def main() -> None:
     summary["llm_review_retry"] = retry
     summary["cross_source_reconciliation"] = reconciliation
     review_complete = bool(summary.get("llm_review_complete"))
+    data_complete = not int(summary.get("missing_db_messages") or 0) and not int(
+        summary.get("missing_decisions") or 0
+    )
+    if not data_complete:
+        summary["ok"] = False
+        summary["error"] = (
+            f"data audit incomplete: {summary.get('missing_db_messages', 0)} messages missing from DB, "
+            f"{summary.get('missing_decisions', 0)} decisions missing"
+        )
     if require_llm_review and not review_complete:
         summary["ok"] = False
         summary["error"] = (
@@ -214,7 +223,7 @@ def main() -> None:
             f"{summary.get('llm_review_failed', 0)} failed"
         )
     sheet_sync_complete = not args.sync_sheets_after_success
-    if args.sync_sheets_after_success and review_complete:
+    if args.sync_sheets_after_success and review_complete and data_complete:
         try:
             sync_sheets_after_success()
             sheet_sync_complete = True
@@ -228,6 +237,8 @@ def main() -> None:
     print(json.dumps(summary, indent=2, sort_keys=True))
     if require_llm_review and not review_complete and not args.allow_incomplete_llm_review:
         raise SystemExit(2)
+    if not data_complete:
+        raise SystemExit(4)
     if args.sync_sheets_after_success and not sheet_sync_complete:
         raise SystemExit(3)
 

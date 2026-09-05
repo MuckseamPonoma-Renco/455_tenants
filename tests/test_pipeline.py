@@ -341,7 +341,7 @@ def test_all_mode_reviews_contextual_followups(client, monkeypatch):
     assert llm_calls == ['Still broken.']
 
 
-def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path):
+def test_export_ingest_preserves_identical_physical_messages_and_is_idempotent(client, tmp_path):
     chat_text = '''[2/15/26, 8:56:59 AM] Karen KWA: North lift dead
 [2/15/26, 8:56:59 AM] Karen KWA: North lift dead
 '''
@@ -351,9 +351,22 @@ def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path)
         response = client.post('/ingest/export', headers=auth_headers(), files={'file': ('dupe_chat.txt', f, 'text/plain')})
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload['inserted'] == 1
+    assert payload['parsed'] == 2
+    assert payload['inserted'] == 2
+    assert payload['deduped'] == 0
     with get_session() as session:
+        message_ids = sorted(row.message_id for row in session.query(RawMessage).all())
+        assert len(message_ids) == 2
+        assert any(message_id.endswith('~2') for message_id in message_ids)
         assert session.query(Incident).count() == 1
+
+    with export_path.open('rb') as f:
+        repeated = client.post('/ingest/export', headers=auth_headers(), files={'file': ('dupe_chat.txt', f, 'text/plain')})
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()['inserted'] == 0
+    assert repeated.json()['deduped'] == 2
+    with get_session() as session:
+        assert session.query(RawMessage).count() == 2
 
 
 def test_export_ingest_imports_all_chat_txt_files_in_zip(client, tmp_path):
@@ -416,6 +429,39 @@ def test_export_ingest_dedupes_matching_tasker_message_even_when_chat_name_diffe
     assert len(raws) == 1
     assert len(decisions) == 1
     assert raws[0].source == 'tasker'
+
+
+def test_export_collision_preserves_later_occurrence_after_cross_source_match(client, tmp_path):
+    captured = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift dead',
+        'sender': 'Karen KWA',
+        'ts_epoch': parse_ts_to_epoch('2/15/26 8:56:59 AM'),
+    })
+    assert captured.status_code == 200, captured.text
+
+    export_path = tmp_path / 'WhatsApp Chat - 455 Tenants.txt'
+    export_path.write_text(
+        '[2/15/26, 8:56:59 AM] Karen KWA: North lift dead\n'
+        '[2/15/26, 8:56:59 AM] Karen KWA: North lift dead\n',
+        encoding='utf-8',
+    )
+    with export_path.open('rb') as f:
+        response = client.post(
+            '/ingest/export',
+            headers=auth_headers(),
+            files={'file': (export_path.name, f, 'text/plain')},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['parsed'] == 2
+    assert response.json()['inserted'] == 1
+    assert response.json()['deduped'] == 1
+    with get_session() as session:
+        raws = session.query(RawMessage).order_by(RawMessage.source).all()
+    assert len(raws) == 2
+    assert {row.source for row in raws} == {'tasker', 'export'}
+    assert next(row for row in raws if row.source == 'export').message_id.endswith('~2')
 
 
 def test_tasker_batch_schedules_single_resync_after_bulk_processing(client, monkeypatch):
