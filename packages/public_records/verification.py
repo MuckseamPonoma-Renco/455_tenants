@@ -173,6 +173,7 @@ def _record_refs(record: PublicRecordWatch, raw: dict | None = None) -> set[str]
         "permit": [record.permit_number, raw.get("work_permit"), raw.get("permit_number")],
         "device": [record.device_number, raw.get("device_id"), raw.get("bis_nyc_device_id"), raw.get("device_number")],
         "ticket": [record.record_key, raw.get("ticket_number"), raw.get("ecb_violation_number"), raw.get("ecb_number")],
+        "registration": [raw.get("registrationid")],
     }
     for prefix, values in fields.items():
         for value in values:
@@ -185,6 +186,11 @@ def _record_refs(record: PublicRecordWatch, raw: dict | None = None) -> set[str]
 def _corroboration_index(records: Iterable[PublicRecordWatch]) -> dict[str, list[PublicRecordWatch]]:
     index: dict[str, list[PublicRecordWatch]] = {}
     for record in records:
+        if (
+            record.source_system == "hpd_registration_contacts"
+            and record.status == "not_in_current_hpd_export"
+        ):
+            continue
         for ref in _record_refs(record):
             index.setdefault(ref, []).append(record)
     return index
@@ -290,6 +296,12 @@ def apply_machine_verification(session) -> dict[str, int]:
         "verification_actions_auto_closed": 0,
     }
     for record in records:
+        if (
+            record.source_system == "hpd_registration_contacts"
+            and record.status == "not_in_current_hpd_export"
+        ):
+            counts["machine_needs_review"] += 1
+            continue
         result = evaluate_machine_verification(record, records_by_ref=records_by_ref)
         counts["machine_verified" if result.machine_verified else "machine_needs_review"] += 1
         if result.status == "official_conflict":

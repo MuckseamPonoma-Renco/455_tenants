@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -28,6 +29,8 @@ from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 BUILDING_KEY = "455-ocean-parkway"
 VISIBLE_ACTION_STATUSES = ("open", "pending", "failed")
 LAST_FETCH_ERRORS: list[dict[str, str]] = []
+LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS: set[str] = set()
+LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION: dict[str, set[str]] = {}
 
 
 def _source_map():
@@ -140,44 +143,108 @@ def _fetch_error_payload(source_key: str, params: dict[str, str], exc: Exception
 
 
 def fetch_public_record_rows() -> list[tuple[str, dict[str, Any], str]]:
-    global LAST_FETCH_ERRORS
+    global LAST_FETCH_ERRORS, LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS, LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION
     sources = _source_map()
     fetched: list[tuple[str, dict[str, Any], str]] = []
     errors: list[dict[str, str]] = []
     elevator_jobs: set[str] = set()
     device_ids: set[str] = set()
+    registration_ids: set[str] = set()
+    successful_contact_registration_ids: set[str] = set()
+    seen_contact_keys_by_registration: dict[str, set[str]] = {}
 
-    def fetch_source(source_key: str, params: dict[str, str], *, limit: int = 500) -> tuple[str, list[dict[str, Any]]]:
+    def fetch_source(
+        source_key: str,
+        params: dict[str, str],
+        *,
+        limit: int = 500,
+    ) -> tuple[str, list[dict[str, Any]], bool]:
         source = sources[source_key]
         url = query_url(source, {"$limit": str(limit), **params})
         try:
-            return url, fetch_rows(source, params, limit=limit)
+            return url, fetch_rows(source, params, limit=limit), True
         except Exception as exc:
             errors.append(_fetch_error_payload(source_key, params, exc))
-            return url, []
+            return url, [], False
 
     for source_key, params in _query_specs():
-        url, rows = fetch_source(source_key, params)
+        url, rows, _succeeded = fetch_source(source_key, params)
         for row in rows:
             fetched.append((source_key, row, url))
             if source_key == "dob_now_elevator_applications" and row.get("job_filing_number"):
                 elevator_jobs.add(str(row["job_filing_number"]))
             if source_key == "dob_now_elevator_safety_compliance" and row.get("device_number"):
                 device_ids.add(str(row["device_number"]))
+            if source_key == "hpd_building" and row.get("registrationid"):
+                registration_ids.add(str(row["registrationid"]))
 
     for job in sorted(elevator_jobs):
         params = {"job_filing_number": job}
-        url, rows = fetch_source("dob_now_elevator_device_details", params)
+        url, rows, _succeeded = fetch_source("dob_now_elevator_device_details", params)
         for row in rows:
             fetched.append(("dob_now_elevator_device_details", row, url))
     for device_id in sorted(device_ids):
         params = {"device_id": device_id}
-        url, rows = fetch_source("dob_now_elevator_device_details", params)
+        url, rows, _succeeded = fetch_source("dob_now_elevator_device_details", params)
         for row in rows:
             fetched.append(("dob_now_elevator_device_details", row, url))
+    for registration_id in sorted(registration_ids):
+        params = {"registrationid": registration_id}
+        url, rows, succeeded = fetch_source("hpd_registration_contacts", params)
+        if succeeded:
+            successful_contact_registration_ids.add(registration_id)
+            seen_contact_keys_by_registration[registration_id] = {
+                str(row.get("registrationcontactid") or "").strip()
+                for row in rows
+                if str(row.get("registrationcontactid") or "").strip()
+            }
+        for row in rows:
+            fetched.append(("hpd_registration_contacts", row, url))
 
     LAST_FETCH_ERRORS = errors
+    LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS = successful_contact_registration_ids
+    LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION = seen_contact_keys_by_registration
     return fetched
+
+
+def _retire_unseen_registration_contacts(session) -> int:
+    if not LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS:
+        return 0
+    retired = 0
+    contacts = session.scalars(
+        select(PublicRecordWatch).where(
+            PublicRecordWatch.source_system == "hpd_registration_contacts"
+        )
+    ).all()
+    ts = now_iso()
+    for contact in contacts:
+        try:
+            raw = json.loads(contact.raw_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        registration_id = str(raw.get("registrationid") or "").strip()
+        if registration_id not in LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS:
+            continue
+        seen_keys = LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION.get(registration_id, set())
+        if contact.record_key in seen_keys:
+            continue
+        if contact.status == "not_in_current_hpd_export":
+            continue
+        contact.status = "not_in_current_hpd_export"
+        contact.visible_public = False
+        contact.needs_human_verification = True
+        contact.machine_verified_at = None
+        contact.machine_verified_by = None
+        contact.machine_verification_status = "retired_from_current_registration"
+        contact.machine_verification_summary = (
+            "This contact is not present in the latest successful HPD registration-contact export."
+        )
+        contact.last_changed_at = ts
+        action_for_changed_record(session, contact)
+        retired += 1
+    return retired
 
 
 def _sync_source_error_action(session, errors: list[dict[str, str]]) -> None:
@@ -307,6 +374,7 @@ def sync_public_records(session, *, baseline: bool | None = None) -> dict[str, i
         if state == "created" and source_is_baseline:
             counts["baseline_created"] += 1
     counts.update(apply_machine_verification(session))
+    counts["registration_contacts_retired"] = _retire_unseen_registration_contacts(session)
     return counts
 
 
@@ -778,6 +846,67 @@ def action_is_tenant_visible(row: WatchdogAction) -> bool:
     return row.status in VISIBLE_ACTION_STATUSES and row.owner_role in {"resident", "tenant_association"}
 
 
+def registered_owner_organizations(session) -> list[dict[str, Any]]:
+    """Return only verified organization-level HPD owner entries for tenant views."""
+    current_registration_ids: set[str] = set()
+    building_rows = session.scalars(
+        select(PublicRecordWatch).where(PublicRecordWatch.source_system == "hpd_building")
+    ).all()
+    for building in building_rows:
+        try:
+            building_raw = json.loads(building.raw_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        registration_id = str(
+            building_raw.get("registrationid") if isinstance(building_raw, dict) else ""
+        ).strip()
+        if registration_id:
+            current_registration_ids.add(registration_id)
+    if not current_registration_ids:
+        return []
+
+    contacts = session.scalars(
+        select(PublicRecordWatch)
+        .where(PublicRecordWatch.source_system == "hpd_registration_contacts")
+        .order_by(PublicRecordWatch.last_seen_at.desc().nullslast())
+    ).all()
+    owners: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for contact in contacts:
+        if (
+            not contact.visible_public
+            or contact.needs_human_verification
+            or not (contact.machine_verified_at or contact.human_verified_at)
+        ):
+            continue
+        try:
+            raw = json.loads(contact.raw_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        contact_type = re.sub(r"[^a-z]", "", str(raw.get("type") or "").casefold()) if isinstance(raw, dict) else ""
+        if not isinstance(raw, dict) or contact_type != "corporateowner":
+            continue
+        name = str(raw.get("corporationname") or "").strip()
+        registration_id = str(raw.get("registrationid") or "").strip()
+        if not name or registration_id not in current_registration_ids:
+            continue
+        key = (name.casefold(), registration_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        owners.append(
+            {
+                "organization": name,
+                "role": "Corporate Owner",
+                "registration_id": registration_id,
+                "last_seen_at": normalize_timestamp(contact.last_seen_at),
+                "source_url": contact.source_url,
+                "verified_by": contact.machine_verified_by or contact.human_verified_by,
+            }
+        )
+    return owners
+
+
 def project_state(session) -> dict[str, Any]:
     project = session.scalar(select(CapitalProject).where(CapitalProject.building_key == BUILDING_KEY))
     if not project:
@@ -814,6 +943,7 @@ def project_state(session) -> dict[str, Any]:
             "milestones": [_milestone_payload(row) for row in milestones],
         },
         "official_records": [public_record_payload(row) for row in records],
+        "registered_owners": registered_owner_organizations(session),
         "tenant_reality": {
             "elevator_incidents": [
                 {

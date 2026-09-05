@@ -268,6 +268,266 @@ def test_public_record_sync_continues_after_partial_source_failure(client, monke
         assert action.status == "completed"
 
 
+def test_hpd_registration_contacts_are_fetched_from_building_registration_id(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        public_record_sync,
+        "_query_specs",
+        lambda: [("hpd_building", {"bin": "3126839"})],
+    )
+
+    def fake_fetch(source, params, limit=500):
+        calls.append((source.key, params, limit))
+        if source.key == "hpd_building":
+            return [{"buildingid": "348579", "registrationid": "373786", "bin": "3126839"}]
+        if source.key == "hpd_registration_contacts":
+            return [
+                {
+                    "registrationcontactid": "12345",
+                    "registrationid": "373786",
+                    "type": "CorporateOwner",
+                    "corporationname": "455 OCEAN ASSOCIATES LLC",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(public_record_sync, "fetch_rows", fake_fetch)
+
+    rows = public_record_sync.fetch_public_record_rows()
+
+    assert ("hpd_registration_contacts", {"registrationid": "373786"}, 500) in calls
+    assert [source_key for source_key, _row, _url in rows] == [
+        "hpd_building",
+        "hpd_registration_contacts",
+    ]
+
+
+def test_verified_hpd_corporate_owner_is_exposed_without_person_names(client, monkeypatch):
+    with get_session() as session:
+        upsert_public_record(
+            session,
+            "hpd_building",
+            {
+                "buildingid": "348579",
+                "registrationid": "373786",
+                "bin": "3126839",
+                "block": "5390",
+                "lot": "74",
+                "housenumber": "455",
+                "streetname": "OCEAN PARKWAY",
+                "recordstatus": "Active",
+            },
+        )
+        upsert_public_record(
+            session,
+            "hpd_registration_contacts",
+            {
+                "registrationcontactid": "12345",
+                "registrationid": "373786",
+                "type": "CorporateOwner",
+                "corporationname": "455 OCEAN ASSOCIATES LLC",
+            },
+        )
+        upsert_public_record(
+            session,
+            "hpd_registration_contacts",
+            {
+                "registrationcontactid": "12346",
+                "registrationid": "373786",
+                "type": "HeadOfficer",
+                "firstname": "Private",
+                "lastname": "Person",
+            },
+        )
+        apply_machine_verification(session)
+        owners = public_record_sync.registered_owner_organizations(session)
+        session.commit()
+
+    assert len(owners) == 1
+    assert owners[0]["organization"] == "455 OCEAN ASSOCIATES LLC"
+    assert owners[0]["role"] == "Corporate Owner"
+    assert owners[0]["registration_id"] == "373786"
+    assert owners[0]["verified_by"] == "auto:official_open_data"
+
+    fake = _FakeService()
+    monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-123")
+    monkeypatch.setattr(sheets_sync, "_service", lambda: fake)
+    sheets_sync.sync_project_status_to_sheets()
+    body_text = str([kwargs.get("body") for kind, kwargs in fake.calls if kind == "update"])
+    assert "455 OCEAN ASSOCIATES LLC" in body_text
+    assert "Private Person" not in body_text
+
+
+def test_successful_contact_refresh_retires_replaced_owner_under_same_registration(client, monkeypatch):
+    building = {
+        "buildingid": "348579",
+        "registrationid": "373786",
+        "bin": "3126839",
+        "block": "5390",
+        "lot": "74",
+        "housenumber": "455",
+        "streetname": "OCEAN PARKWAY",
+        "recordstatus": "Active",
+    }
+    old_contact = {
+        "registrationcontactid": "old-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "FORMER OWNER LLC",
+    }
+    new_contact = {
+        "registrationcontactid": "new-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "CURRENT OWNER LLC",
+    }
+    with get_session() as session:
+        upsert_public_record(session, "hpd_building", building)
+        former, _ = upsert_public_record(session, "hpd_registration_contacts", old_contact)
+        apply_machine_verification(session)
+        assert former.visible_public is True
+        session.commit()
+
+    monkeypatch.setattr(
+        public_record_sync,
+        "fetch_public_record_rows",
+        lambda: [
+            ("hpd_building", building, "https://example.test/hpd-building"),
+            ("hpd_registration_contacts", new_contact, "https://example.test/hpd-contacts"),
+        ],
+    )
+    monkeypatch.setattr(public_record_sync, "LAST_FETCH_ERRORS", [])
+    monkeypatch.setattr(public_record_sync, "LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS", {"373786"})
+    monkeypatch.setattr(
+        public_record_sync,
+        "LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION",
+        {"373786": {"new-contact"}},
+    )
+
+    with get_session() as session:
+        result = sync_public_records(session, baseline=False)
+        owners = public_record_sync.registered_owner_organizations(session)
+        former = session.query(PublicRecordWatch).filter_by(record_key="old-contact").one()
+        current = session.query(PublicRecordWatch).filter_by(record_key="new-contact").one()
+        session.commit()
+
+    assert result["registration_contacts_retired"] == 1
+    assert former.visible_public is False
+    assert former.machine_verification_status == "retired_from_current_registration"
+    assert current.visible_public is True
+    assert [owner["organization"] for owner in owners] == ["CURRENT OWNER LLC"]
+
+
+def test_repeated_contact_refresh_does_not_re_retire_or_re_action_hidden_contact(client, monkeypatch):
+    building = {
+        "buildingid": "348579",
+        "registrationid": "373786",
+        "bin": "3126839",
+        "block": "5390",
+        "lot": "74",
+        "housenumber": "455",
+        "streetname": "OCEAN PARKWAY",
+        "recordstatus": "Active",
+    }
+    former_contact = {
+        "registrationcontactid": "former-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "FORMER OWNER LLC",
+    }
+    current_contact = {
+        "registrationcontactid": "current-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "CURRENT OWNER LLC",
+    }
+    with get_session() as session:
+        upsert_public_record(session, "hpd_building", building)
+        upsert_public_record(session, "hpd_registration_contacts", former_contact)
+        session.commit()
+
+    monkeypatch.setattr(
+        public_record_sync,
+        "fetch_public_record_rows",
+        lambda: [
+            ("hpd_building", building, "https://example.test/hpd-building"),
+            ("hpd_registration_contacts", current_contact, "https://example.test/hpd-contacts"),
+        ],
+    )
+    monkeypatch.setattr(public_record_sync, "LAST_FETCH_ERRORS", [])
+    monkeypatch.setattr(public_record_sync, "LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS", {"373786"})
+    monkeypatch.setattr(
+        public_record_sync,
+        "LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION",
+        {"373786": {"current-contact"}},
+    )
+
+    with get_session() as session:
+        first = sync_public_records(session, baseline=False)
+        former = session.query(PublicRecordWatch).filter_by(record_key="former-contact").one()
+        first_changed_at = former.last_changed_at
+        session.flush()
+        first_action_ids = [
+            action.id
+            for action in session.query(WatchdogAction)
+            .filter_by(source_record_id=former.id, action_type="changed_public_record")
+            .all()
+        ]
+        session.commit()
+
+    with get_session() as session:
+        second = sync_public_records(session, baseline=False)
+        former = session.query(PublicRecordWatch).filter_by(record_key="former-contact").one()
+        session.commit()
+
+        assert first["registration_contacts_retired"] == 1
+        assert second["registration_contacts_retired"] == 0
+        assert former.status == "not_in_current_hpd_export"
+        assert former.visible_public is False
+        assert former.last_changed_at == first_changed_at
+        assert [
+            action.id
+            for action in session.query(WatchdogAction)
+            .filter_by(source_record_id=former.id, action_type="changed_public_record")
+            .all()
+        ] == first_action_ids
+
+
+def test_retired_hpd_contact_does_not_corroborate_current_building_record(client):
+    with get_session() as session:
+        building, _ = upsert_public_record(
+            session,
+            "hpd_building",
+            {
+                "buildingid": "348579",
+                "registrationid": "373786",
+                "bin": "3126839",
+                "recordstatus": "Active",
+            },
+        )
+        retired, _ = upsert_public_record(
+            session,
+            "hpd_registration_contacts",
+            {
+                "registrationcontactid": "retired-contact",
+                "registrationid": "373786",
+                "type": "CorporateOwner",
+                "corporationname": "FORMER OWNER LLC",
+            },
+        )
+        retired.status = "not_in_current_hpd_export"
+        retired.visible_public = False
+        retired.needs_human_verification = True
+        retired.machine_verification_status = "retired_from_current_registration"
+
+        apply_machine_verification(session)
+        session.commit()
+
+        assert building.machine_verification_status == "official_building_match"
+        assert building.corroborating_records_json is None
+        assert retired.machine_verification_status == "retired_from_current_registration"
+
+
 def test_replacement_watchdog_generates_weekly_digest_automatically(client, monkeypatch):
     monkeypatch.setattr(public_record_sync, "fetch_rows", lambda source, params, limit=500: [])
 
