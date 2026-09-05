@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from packages.sheets import sync as sheets_sync
@@ -9,6 +10,14 @@ from scripts.audit_public_watchdog_tabs import ExpectedTab, LiveTab, TabSpec
 
 
 NY = ZoneInfo("America/New_York")
+
+
+def test_runtime_env_is_loaded_before_database_session_factory_import():
+    source = (Path(audit.__file__)).read_text(encoding="utf-8")
+
+    assert source.index('load_local_env_file(ROOT / ".env")') < source.index(
+        "from packages.db import SessionLocal"
+    )
 
 
 def _metadata(*titles: str, qa_hidden: bool = True) -> dict[str, object]:

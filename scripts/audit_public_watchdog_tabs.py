@@ -16,11 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from packages.db import SessionLocal
 from packages.local_env import load_local_env_file
 
 load_local_env_file(ROOT / ".env")
 
+from packages.db import SessionLocal
 from packages.sheets import sync as sheets_sync
 from scripts.init_sheet import PUBLIC_WATCHDOG_TABS
 
