@@ -258,7 +258,7 @@ PUBLIC_LIMITED_FIRE_EGRESS_RE = re.compile(
     re.IGNORECASE,
 )
 PUBLIC_LAUNDRY_MACHINE_NUMBER_RE = re.compile(
-    r"\b(?:washer|dryer)(?:\s+(?:number|no\.?))?\s*#?\s*(\d{1,3})\b",
+    r"\b(?:washer|dryer|washing\s+machine)(?:\s+(?:number|no\.?))?\s*#?\s*(\d{1,3})\b",
     re.IGNORECASE,
 )
 PUBLIC_MEDIA_ONLY_CAPTION_RE = re.compile(
