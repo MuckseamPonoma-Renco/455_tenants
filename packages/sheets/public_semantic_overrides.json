@@ -1,0 +1,1345 @@
+{
+  "schema_version": 1,
+  "overrides": [
+    {
+      "message_id": "009d2375d76b2696fc51ea606fac5675b233904ed6d94ad755c1b3cf582e7eee",
+      "raw_text_sha256": "8a6fd2ac82b7c4115d027118082a4e10b861cc32d1af527308bd716c418e02fa",
+      "include": true,
+      "issue_label": "Brown water and no hot water",
+      "category_label": "Heat / hot water / Leaks / water damage",
+      "summary": "Dark-brown water and loss of hot water were reported after pipe work.",
+      "show_evidence": false,
+      "reason": "Current summary is raw first-person text."
+    },
+    {
+      "message_id": "02d435f9321a82d1600579cc5255567c1de005e11034b325a37c8c1341802eeb",
+      "raw_text_sha256": "b64bbeb19df35336ae8920d06c16109bea0e3a9c186fae4431bba69c70d3f82e",
+      "include": true,
+      "issue_label": "Brown bath water",
+      "category_label": "Leaks / water damage",
+      "summary": "Brown bath water was reported.",
+      "show_evidence": false,
+      "reason": "Current summary is raw first-person text."
+    },
+    {
+      "message_id": "082b8814e906ba4d428e7711b368e224f01b99f875906627f43bd6e4583602e5",
+      "raw_text_sha256": "a90c09b5990a60d9a8d5b8cef874f4df315e9bd5bc80dc57d564230d7b3ba3dc",
+      "include": true,
+      "issue_label": "Cloudy water",
+      "category_label": "Leaks / water damage",
+      "summary": "Cloudy water was reported; a storm-related cause was not verified.",
+      "show_evidence": true,
+      "reason": "Canonical media-bearing occurrence needs the unsupported cause removed."
+    },
+    {
+      "message_id": "09119a9d6916281198339c07ac3f0bf08db508f86ec2ec4265e2750c98b52952",
+      "raw_text_sha256": "51576b03edea188d3d67b064a45dcbc847abb5dafcf0d6ee64f5570e8ab9eaff",
+      "include": true,
+      "issue_label": "South elevator",
+      "category_label": "Elevator",
+      "summary": "South elevator was reported out of service.",
+      "show_evidence": false,
+      "reason": "Negated in service is incorrectly parsed as working."
+    },
+    {
+      "message_id": "09bab88846396ce59fccedbbd3fd2017298b400a0e7e06d517ff5ad79de090e6",
+      "raw_text_sha256": "215c2ed5992515e4180a5249b7af8a83832064715662f70a044efc5cccfb5792",
+      "include": true,
+      "issue_label": "Heat and hot-water inspection",
+      "category_label": "Heat / hot water",
+      "summary": "A technician inspected apartment heat and hot water after a prior 311 complaint about a day-long heat outage.",
+      "show_evidence": false,
+      "reason": "Current summary republishes first-person apartment and complaint details."
+    },
+    {
+      "message_id": "0bdff7596e3fd5663f2cb591e27a33746b380d34134597373fb22ba61272a2d9",
+      "raw_text_sha256": "27b545866dd5def026821cc690624edfa93f8ad485e0be364c277b908db26451",
+      "include": true,
+      "issue_label": "At least one elevator working",
+      "category_label": "Elevator",
+      "summary": "At least one elevator was reported working.",
+      "show_evidence": false,
+      "reason": "At-least-one service is incorrectly rendered as both elevators working."
+    },
+    {
+      "message_id": "0ec6d61e3c750d04ce4874433ed5e0fa88be139cba6d599dde94404bc8450930",
+      "raw_text_sha256": "f04761cee166ffbea0e05a5cacfa914079b54a3c81a61d59849829d76be52ae2",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Cross-source duplicate of the same-epoch elevator-out occurrence."
+    },
+    {
+      "message_id": "1043c0c14288eff7dccc949e9d7140455caaa4559b91f81ad3675dcd099175a5",
+      "raw_text_sha256": "3de9c1b3e2520321c75814d6fb6716c190b3947670d0177c2b8a82795c9c1dfe",
+      "include": true,
+      "issue_label": "Brown water",
+      "category_label": "Leaks / water damage",
+      "summary": "Brown water was reported again.",
+      "show_evidence": false,
+      "reason": "Current summary is conversational and lower-case."
+    },
+    {
+      "message_id": "15df7a123c772342b9065b515eeb9dda2732812653e929faa5ad15e43e5ab3dd",
+      "raw_text_sha256": "656394e18538553397c41eb1b417d48e3eacafe5a7a215a84691a1d8cb8ad275",
+      "include": true,
+      "issue_label": "Fire-stair door stuck",
+      "category_label": "Security / access",
+      "summary": "Stairwell A was reported stuck; residents were directed to use Stairwell B while staff tried to open it.",
+      "show_evidence": false,
+      "reason": "Current summary is a raw imperative and names an individual before scrubbing."
+    },
+    {
+      "message_id": "1931d00f382418c2763693f02fb2c50df63fcc92555630e6eb38448ed4557850",
+      "raw_text_sha256": "27609687446c219f3acd1e3413e9490371e66095bad10a6b520142df86abb17d",
+      "include": true,
+      "issue_label": "Cockroach in dryer-door window",
+      "category_label": "Pest activity",
+      "summary": "A cockroach was reported visible inside a dryer-door window.",
+      "show_evidence": false,
+      "reason": "Current summary is long conversational prose."
+    },
+    {
+      "message_id": "1a161578677fdd347f851b621aa87865901a1592b59f4ab7e6a65d52b2387b84",
+      "raw_text_sha256": "2a03e7fe844e05350c87f9bf25d56879c9c7839f235ddac6f69ab4492a5feda3",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Pasted attorney email with names and email addresses is document context, not an elevator confirmation; it must never appear as public evidence."
+    },
+    {
+      "message_id": "1da312f12bc4348452259b16e37cf4e50578d4f3cbe16a14280bac827f640b39",
+      "raw_text_sha256": "6bc235b25e362221431088cb25279f91738d58990c08971927272937add5aa37",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "Elevator service was reported reduced to one working elevator.",
+      "show_evidence": false,
+      "reason": "Canonical copy is currently shown as a raw generic working update."
+    },
+    {
+      "message_id": "215b57396f23efbf37ef9e8973ced7affdb1f08a04957b7558fdcbb673fd0aa7",
+      "raw_text_sha256": "e3bc5d1a416d8ee61971ae5beefb64262e594270f24f2d18e9e2f704f73b18a1",
+      "include": true,
+      "issue_label": "Both elevators unavailable",
+      "category_label": "Elevator",
+      "summary": "No elevators were reported available during the entrapment.",
+      "show_evidence": false,
+      "reason": "Same-minute row should preserve the service state alongside the entrapment."
+    },
+    {
+      "message_id": "228f5c3610cc5e21d07ab7b072289fe50bc8248afe0893de947cb7597ef27bd9",
+      "raw_text_sha256": "2d167221f6099bd432107b612f1f2f23ea2a0865a7a0fa524f766ff68a5d5a2e",
+      "include": true,
+      "issue_label": "South elevator possibly out",
+      "category_label": "Elevator",
+      "summary": "South elevator was reported possibly out of service; the north elevator was temporarily unavailable while being cleaned.",
+      "show_evidence": false,
+      "reason": "Current summary is raw, first-person, and omits the reason the north car was unavailable."
+    },
+    {
+      "message_id": "22a32d202c2f7a2ba5ac028cffa0c9eb69b9de309069a042b2cdcdff9374759f",
+      "raw_text_sha256": "63156bbb431c6ddfdf7995bce206d58f74f66d97d540c79aafe84f03bab83768",
+      "include": true,
+      "issue_label": "Exterminator service concern",
+      "category_label": "Pest activity",
+      "summary": "A tenant reported that poison was placed during an exterminator visit and requested removal from the service list.",
+      "show_evidence": false,
+      "reason": "Current summary is raw first-person narrative."
+    },
+    {
+      "message_id": "248dd02ba4850c5c4fb14e6cd8c3384087a40064b98ccde1dd999305d3471f0e",
+      "raw_text_sha256": "44d1bcfb72a937287a7a29c67ccab004fab036e491cc3f4646a34f9622a72acd",
+      "include": true,
+      "issue_label": "Water-service interruption",
+      "category_label": "Leaks / water damage",
+      "summary": "The water interruption was understood to be connected to repair of the posted leak.",
+      "show_evidence": false,
+      "reason": "Canonical explanation needs literal wording without emoji."
+    },
+    {
+      "message_id": "26887a6e969805964a284e29e8551b5f711152664ddb2d208b86c6ce5d92b950",
+      "raw_text_sha256": "4197be04edc65edaa7b683fec2244ce49de715d742839f8d02699aa90b04eb2e",
+      "include": true,
+      "issue_label": "North elevator",
+      "category_label": "Elevator",
+      "summary": "North elevator was reported no longer working.",
+      "show_evidence": false,
+      "reason": "A terse negating reply is incorrectly rendered as a working update because quoted text wins."
+    },
+    {
+      "message_id": "29d69fd3c864b547fec44c6e5780ceb89965fe77ee2a418640549af002da2567",
+      "raw_text_sha256": "b7dda4e8436521deb5d8641c8a48dc41cb54dac1d63db80ec19b18fd6d971aab",
+      "include": true,
+      "issue_label": "Elevator entrapment resolved",
+      "category_label": "Elevator",
+      "summary": "An elevator entrapment was reported resolved; the person exited and the Fire Department left.",
+      "show_evidence": false,
+      "reason": "Current present-tense summary incorrectly says a person remained trapped."
+    },
+    {
+      "message_id": "2b58b073ec102a5e780a1a4ebdfd1e59411a8df8007fc9caa151139d5b56e350",
+      "raw_text_sha256": "54db3f34090c2b31c3a36614298a2cf5fbbedcc6d67d55cd67e05161afe78bd6",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Same-epoch no-media duplicate of the canonical garage leak report."
+    },
+    {
+      "message_id": "2d3d73fe4f36626142cf69adc1a343c344002ab2997a483d7eb7db71a67e7cc7",
+      "raw_text_sha256": "06df7359c13c48827eedcadcabc44c108f9e7167873860b548a400a20027a825",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate copy is wrongly linked to the bath-water incident and creates a mixed issue label."
+    },
+    {
+      "message_id": "3508565a94d4c4e9458d43cded54429717c04c9be4d33d11061a4c56ebc660cb",
+      "raw_text_sha256": "d8def532da32cb0406a4258a7e16b10fb139faecf4ed1d2cff4729a181c69fa7",
+      "include": true,
+      "issue_label": "Heat outage",
+      "category_label": "Heat / hot water",
+      "summary": "A resident reported no heat throughout the afternoon and requested staff follow-up.",
+      "show_evidence": false,
+      "reason": "Current summary exposes a staff name, 311 intention, and first-person narrative."
+    },
+    {
+      "message_id": "37c8efc4a7b9bf25ca8348f8e19b6c8495de9d25e69f5d8429711de08330f634",
+      "raw_text_sha256": "c7e3158e495c8d056d13d8190d5f023b688795f330cd8196aa8721d53bdf4a87",
+      "include": true,
+      "issue_label": "Laundry-room washer spill",
+      "category_label": "Leaks / water damage",
+      "summary": "Water from a large washer was reported leaving the laundry-room floor wet; dog hair was also reported in dryers.",
+      "show_evidence": false,
+      "reason": "Current summary exposes a resident's blanket, cleaning activity, and first-person phrasing."
+    },
+    {
+      "message_id": "386486845e49482b2dd45579aaa4091d60d0c6962891deaa96866e066fa71cb8",
+      "raw_text_sha256": "e2c18f73dbe17a1a2ac7083fc810d32ece82a64b0e450c0cbb6d85e72f6a4454",
+      "include": true,
+      "issue_label": "Elevator rescue",
+      "category_label": "Elevator",
+      "summary": "The Fire Department was reported working to free a person from an elevator.",
+      "show_evidence": false,
+      "reason": "This elevator-rescue update is misclassified as security/access and contains an edit marker."
+    },
+    {
+      "message_id": "38e1d9e450aa916bc9b001b2eda1d16632c55d8d1aa2ef440cec5881859a4e89",
+      "raw_text_sha256": "984f024eabd26b95b5bb05209342b22840e241cb3f95abad9e320f316e9fad8e",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Thanks and a request for optimism are conversation, not a leak report."
+    },
+    {
+      "message_id": "3a4b712c9a6be5d85a2d7a89b8626e41766713071ed1d0399bdf555df152f2ff",
+      "raw_text_sha256": "a7b01a29de7403add1d152f69c3e475ab5c91049322ba79826a6c539173af27b",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "Elevator service was reported reduced to one working elevator; a mechanic was called.",
+      "show_evidence": false,
+      "reason": "One working elevator is incorrectly rendered as both elevators working."
+    },
+    {
+      "message_id": "3a789f2af957325cac25b438ffdb6d97d1b52dc1adae1f7c275436626d0e474c",
+      "raw_text_sha256": "54db3f34090c2b31c3a36614298a2cf5fbbedcc6d67d55cd67e05161afe78bd6",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Exact same sender/text appears again 61 minutes later; treat as a duplicate unless source review proves a deliberate repeat."
+    },
+    {
+      "message_id": "3ab39e34b73ea7a7e08872ffab9d3abf76899b7977e18220bea154c3c7a50353",
+      "raw_text_sha256": "091956809a877ca429f8e306c6676bb5ed7b28bc49824eb2baa8a52dd1fe846d",
+      "include": true,
+      "issue_label": "Brown water after service interruption",
+      "category_label": "Leaks / water damage",
+      "summary": "Brown water was reported as a recurring temporary condition after building water service is restored.",
+      "show_evidence": false,
+      "reason": "Current summary is raw conversational context."
+    },
+    {
+      "message_id": "3f87503c2ac79aaf62fa3e97b7557dc67697d8961716b70766bfe0847794a324",
+      "raw_text_sha256": "cda980a80e4a977bc05c663cb340a2e2736c0b3f82cb606da074b1063743e64a",
+      "include": true,
+      "issue_label": "South elevator stopped",
+      "category_label": "Elevator",
+      "summary": "South elevator was reported stopped at the penthouse; a mechanic was on site.",
+      "show_evidence": false,
+      "reason": "Current summary mentions only the mechanic and drops the stopped car."
+    },
+    {
+      "message_id": "48ca6918056a0a3af882b0245b8f5ba0b1aaadb9e8023200ef39c6fac0592b89",
+      "raw_text_sha256": "e6613aca17dfc203d7c14ff0cd8f6ce6bdc2e3566a3493f2b74da72055f00d55",
+      "include": true,
+      "issue_label": "Exterior lobby door repair",
+      "category_label": "Security / access",
+      "summary": "Repair of the exterior lobby door's hydraulic hinge was reported in progress.",
+      "show_evidence": false,
+      "reason": "Current summary contains a name before scrubbing, a typo, and conversational praise."
+    },
+    {
+      "message_id": "48f18c8ca41ebcd8558306fd3496fa93dd38473e14b886fbbff6998328d22105",
+      "raw_text_sha256": "e67e2a035760fa56aa54288806c4a56e87f7d13308f5363bc10d1bf11c6049d7",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate conditional stair-rest chair comment is not a current elevator outage."
+    },
+    {
+      "message_id": "4a566df8edd11023863c634b1fb474255dbea443a7278268d48d8e6b61f07d57",
+      "raw_text_sha256": "9a7731f26a9c35f460b5a7b3aee6a15f9ee5084c7c9dc77121ea23bbc1aa1ec5",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "One elevator was reported working but stopping at every floor; the other awaited repair the next morning.",
+      "show_evidence": false,
+      "reason": "Current generic working-update summary loses both the reduced service and floor-service defect."
+    },
+    {
+      "message_id": "4aa6ca024a1780be239ca20083076194612dca04ac1d653e89c9f05c88ba219a",
+      "raw_text_sha256": "d39a471b4560a8747dbd7dd7d4ff5de66525b595e1df3c7a8a71f91f08a50a5c",
+      "include": true,
+      "issue_label": "Intermittent heat reported",
+      "category_label": "Heat / hot water",
+      "summary": "Building heat was described as automatic and intermittently unreliable.",
+      "show_evidence": false,
+      "reason": "Current label incorrectly says a technician checked heat and summary is raw dialogue."
+    },
+    {
+      "message_id": "4d38c11d7c3b461632ef4aa32ac7aa531d44e0e84b440ab326349575dd989e9c",
+      "raw_text_sha256": "d45b71fb9f5d649857ea02aff540c63e6a96fc3f033d48514435d33f942e3bba",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Gothamist article about elevator complaints is an external reference, not a current building outage."
+    },
+    {
+      "message_id": "506b1f03535be9ae0ae568c5f17cccb2c890a598bc088762be47118ae56bcd02",
+      "raw_text_sha256": "0fdff45cf97199d97cd3fa7da4d54718ae1e548d089361f75f6f67a42860e4b1",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "F-train, bicycle, and dog/lift-use commentary reports no current building outage."
+    },
+    {
+      "message_id": "50ea3c2c0e9170f73b261325edde52c79dc0992e0a7a611c553fc3b150478b47",
+      "raw_text_sha256": "6bc235b25e362221431088cb25279f91738d58990c08971927272937add5aa37",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Cross-source duplicate of the one-elevator-in-service occurrence creates a contradictory same-time row."
+    },
+    {
+      "message_id": "516788e88be12dd6e008cfb67aa75ba5f964acbd45b795d8b1b25f17ec6c8117",
+      "raw_text_sha256": "1fba471b94f534b771021edfdfbcdba2eb36d32d948ee1582d5bca576b5f6a7e",
+      "include": true,
+      "issue_label": "Heat restored",
+      "category_label": "Heat / hot water",
+      "summary": "Heat was reported restored after an outage lasting from about 11 a.m. to 5:30 p.m.",
+      "show_evidence": false,
+      "reason": "Current label incorrectly says a technician checked heat and republishes contact attempts."
+    },
+    {
+      "message_id": "521c8d371c8907d57894b9300dac66301bb5fd0a4177a6b577f0aa197e655f73",
+      "raw_text_sha256": "deef2560708031c7e3ca04ecf54253ee38c05281cfe80f10b080e6985403d46f",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Cross-source duplicate of the lock-failure message is wrongly linked to a Fire Department incident."
+    },
+    {
+      "message_id": "52a4f091a6994733d2b278d72b66693f223840faf427e8b0c3b504672d61f377",
+      "raw_text_sha256": "662a105f0d7234d859c798423326cf7425826558338e9932f89129215d243b8c",
+      "include": true,
+      "issue_label": "Basement elevator-service question",
+      "category_label": "Elevator",
+      "summary": "A tenant asked whether elevator service was still failing to reach the basement.",
+      "show_evidence": false,
+      "reason": "A question is incorrectly presented as a confirmed two-car outage."
+    },
+    {
+      "message_id": "52c1ef1f22d69bfa613f4d42b4cf2c8a326129ba65bfa3643c2961fa7841e4ef",
+      "raw_text_sha256": "1153ff776e776520be00568b12a4789adc0a6c3c6e733572e90547a51f9f03b8",
+      "include": true,
+      "issue_label": "Elevator entrapment",
+      "category_label": "Elevator",
+      "summary": "A person was reported trapped in an elevator.",
+      "show_evidence": false,
+      "reason": "Current generic outage summary omits the entrapment."
+    },
+    {
+      "message_id": "5644a7b93e36b83b7675362d6127fa47dfe5a8a19e487e90c3a13739c2d21e73",
+      "raw_text_sha256": "b386ca4c630ff834f40090dc94377ce9ea148ce86f6c99635ba74cbac4b9a0af",
+      "include": true,
+      "issue_label": "Apartment too cold",
+      "category_label": "Heat / hot water",
+      "summary": "An apartment was reported still too cold despite heat controls being fully on.",
+      "show_evidence": false,
+      "reason": "Current same-time summary is raw first-person wording."
+    },
+    {
+      "message_id": "596dd99540fddb6e9fc7b82fd5f63533a60ae17bfd034f9174fa1d386d3ec127",
+      "raw_text_sha256": "b4dee8d9fc5bb32ffb8fbdc84317459aefa8fa7ceafba79e38ff1b48379c544e",
+      "include": true,
+      "issue_label": "Basement garage flooding",
+      "category_label": "Leaks / water damage",
+      "summary": "Flooding was reported in the basement garage beginning the prior evening.",
+      "show_evidence": false,
+      "reason": "Current summary includes greeting and speculative advice to stock water."
+    },
+    {
+      "message_id": "59b2b00d441bcaef0f6b4934f75496ef957eb09f28199d02af720b4350310c16",
+      "raw_text_sha256": "62f7bdbcbbef90ab1f4b05e370594bf6f6360c1e32144bfe8f60ef4966a256fb",
+      "include": true,
+      "issue_label": "Cockroach-removal question",
+      "category_label": "Pest activity",
+      "summary": "A tenant asked whether the cockroach had been removed from the dryer screen.",
+      "show_evidence": false,
+      "reason": "Current summary is raw and includes emoji; do not present the question as a confirmed new pest event."
+    },
+    {
+      "message_id": "5b3ff282ebcaefddb9e9b44de911ccdd862c0ddfedeb16a14dd7a428949425a0",
+      "raw_text_sha256": "762fece42ab47f25bd3c35c9491d0ab5fcccd4f1b4a33221d643587a166ba5d5",
+      "include": true,
+      "issue_label": "Both elevators working after alarm",
+      "category_label": "Elevator",
+      "summary": "Both elevators were reported working after an alarm had rung.",
+      "show_evidence": false,
+      "reason": "Current row reports only the alarm and a north-car label, losing the resolved state."
+    },
+    {
+      "message_id": "5e14fe204def6391e047d33a647802b5a6bb1251d8e01e67b4f38018a68839c9",
+      "raw_text_sha256": "53a007a0599d38d46ca4e869b4dbd60006f63f9007042548cef88300bf1695b0",
+      "include": true,
+      "issue_label": "Garage sprinkler-system leak and clogged drains",
+      "category_label": "Leaks / water damage",
+      "summary": "A garage leak was attributed to the building sprinkler system, and clogged drains were reported worsening the flooding.",
+      "show_evidence": false,
+      "reason": "Canonical media-bearing occurrence needs personal staff-location and meeting commentary removed."
+    },
+    {
+      "message_id": "5f1b6d380ba22b0bc878862d8a385fefd2473f9a91ff0bfd5a105f20ef32c2e1",
+      "raw_text_sha256": "e26a996aa0747a7d34cb71aaba65159d47469f39cd730e24e03c33c520a01e52",
+      "include": true,
+      "issue_label": "Apartment temperature below 65°F",
+      "category_label": "Heat / hot water",
+      "summary": "An apartment was reported below 65°F while outdoor temperature was below 55°F.",
+      "show_evidence": true,
+      "reason": "Duplicate is linked to the broad cold-apartment incident and summary contains an image placeholder."
+    },
+    {
+      "message_id": "5fd73ec170bb6099d362aeda5bc7d9bbb4872d9a10592a4a562c5343ccadc458",
+      "raw_text_sha256": "8df7c2187b44c04a865eb0705467ac957bb5b9033d7e9506b184027b9245390a",
+      "include": true,
+      "issue_label": "Heat outage",
+      "category_label": "Heat / hot water",
+      "summary": "A resident reported no heat during the afternoon; a reported gas explanation did not match working cooking gas.",
+      "show_evidence": false,
+      "reason": "Current label incorrectly says a technician checked heat and republishes apartment details."
+    },
+    {
+      "message_id": "6376054acb0829871859924bf54798dee8335efcfc0e851ef4fcb8d45e29d093",
+      "raw_text_sha256": "82dcdfef73ede86a92f1cf0b1d197668f7b141619c218f23fb30d17086842fb6",
+      "include": true,
+      "issue_label": "Elevator ventilation fan issue",
+      "category_label": "Elevator",
+      "summary": "A ventilation fan in one elevator was reported not working.",
+      "show_evidence": true,
+      "reason": "A fan defect is incorrectly rendered as both elevators out."
+    },
+    {
+      "message_id": "6434fffeea1221307a567fc627062a152880dfd36c11a32f7b74096187182b83",
+      "raw_text_sha256": "4373cd1cfe744fd7e8f957a0b544eb38897e3c9fe9fae458138beefca248ad32",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Photos and text explicitly describe an entrapment from weeks earlier, not a current outage; retain only as historical evidence if needed."
+    },
+    {
+      "message_id": "6809240f90259eb696a1cafad2a2deb71ad973a1a02e225b9027a2f9071ef0a2",
+      "raw_text_sha256": "cbadf7e838c62633d7e949f2e8301921734941a033122b4986c3cd87740e360f",
+      "include": true,
+      "issue_label": "Heat outage",
+      "category_label": "Heat / hot water",
+      "summary": "Building heat was reported not working.",
+      "show_evidence": false,
+      "reason": "Current label incorrectly says a technician checked heat."
+    },
+    {
+      "message_id": "68928ff0b34cc3073ae4fcbbc673244155d76fc14ed2911ad77a47b221e4db68",
+      "raw_text_sha256": "fb2d15ccebccf90e99765143963311af81a9160206e06b096aec1c6d0734e2c1",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "The direct message gives button-pressing advice; the actual outage appears only in quoted text and must not become a second public status row."
+    },
+    {
+      "message_id": "69203c666bb10485d8dbc51720abdb9b029d424e58fa5c5c8fbe1af705c70ef0",
+      "raw_text_sha256": "310d2767ade708049b2f48bc2a91b69f9c944dc61cddf6602189b6a080903413",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Prior-summer 311 closure commentary is historical and must not render as a current still-out event."
+    },
+    {
+      "message_id": "6de1351ba1121a9f4e188de57032755ae6ce689623cfe8a294bcde66774aa85c",
+      "raw_text_sha256": "21d6464d3992e84433e9d1e456143bf8ba8aab1a80a956cf60fe7962a46de5c1",
+      "include": true,
+      "issue_label": "Elevator entrapment",
+      "category_label": "Elevator",
+      "summary": "A person was reported trapped in an elevator.",
+      "show_evidence": false,
+      "reason": "Current summary incorrectly says both elevators were out and omits entrapment."
+    },
+    {
+      "message_id": "71c20ee71fc150f94c42dd12f2f28684abd7d038d3eecf2530a963a22c35b897",
+      "raw_text_sha256": "105fa40607c7b01bb71ef7c3871ba7307d3b8d448395497e58985f577ac846fd",
+      "include": true,
+      "issue_label": "Building water-leak notice",
+      "category_label": "Leaks / water damage",
+      "summary": "Building management posted a notice that a water leak had been reported and asked residents to report leaks to staff.",
+      "show_evidence": false,
+      "reason": "Current label says puddle causing distress and summary includes a person's name before scrubbing."
+    },
+    {
+      "message_id": "71c2d5d8524d23def9a4bca6a62db892c1c131b6d80a733025453d38ef88d528",
+      "raw_text_sha256": "75279ff16351edf9e01119b65f750e511a0522e33b1bf3aa2070bb395d0a6611",
+      "include": true,
+      "issue_label": "Interior lobby door accessibility",
+      "category_label": "Security / access",
+      "summary": "The interior lobby door was reported too heavy for independent wheelchair access when unattended.",
+      "show_evidence": false,
+      "reason": "Current summary is raw first-person advocacy."
+    },
+    {
+      "message_id": "730d1e6868176ddd3a6aee514fae40307b6466bab8eb16c869ae99a80337883d",
+      "raw_text_sha256": "1125c6f98f5c4d49ed2f573209eadfaaed837f865f59773add4a1e5601905662",
+      "include": true,
+      "issue_label": "Elevator floor-service issue",
+      "category_label": "Elevator",
+      "summary": "An elevator was shown stopping at every floor while descending.",
+      "show_evidence": true,
+      "reason": "Current summary contains transcription errors and a video-omitted placeholder."
+    },
+    {
+      "message_id": "73e32f3aa2d4cae348bde24ba0b8b0754c0699e4d8c0ebf082bba1e5b7b72bd6",
+      "raw_text_sha256": "8330290f1c2ff98920e8327feea2c0cd20381e03db9b15f53f54b0936ef32ef2",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "General ride-safety commentary reports no specific current clunk, bounce, or slow opening despite the generated summary."
+    },
+    {
+      "message_id": "75ce29df173d0ea951de74b51416e4fba9d7da75fc61222384b9ca766d7f4562",
+      "raw_text_sha256": "551a760158a036268b4cd736bd94df5b6d918b38fcc03719f81bdeb5706e8472",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Pre-thermostat condition is historical and not a current heating update."
+    },
+    {
+      "message_id": "76d7b9642c9152bce7e4f95629169b53a0eb266fbd7abe8dcc136e6a2201a42d",
+      "raw_text_sha256": "756362b6c1ceea9381f5406ce925f6aba4e9c2b0a8fb33ed4b07a252f325e545",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "News12 link concerns a different Kensington building."
+    },
+    {
+      "message_id": "7a63e463adb285537aeaf8fa712fd1f8ca01767012bbbc1fc21e1a8b8b14d88a",
+      "raw_text_sha256": "8de333460ffdd16b892394dd592d1467f4fedb3a68b106acc6fbdb45b7611fea",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Cross-source duplicate of the one-working-elevator occurrence; current incident is also polluted by a transit false positive."
+    },
+    {
+      "message_id": "7d0ca0e1175d65045495b981c852cd02a114b8b735a2b7debfacaa0c6f39a0e5",
+      "raw_text_sha256": "6c2a3a293cea2b165f59e089360edee59661f8a7dd5c0f2c281a2982a224b0d5",
+      "include": true,
+      "issue_label": "Elevator noise increasing",
+      "category_label": "Elevator",
+      "summary": "Elevator noise was reported increasing and disturbing residents.",
+      "show_evidence": false,
+      "reason": "This is a noise/irregular-operation report, but it is attached to a north-outage incident and rendered as north working."
+    },
+    {
+      "message_id": "8014306c5278742544a8bea467af946d2afd8f82af01cee41e51ff3dc4a87c81",
+      "raw_text_sha256": "fb6b647c8b4c9d9b73a22b2ee964d4677497c64d6c10d653847019f8ac0c0b4b",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Historical injury and emergency-access advocacy is not a current elevator alarm and contains sensitive medical detail."
+    },
+    {
+      "message_id": "80a5be7816ff8de14adfb3b6e40cf353d17c444826f33f9a6b5ce1ddd71d029b",
+      "raw_text_sha256": "2df3326497fa4f07a71c739c072574bb9ba201d2e63ddfb56e16ec78d1715ab1",
+      "include": true,
+      "issue_label": "Fire-stair door possibly stuck",
+      "category_label": "Security / access",
+      "summary": "A lobby-level fire-stair door near the fountain was reported possibly stuck closed.",
+      "show_evidence": false,
+      "reason": "Current summary republishes hesitant first-person wording."
+    },
+    {
+      "message_id": "8207e53f856fa33f9a892736cbc05a152d9ab75a4abb5657ef4c69ffb3ba0768",
+      "raw_text_sha256": "d10fe004f166d25244fa2dfd1e0feee3bdaf05633bf2b69ad3f4afb694188803",
+      "include": true,
+      "issue_label": "Exterminator conduct concern",
+      "category_label": "Pest activity",
+      "summary": "A tenant reported concern about an exterminator's conduct and planned to leave the service list.",
+      "show_evidence": false,
+      "reason": "Current summary is raw opinion and first-person phrasing."
+    },
+    {
+      "message_id": "82830e6f0ecb201ad6a3cad9c125647047b69a05a5d382885bdba08821679b36",
+      "raw_text_sha256": "dc67b3f444bfbe4dc61f9afba608d4bf471589e45d6f029df708627b4b62d042",
+      "include": true,
+      "issue_label": "Elevator rescue",
+      "category_label": "Elevator",
+      "summary": "The Fire Department was reported conducting an elevator rescue.",
+      "show_evidence": false,
+      "reason": "Current row is mislabeled as working and republishes family laundry, floor, and dialogue."
+    },
+    {
+      "message_id": "831b5f3f6080976d4a4e6bbfcc87fa5d3f934685f3461f9c3696ee5d91256d40",
+      "raw_text_sha256": "35105d393a66aa49fe244407c948335ef125153269628bfb9cf464f72f8a072c",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "One elevator was reported out of service; the other was reported no longer stopping at every floor.",
+      "show_evidence": false,
+      "reason": "Current summary reports only a working north elevator and loses the one-car outage."
+    },
+    {
+      "message_id": "833f398b47ec4b9f235207de75e2d5234eea0fc186e61cead8220bfaabe5a357",
+      "raw_text_sha256": "2beed83a00b7989735201358dc7fe8d3864e2e2d7f41304654156963573e3b4a",
+      "include": true,
+      "issue_label": "At least one elevator working",
+      "category_label": "Elevator",
+      "summary": "One elevator was reported working.",
+      "show_evidence": false,
+      "reason": "One working car is incorrectly rendered as both elevators working."
+    },
+    {
+      "message_id": "85d4ff72ad43f945a3355412705560cc74eff5f8bc19580e1d228e02e4187883",
+      "raw_text_sha256": "ee34c71d9a475c82fb1a54f465bce902a66d0b53cd31efced03cb1cf5be36130",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate restore message is wrongly attached to the puddle incident."
+    },
+    {
+      "message_id": "860f25c8c6c111c8eb7448a688b0f11a44e61cca0c397f110389e5ce66c400ca",
+      "raw_text_sha256": "44d1bcfb72a937287a7a29c67ccab004fab036e491cc3f4646a34f9622a72acd",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate leak-repair explanation is wrongly attached to the puddle incident."
+    },
+    {
+      "message_id": "8a99ff818d06227b069973a706199ab11b3c1836dcc29a6dca93a622d2b1daa9",
+      "raw_text_sha256": "8de333460ffdd16b892394dd592d1467f4fedb3a68b106acc6fbdb45b7611fea",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "Elevator service was reported reduced to one working elevator.",
+      "show_evidence": false,
+      "reason": "Canonical copy of a duplicate occurrence currently rendered inconsistently."
+    },
+    {
+      "message_id": "8ac2e2f417d44172a92f13801f19f4e391046b31b82768460e2b1af923316936",
+      "raw_text_sha256": "775046954d4f68673fc66bbc414f3271242234a0f490788d4e176d6dc565c18e",
+      "include": true,
+      "issue_label": "Elevators working and laundry notice",
+      "category_label": "Elevator / Laundry",
+      "summary": "Elevators were reported working. A laundry-room closure and card-replacement notice was also reported.",
+      "show_evidence": false,
+      "reason": "Current same-time merge contains raw prose and two inconsistent elevator labels."
+    },
+    {
+      "message_id": "8cf415892a89413c43142e8e4200028d347520168a032ff66799f0297810cb45",
+      "raw_text_sha256": "b777e5988bbea377951a02b411e9f63ded3e3e32636bfd88f517bd7eb7342b0e",
+      "include": true,
+      "issue_label": "Guest-entry verification concern",
+      "category_label": "Security / access",
+      "summary": "A tenant reported that guests were admitted and sent upstairs without verification or notice.",
+      "show_evidence": false,
+      "reason": "Current summary exposes guest gender, dinner plans, and first-person household details."
+    },
+    {
+      "message_id": "8cfa81ed5f55e44e4610e0a1957a19cd00553d9bff2ff151580c5e3310f64166",
+      "raw_text_sha256": "94de72e92ca9c8a0eb68877e84c89782739043c7982c4125a11e9508cc97faa1",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate same-time copy of the brown-water report is linked to a no-hot-water incident without reporting loss of hot water."
+    },
+    {
+      "message_id": "8eca7af472712934ee1f6fbe1756d63d01c05dad74115510db74b58b65c731e7",
+      "raw_text_sha256": "06df7359c13c48827eedcadcabc44c108f9e7167873860b548a400a20027a825",
+      "include": true,
+      "issue_label": "Brown hot water in kitchen",
+      "category_label": "Heat / hot water",
+      "summary": "Brown hot water was reported from a kitchen tap.",
+      "show_evidence": false,
+      "reason": "Canonical occurrence needs a neutral summary."
+    },
+    {
+      "message_id": "8f64c294eb8446b1b37334fd1f7c1bb34a833e8073c9fc5b9915d72095c64357",
+      "raw_text_sha256": "0f132d90481addf98ed4cf7313e39a529d4e3e9c15be027acd9bca7ed9666aff",
+      "include": true,
+      "issue_label": "Elevator entrapment",
+      "category_label": "Elevator",
+      "summary": "A person was reported trapped in an elevator.",
+      "show_evidence": false,
+      "reason": "Current generic outage summary omits the entrapment; the person's age/relationship must remain private."
+    },
+    {
+      "message_id": "8fb0a1188775dc6cd0c349ae1fc4e30f1d85fc7b451230a12aaa7fd033b7b5c6",
+      "raw_text_sha256": "ee34c71d9a475c82fb1a54f465bce902a66d0b53cd31efced03cb1cf5be36130",
+      "include": true,
+      "issue_label": "Water service restored",
+      "category_label": "Leaks / water damage",
+      "summary": "Water service was reported restored.",
+      "show_evidence": false,
+      "reason": "Canonical restoration needs neutral wording."
+    },
+    {
+      "message_id": "92b774449e9a2980c6c1358ed2115b3b45e0ee8a475d70fb9d521f5fdf1f5ed6",
+      "raw_text_sha256": "940f6c63ba5c58f5bfd22c505852c8b626197fb820d5e2fde5e54b8f328f8a4c",
+      "include": true,
+      "issue_label": "South elevator floor-service issue",
+      "category_label": "Elevator",
+      "summary": "South elevator was reported not stopping at the 14th floor on downward trips.",
+      "show_evidence": false,
+      "reason": "The decision is incorrectly marked restore and the public row says both cars stopped; this is a chronic floor-service defect."
+    },
+    {
+      "message_id": "94aa4cea2d4edc47bc1b258163a16b3fe7663b6c5ff130400d6889d721c18b81",
+      "raw_text_sha256": "77b3549b285c25c2fefe8d456e1486f89e55f089fa2c6cedf0f6ff5dbc36f045",
+      "include": true,
+      "issue_label": "Persistent apartment heating problem",
+      "category_label": "Heat / hot water",
+      "summary": "A resident reported a persistent apartment heating problem.",
+      "show_evidence": false,
+      "reason": "Current summary exposes family occupation and a long personal account."
+    },
+    {
+      "message_id": "957658f03698717eb38b5dc8d79d942178b4c8a17286bd8bdaefe4bf3bbb2805",
+      "raw_text_sha256": "90ad83b3699bcc737748f5d9477c65151b5c35ab151e53e307c13bdb0b7ec410",
+      "include": true,
+      "issue_label": "Puddle in 7th-floor Stairwell B",
+      "category_label": "Leaks / water damage",
+      "summary": "A puddle was reported in 7th-floor Stairwell B; building staff were notified and residents were warned to watch their step.",
+      "show_evidence": false,
+      "reason": "Canonical copy needs name-free neutral wording."
+    },
+    {
+      "message_id": "962983945ec1273e2e095e80f3ce1914633cebc7750da41bf982d134781c400b",
+      "raw_text_sha256": "6ccd4e03d127cf64e99d1117688a8dbc395467f10592459a17c91acdacefd0d5",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Hypothetical concern about a future two-car outage is not a current outage and exposes family-event details."
+    },
+    {
+      "message_id": "97cb99dccaaa177b90fe7e522ff291e5acee2ef93e791cc24492dd8a85aede04",
+      "raw_text_sha256": "987604e6fb21ba3a3d2c2e17e1212f976e99f41aa43013936388b88fd066ab2d",
+      "include": true,
+      "issue_label": "Stairwell puddle",
+      "category_label": "Leaks / water damage",
+      "summary": "A stairwell puddle was reported to building staff and created an added access burden during an elevator outage.",
+      "show_evidence": false,
+      "reason": "Current summary publicly exposes cancer treatment and other sensitive medical details."
+    },
+    {
+      "message_id": "983b8b4e534a0a2c920cda760e994729a127d9778cf97d9a76a87307de2a5532",
+      "raw_text_sha256": "9aca0ebd02d2b284b65753aa9782adfa84c8d3aebcbd19e3751ba381f7decac0",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "South elevator was reported working; north elevator was shut down overnight pending restart after overheating.",
+      "show_evidence": false,
+      "reason": "Current row reports only the south restore and omits the north shutdown."
+    },
+    {
+      "message_id": "9ab0ecb0e98ec74879925d810241641178e6c65b52568cd936cd18ee33238d21",
+      "raw_text_sha256": "77d20a29bcdeb9201e3181e14114b5ba7f0d56ce4585948a68cba9a17d4a1dd8",
+      "include": true,
+      "issue_label": "Water-service maintenance update",
+      "category_label": "Leaks / water damage",
+      "summary": "A resident reported waiting for maintenance during the water interruption; the leak notice had been posted only in the lobby.",
+      "show_evidence": false,
+      "reason": "Canonical update needs neutral wording and no work-from-home detail."
+    },
+    {
+      "message_id": "9b295a5a03235c8946ea20d9885c6b42f8dccf14ec7189698e9392b7fe0d3229",
+      "raw_text_sha256": "ea919fd9adfeb5bc3340f74195e67e66377ac61be64be55823ce62d8c3966d76",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "The right-side elevator was reported working; service remained reduced to one car.",
+      "show_evidence": false,
+      "reason": "One working car is incorrectly rendered as both elevators working."
+    },
+    {
+      "message_id": "9c908f96a3aba6464ebd4d4568bcc6761f6ae0123984a1075b965e9e45ab5917",
+      "raw_text_sha256": "94de72e92ca9c8a0eb68877e84c89782739043c7982c4125a11e9508cc97faa1",
+      "include": true,
+      "issue_label": "Brown water",
+      "category_label": "Leaks / water damage",
+      "summary": "Slightly brown water was reported beginning around 5:30 p.m.",
+      "show_evidence": false,
+      "reason": "Canonical occurrence needs a neutral summary."
+    },
+    {
+      "message_id": "9fe3abe15e31ecbe5d3e605d51cfdd89a715346d1ae9999c36b042069461e49b",
+      "raw_text_sha256": "f04761cee166ffbea0e05a5cacfa914079b54a3c81a61d59849829d76be52ae2",
+      "include": true,
+      "issue_label": "Both elevators possibly out",
+      "category_label": "Elevator",
+      "summary": "Both elevators were reported possibly out of service.",
+      "show_evidence": false,
+      "reason": "Canonical copy should preserve uncertainty and avoid a duplicated same-time label."
+    },
+    {
+      "message_id": "a02f6e34e8d6aba78d6fe365b3a24674c5142b968a8a64710d5f32565ca8b71f",
+      "raw_text_sha256": "fe1046da4511106963b0ca8f3000c24caba5ddf73d15ea3fda8a76eaa07dc418",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Message explicitly says the apartment is warm and heat has not been a problem; it is a counterexample, not a cold-apartment complaint."
+    },
+    {
+      "message_id": "a1f31622ab70223cabdcf9c7b5fd77e3838d62ae8060596ae2780270e7460a7f",
+      "raw_text_sha256": "77d20a29bcdeb9201e3181e14114b5ba7f0d56ce4585948a68cba9a17d4a1dd8",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate maintenance update is wrongly attached to the puddle incident."
+    },
+    {
+      "message_id": "a1f33f3c5ea919e042d082a0a25768ffafe85230ce57490f155c16b1971086be",
+      "raw_text_sha256": "03fd959cb06a9a61fc4465c3b8ca491ced8b591f9b92a45566b17b8927a07406",
+      "include": true,
+      "issue_label": "Both elevators working",
+      "category_label": "Elevator",
+      "summary": "Both elevators were reported working.",
+      "show_evidence": false,
+      "reason": "The message's own restore text is overridden by an older quoted outage."
+    },
+    {
+      "message_id": "a324a775e4b89f19499782f41914aebc7bb4cb1b136bfc0245613b06d278b915",
+      "raw_text_sha256": "e67d2f7846048a2d0bb9ab3f49ea8cc8b42a8f88cb88d9be50170b069755b77e",
+      "include": true,
+      "issue_label": "Bathroom mold and dirty vent",
+      "category_label": "Other building issues",
+      "summary": "Recurring bathroom mold was attributed to a dirty vent.",
+      "show_evidence": false,
+      "reason": "Message is wrongly linked to brown bath water."
+    },
+    {
+      "message_id": "a41b45e7c8f9e87c7571568195e09445232ee997fc8c212c8502d05fb73010db",
+      "raw_text_sha256": "e67e2a035760fa56aa54288806c4a56e87f7d13308f5363bc10d1bf11c6049d7",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Conditional stair-rest chair comment is not a current elevator outage and duplicates another source occurrence."
+    },
+    {
+      "message_id": "a694dc18f0ee0815dd722a18bd2da971e454fb1366bbd028c5232e7a2fe92a50",
+      "raw_text_sha256": "e473dd7f2316cbb1cb81ccba6557cf522da3bc14b254335261f8cb237b230d86",
+      "include": true,
+      "issue_label": "Elevator entrapment continuing",
+      "category_label": "Elevator",
+      "summary": "A person was reported still trapped and feeling unwell in an elevator.",
+      "show_evidence": false,
+      "reason": "Current summary says only outage; privacy-safe health wording is needed."
+    },
+    {
+      "message_id": "aa0461c7c6d6775e99dd93bb9610b8b6c125b55cad568dcfa4b65b7393c863d7",
+      "raw_text_sha256": "deef2560708031c7e3ca04ecf54253ee38c05281cfe80f10b080e6985403d46f",
+      "include": true,
+      "issue_label": "Apartment lock failure and repair",
+      "category_label": "Security / access",
+      "summary": "An apartment lock failed and trapped occupants inside overnight; repair and lock replacement were reported in progress the next morning.",
+      "show_evidence": false,
+      "reason": "Current summary exposes names, first-person household details, and emoji."
+    },
+    {
+      "message_id": "aa0585b381d9ca5da5b9a624e25172fc4a2124b4afef6eb3ce7b5c9bf0b777af",
+      "raw_text_sha256": "d573bd8edddc3ac3667db21ac30b75f8366ce3f7ef4c189724c8be0fcdeaa66a",
+      "include": true,
+      "issue_label": "Elevator may not reach basement",
+      "category_label": "Elevator",
+      "summary": "A sign indicated that an elevator might not be serving the basement.",
+      "show_evidence": true,
+      "reason": "Current summary is raw and includes an image-omitted placeholder."
+    },
+    {
+      "message_id": "ac34d26151584dadbf1714a68ac2505a3f766a5c9978380f2f5c75c7c77e74f4",
+      "raw_text_sha256": "0405dac3bd23ff12d0d239fd9dcd9fd5c214efe1c1114bbecd81f4edda0dd54e",
+      "include": true,
+      "issue_label": "Both elevators working",
+      "category_label": "Elevator",
+      "summary": "Both elevators were reported working.",
+      "show_evidence": false,
+      "reason": "Own text says both, but incident asset causes a north-only restore."
+    },
+    {
+      "message_id": "b19883bb059055199e4abdef76178654a35da144dbb26ed8a7d8604548668dfe",
+      "raw_text_sha256": "1ea256f756ec377bab3ac01e39284979d0c23a3ee16ed637d9783f605f739205",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Treatment-method advice is context, not a new pest event."
+    },
+    {
+      "message_id": "b42093f40c17ef88868daf5c558604a37784352ce4ed7a19c8f077e2cb127fe0",
+      "raw_text_sha256": "9841d5df7a00bdeb8e16633983d0707dd2cc559daf6208470f3818472e6dcceb",
+      "include": true,
+      "issue_label": "Elevator repair underway",
+      "category_label": "Elevator",
+      "summary": "A mechanic was still working; neither elevator was yet confirmed restored.",
+      "show_evidence": false,
+      "reason": "The phrase back up soon is incorrectly parsed as a completed restore."
+    },
+    {
+      "message_id": "b6414d3696eb37657c93d298fd4e9d3a2777a1b5a16af373721ff51f54f79ea4",
+      "raw_text_sha256": "6f018fd996d3ed2850b5efda5ca7eabe2f33b9282eec6c5ba6121e4e2941c8e4",
+      "include": true,
+      "issue_label": "10th-floor Stairwell A handrail broken",
+      "category_label": "Other building issues",
+      "summary": "The 10th-floor handrail in Stairwell A was reported broken again and reported to building staff.",
+      "show_evidence": true,
+      "reason": "Current summary uses slang and publishes an individual's name."
+    },
+    {
+      "message_id": "b893b9c074af2ba0470b62e60ee309d4e61d4e8c80891744e9dfc3816356be84",
+      "raw_text_sha256": "18087c06b733a8dc170605495bd74406c78dec5780ffc2bc5b517d059a670079",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "North elevator was reported working; south elevator was reported out of service.",
+      "show_evidence": false,
+      "reason": "One working/one out is incorrectly rendered as both elevators out."
+    },
+    {
+      "message_id": "b8d3206c9503feb4f27313e2ab5b2cb34d835115c2d6681e8d61acd5889192b4",
+      "raw_text_sha256": "2f16fdb8ec270af1adcef8545dff6502331977b7c87ddcce63e1a3d42d8f3f14",
+      "include": true,
+      "issue_label": "Elevator entrapment",
+      "category_label": "Elevator",
+      "summary": "A person was reported trapped in an elevator.",
+      "show_evidence": false,
+      "reason": "Current summary omits entrapment and must not expose the person's age."
+    },
+    {
+      "message_id": "ba0027096cd0bed79f30ac01efe00af450bbf5638ea7f4f3f776dfaa8a037a9b",
+      "raw_text_sha256": "c01e68eb32e995e8b3e556d661a3bc1f2d88f31df3526f9f3f65287023dd39d4",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "One-second placeholder-only duplicate of the cloudy-water report; retain the media-bearing occurrence."
+    },
+    {
+      "message_id": "bc389a9ad74a0c739075a066801e7714aa54b8bab7fbda9eaf747996cac1c007",
+      "raw_text_sha256": "cafc388e30d18ae68929d7db79af591581717752836e2dae56b86c4b01788d4e",
+      "include": true,
+      "issue_label": "Apartment-entry key concern",
+      "category_label": "Security / access",
+      "summary": "A resident reported concern that building staff retained apartment keys and had previously entered to perform work while the resident was away.",
+      "show_evidence": false,
+      "reason": "Current summary exposes a dog, lockout advice, and raw personal narrative."
+    },
+    {
+      "message_id": "c2a26ac8082cb74592f132dd72dc6a47719f894d82a379e8184c410cc4b1fb18",
+      "raw_text_sha256": "c4783110017125350d262ed804700ad1a0041a255c274f64c34572b210f6d180",
+      "include": true,
+      "issue_label": "North elevator door-service issue",
+      "category_label": "Elevator",
+      "summary": "North elevator doors were reported failing to open at two stops; the car reached the lobby safely.",
+      "show_evidence": false,
+      "reason": "Current row says both cars stopped/not moving, which is not what occurred."
+    },
+    {
+      "message_id": "c6ed11431e4969827c25036bfe48c15cbc157eb36f24237be3d40896f0cdab24",
+      "raw_text_sha256": "2afcb702ff99a6ed3c13be19ae9ba3d60bc61fc71c7845743321c39f64ea9d4b",
+      "include": true,
+      "issue_label": "Unrequested exterminator visit",
+      "category_label": "Pest activity",
+      "summary": "A tenant reported an unrequested exterminator visit and delayed identification at the door.",
+      "show_evidence": false,
+      "reason": "Current summary exposes a child relationship and a long personal account."
+    },
+    {
+      "message_id": "c8055fa4b99a8525bcd7b63bb37ee738a26fc8eedaa954abc00645bfe57ceb62",
+      "raw_text_sha256": "46776bc57e7fdfa3efab382b8ef0e52f3f35ad7bdf8033ebf8d750f8f5309e93",
+      "include": true,
+      "issue_label": "Elevator repair underway",
+      "category_label": "Elevator",
+      "summary": "Elevator repair was underway; movement was heard but service was not confirmed.",
+      "show_evidence": false,
+      "reason": "Current row prematurely reports both elevators working."
+    },
+    {
+      "message_id": "c92f67d87ccd56088a8dbca7c472770ec7b2d66d3e2059a4bf980804120bb31e",
+      "raw_text_sha256": "9365815345a4661042361173ceddb0a75ac11d3e5258e4de77dddc47ea63d98a",
+      "include": true,
+      "issue_label": "Apartment consistently too cold",
+      "category_label": "Heat / hot water",
+      "summary": "An apartment was reported consistently too cold during winter.",
+      "show_evidence": false,
+      "reason": "Current summary exposes children's health information and includes an edit marker."
+    },
+    {
+      "message_id": "c9b6da94743cd99b38877eb00041957d999a3f9ef2d90642a74a46883dedbb19",
+      "raw_text_sha256": "8d2e6cacdb0234485ebd5013728883510857b945e176c0778c05370368ebc36d",
+      "include": true,
+      "issue_label": "Possible mold",
+      "category_label": "Leaks / water damage",
+      "summary": "Possible mold was identified as an unresolved repair concern.",
+      "show_evidence": false,
+      "reason": "Current summary is raw first-person demands language and the incident link may be too broad."
+    },
+    {
+      "message_id": "c9f35340a6e6cae2ae464c9e0d9b9dda9e255376b97671093c8abc6f1ddfa2b5",
+      "raw_text_sha256": "bebc904fdc12fdc63de88c6edd2aa45a91f7e19f139bbb73032c48be0e4c2ff5",
+      "include": true,
+      "issue_label": "14th-floor refuse room locked",
+      "category_label": "Other building issues",
+      "summary": "The 14th-floor refuse room was reported locked, requiring residents to use another floor or the basement.",
+      "show_evidence": true,
+      "reason": "Incident title mentions vent louvers/paper-towel holder, which does not match the raw message."
+    },
+    {
+      "message_id": "cfe77f3659fea304e5b00cde7eecea22c088c0f78d24e3ced192daabdd9601a4",
+      "raw_text_sha256": "5cc08450c630fecab5556ae748599ae2d60fcbe68bf3a34b20d98225e793d8ad",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate text-only copy of the below-65-degree report; retain the canonical copy with vetted evidence."
+    },
+    {
+      "message_id": "d2abe256aac02ed84ffd4a7926ae5f8c500fdf7562cd14d842a3799275cf5c38",
+      "raw_text_sha256": "224e479916e183cef9355c56172d411d784cbe1b9fd3ce30a8304ff6ccfc7db7",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Delancey subway-platform delay is a transit false positive and currently exposes unrelated public media."
+    },
+    {
+      "message_id": "d5347d8827039ed867ab33081484b660078a864312208fdd737cc574570f8b1a",
+      "raw_text_sha256": "35dc19c5ebb413c4ae0dcc6558441ecb0d904b86845e68da387e86a5a69f588d",
+      "include": true,
+      "issue_label": "Apartment too cold corroborated",
+      "category_label": "Heat / hot water",
+      "summary": "A second resident reported that their apartment was also too cold.",
+      "show_evidence": false,
+      "reason": "Current summary is raw and includes emoji."
+    },
+    {
+      "message_id": "d9881d7965f3cbedb94533c15932ae9ce6b3dabb32afbc286176580d253093d7",
+      "raw_text_sha256": "edf6907cde8f25f4adfe564b0e634398a5ed4272202ed230bf9586b5f3d12b47",
+      "include": true,
+      "issue_label": "Elevator accessibility impact",
+      "category_label": "Elevator",
+      "summary": "A tenant reported that recurring elevator failures create an accessibility barrier and filed a 311 complaint.",
+      "show_evidence": false,
+      "reason": "Current row is mislabeled working and exposes personal mobility details."
+    },
+    {
+      "message_id": "da9e6d9ae4dfa7783ca1c219b3d78cd0e225ba655bfdbf0d18f1cc2f49fdab10",
+      "raw_text_sha256": "90ad83b3699bcc737748f5d9477c65151b5c35ab151e53e307c13bdb0b7ec410",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate copy of the specific 7th-floor Stairwell B puddle report."
+    },
+    {
+      "message_id": "dedf934adf445f71bdd5fce9ada81a326d2af043686efd83f2ac4b34bc4a487f",
+      "raw_text_sha256": "351aff57033ca15254e997c06fda157206fd1723f118bf8dc33fbd6983c4cfb1",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Conditional discussion of what happens when a car traps someone is not a current outage."
+    },
+    {
+      "message_id": "df3728537584e1291e7439839c93219323b2f3c8d2837bca0f0f7789c0d47585",
+      "raw_text_sha256": "dedd8703c5dee0540e80540d88f7a47d736719f68e8f05cb2cd390c59c717172",
+      "include": true,
+      "issue_label": "Possible elevator entrapment",
+      "category_label": "Elevator",
+      "summary": "A possible elevator entrapment and excessive heat in the elevator mechanic room were reported.",
+      "show_evidence": false,
+      "reason": "Current summary converts an uncertain entrapment/heat report into a confirmed two-car outage."
+    },
+    {
+      "message_id": "df7621d299378ffe1c2487076283339b2deaa1564b86db970d26af505ba7f483",
+      "raw_text_sha256": "f9dc16c95a404760c004f88aef24eea39b52468e1838b5fe0986da6530df195f",
+      "include": true,
+      "issue_label": "Dead mouse removed",
+      "category_label": "Pest activity",
+      "summary": "A dead mouse was reported removed from behind a stove.",
+      "show_evidence": false,
+      "reason": "Current summary is raw first-person text with emoji."
+    },
+    {
+      "message_id": "e1b529284f8001fe431ce8dbbee75c3f481ff6bdeef5f7c5cb3a65f923b2ae0f",
+      "raw_text_sha256": "775046954d4f68673fc66bbc414f3271242234a0f490788d4e176d6dc565c18e",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Cross-source duplicate of the combined elevator/laundry notice occurrence."
+    },
+    {
+      "message_id": "e4599ebef88356760a706815f3d9ebf1fd505bf55b924c3152bb9d3a66cdfe89",
+      "raw_text_sha256": "03ec34a7b3d2dfd96c06c02e7142d9e0f2176b709889dbf37333e489276ec23f",
+      "include": true,
+      "issue_label": "Brown water after maintenance",
+      "category_label": "Leaks / water damage",
+      "summary": "A resident reported hot water was available and that temporary brown water can follow tank maintenance.",
+      "show_evidence": false,
+      "reason": "Current issue says no hot water even though the message explicitly says hot water is fine."
+    },
+    {
+      "message_id": "e46d6f68f85f503d5edac1419fd4f221c37ef3f2b67fe6f3d8aab85a70c5765c",
+      "raw_text_sha256": "e491c7ab1895524434bf43aafa0729483569d9c27d7612af1966ced0cc095872",
+      "include": true,
+      "issue_label": "Cold-water outage",
+      "category_label": "Leaks / water damage",
+      "summary": "Cold-water service was reported out.",
+      "show_evidence": false,
+      "reason": "Message is wrongly attached to a puddle incident and summary is first-person."
+    },
+    {
+      "message_id": "e6e7cb8baa7e25ec9f42555fc25ccbb5e76f1b3da9ba0fd20e37f7a89df1b410",
+      "raw_text_sha256": "15cb7784f47791cbbc56388b3b2851358a7a9d1ecbca870523abec107604945b",
+      "include": true,
+      "issue_label": "Exterminator conduct concern",
+      "category_label": "Pest activity",
+      "summary": "A tenant reported intrusive personal questions and unprofessional conduct by an exterminator.",
+      "show_evidence": false,
+      "reason": "Current summary republishes sensitive questions about age and relationship status plus a long personal reaction."
+    },
+    {
+      "message_id": "e700f7e2162d862d923e3287733c6b77538be9cabc40d1f56c8dc043620f4027",
+      "raw_text_sha256": "161c9041bff695a999705838c2eee1bae3c5a81828594be1a1e87d4d38c200dd",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Quoted generic definition of inspection code HHW is reference material, not a current building outage."
+    },
+    {
+      "message_id": "e7a6fae9a7ba75e6cfdf5cae3ccf7fba1a3349f24632ae17ad65d47c93fa968d",
+      "raw_text_sha256": "520bc5164915558c90116fc5bb41cafb055efef647e9f74efa07b4d9b176b010",
+      "include": true,
+      "issue_label": "North elevator entrapment",
+      "category_label": "Elevator",
+      "summary": "A person was reported trapped in the broken north elevator.",
+      "show_evidence": false,
+      "reason": "Current summary reports only a north-car outage."
+    },
+    {
+      "message_id": "e8984f2cba3a36dca718cdb04e7d4ca8d4c3595c62fad6171b6a7db6e675417f",
+      "raw_text_sha256": "19c39ae962817b903838729bcefdabcdf1ecfab3541f4e47faee53075713e427",
+      "include": true,
+      "issue_label": "Elevator service reduced",
+      "category_label": "Elevator",
+      "summary": "Elevator service was reported reduced to one working elevator.",
+      "show_evidence": false,
+      "reason": "One elevator in service is incorrectly rendered as both elevators working."
+    },
+    {
+      "message_id": "eaed10db0a9db539e607eccf69df448f73f7273ac0088df794bfe4edb5e8eb19",
+      "raw_text_sha256": "1b03f5ed67776f61cc5f327cb4b7711075f62f1055a35972d6973f67bc66c936",
+      "include": true,
+      "issue_label": "Brown bath water",
+      "category_label": "Leaks / water damage",
+      "summary": "Brown bath water was reported for the first two minutes of use.",
+      "show_evidence": false,
+      "reason": "Current summary is raw and includes emoji."
+    },
+    {
+      "message_id": "eba7a2c66db8de37ba19b04cc6df4a933b12900ddf248d3f7ee175819da7b251",
+      "raw_text_sha256": "06f7b5778a4589e13216a63034012dde0ef0f45490a8426cae8800c02eef39a8",
+      "include": true,
+      "issue_label": "No water in kitchen or bathroom",
+      "category_label": "Leaks / water damage",
+      "summary": "No water was reported in the kitchen or bathroom.",
+      "show_evidence": false,
+      "reason": "Canonical outage report needs neutral wording."
+    },
+    {
+      "message_id": "ef362d58133efedd65cf1ff53ebade39ab707944f580657c52894703ce6d20a1",
+      "raw_text_sha256": "e9af43b48c58231d24452e249bb61d2a753319d2f29115ec1c61c9a11d1a21f5",
+      "include": true,
+      "issue_label": "Elevator entrapment continuing",
+      "category_label": "Elevator",
+      "summary": "An elevator entrapment was reported continuing for about 1 hour 40 minutes.",
+      "show_evidence": false,
+      "reason": "Current summary loses the elapsed entrapment fact and states only that both elevators were out."
+    },
+    {
+      "message_id": "f64dd2ec3bb8a9c87206f244e93c9a2b8fe07a9e7b468268125a835ec9954f81",
+      "raw_text_sha256": "617f1a9cd38e70f45a5340cc81a15d06df4e8f6aab4105b91b29d15fe742d4b6",
+      "include": true,
+      "issue_label": "Cockroach removed from dryer door",
+      "category_label": "Pest activity",
+      "summary": "A cockroach previously trapped in a dryer-door window was reported removed.",
+      "show_evidence": false,
+      "reason": "Current summary uses joking conversational language."
+    },
+    {
+      "message_id": "f7a88b3795fc0197146aa52595b53362ab8c48c37ebb179d7536837cdadc59d9",
+      "raw_text_sha256": "7f230efed77ab47d57d1126c2826bc205cdbd90bcce250fd8d86194bd37c924f",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Comment refers to the other building in the linked story, not 455."
+    },
+    {
+      "message_id": "f7bbbd8057b446cc4882ec52bafbdea98f44cdabcd6f49a5f938b3a7eb8f261a",
+      "raw_text_sha256": "7796c3cbb0ca6cf7ef01b6aae5e41ca812561c0ae01b3f718f289bf7c7a3df43",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "StreetEasy listing language about no elevator amenity is an external-reference false positive and exposes unrelated media."
+    },
+    {
+      "message_id": "f8e2306581bb20090f05f12de4ae2ec9d15b02d397d29733e204dd54e1ada0eb",
+      "raw_text_sha256": "06f7b5778a4589e13216a63034012dde0ef0f45490a8426cae8800c02eef39a8",
+      "include": false,
+      "issue_label": "",
+      "category_label": "",
+      "summary": "",
+      "show_evidence": false,
+      "reason": "Duplicate no-water report is wrongly attached to the puddle incident."
+    },
+    {
+      "message_id": "fa2641fcce1143d6d35cb2c14680e655241c6f791750b819dcc539b03eb14ee1",
+      "raw_text_sha256": "0e85505d3306d96d9ccc31f58f2869298cfc790b2b74d40d1ba325310a5f8e43",
+      "include": true,
+      "issue_label": "Laundry and pest problems",
+      "category_label": "Laundry / Pest activity",
+      "summary": "Broken laundry machines, cockroach activity, and unavailable new laundry cards were reported; a service call was planned.",
+      "show_evidence": false,
+      "reason": "Current generic pest row republishes a first-person action statement and loses the mixed issues."
+    },
+    {
+      "message_id": "fb36e53a914d07cab681c94bd5a42d9da7aa0a89c2a94e2e9c9f6d5999f02775",
+      "raw_text_sha256": "0bc7d3325b5988c1bef95423f5cb98836c44714a7162152927c237f8f8e60b6d",
+      "include": true,
+      "issue_label": "Cockroach in laundry machine",
+      "category_label": "Pest activity",
+      "summary": "A cockroach was reported stuck in a laundry machine.",
+      "show_evidence": false,
+      "reason": "Current summary is an imperative rather than an update."
+    },
+    {
+      "message_id": "fbebb6a717ad7419294afe533ea48dfb4b61f51b48d2c5d17b8480b4860f98dc",
+      "raw_text_sha256": "305ca5bbe4a37e817abb1fee846bc7c86a7abcff0d8deccbd1b19b2156e59d18",
+      "include": true,
+      "issue_label": "Elevator entrapment",
+      "category_label": "Elevator",
+      "summary": "A person was reported trapped in an elevator.",
+      "show_evidence": false,
+      "reason": "Current generic outage summary omits the entrapment."
+    },
+    {
+      "message_id": "fcf1293629cadb827c0412692235b6c7870073cb843bf577d17e7fa739cde7f0",
+      "raw_text_sha256": "4625baa56c412a366a56573efb7ac5efc3e18b64d1ba176a74b4bb488b94b61b",
+      "include": true,
+      "issue_label": "Recurring elevator outages",
+      "category_label": "Elevator",
+      "summary": "A tenant reported that simultaneous elevator outages had become more frequent than in prior years.",
+      "show_evidence": false,
+      "reason": "Current row incorrectly states a specific current two-car outage rather than a recurrence concern."
+    },
+    {
+      "message_id": "ffdfad390764de165cf1658ff34a92357c6b1e24986445395198c538d1c8057d",
+      "raw_text_sha256": "ef8ce1b7877eed11787e941cc33913c64f925c8611504691c3c9f73bc8ec19eb",
+      "include": true,
+      "issue_label": "Cockroach still in dryer",
+      "category_label": "Pest activity",
+      "summary": "A cockroach was reported still present in a dryer-door window.",
+      "show_evidence": false,
+      "reason": "Current summary is a joke rather than a literal update."
+    }
+  ]
+}
