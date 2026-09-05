@@ -470,6 +470,94 @@ def _column_label(index: int) -> str:
     return label
 
 
+def _tab_grid_properties(svc, sheet_id: str, tab: str) -> tuple[int, int, int] | None:
+    """Return the tab grid needed for an atomic value replacement.
+
+    Google includes these properties for normal Sheets metadata reads.  Keeping
+    this lookup separate lets test/no-op renderers that intentionally expose
+    only partial metadata fall back to the older values API path.
+    """
+
+    metadata = (
+        svc.spreadsheets()
+        .get(
+            spreadsheetId=sheet_id,
+            fields="sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))",
+        )
+        .execute()
+    )
+    for sheet in metadata.get("sheets", []):
+        properties = sheet.get("properties", {})
+        if properties.get("title") != tab:
+            continue
+        sheet_gid = properties.get("sheetId")
+        grid = properties.get("gridProperties", {})
+        row_count = grid.get("rowCount")
+        column_count = grid.get("columnCount")
+        if (
+            isinstance(sheet_gid, int)
+            and sheet_gid >= 0
+            and isinstance(row_count, int)
+            and row_count > 0
+            and isinstance(column_count, int)
+            and column_count > 0
+        ):
+            return int(sheet_gid), int(row_count), int(column_count)
+        return None
+    return None
+
+
+def _user_entered_value(value: object, *, value_input_option: str) -> dict[str, object]:
+    """Translate a renderer value to the Sheets ``ExtendedValue`` shape."""
+
+    if value is None:
+        return {}
+    if isinstance(value, bool):
+        return {"boolValue": value}
+    if isinstance(value, (int, float)):
+        return {"numberValue": value}
+    text = str(value)
+    if value_input_option == "USER_ENTERED" and text.startswith("="):
+        return {"formulaValue": text}
+    return {"stringValue": text}
+
+
+def _cell_data(value: object, *, value_input_option: str) -> dict[str, object]:
+    entered = _user_entered_value(value, value_input_option=value_input_option)
+    return {"userEnteredValue": entered} if entered else {}
+
+
+def _replace_tab_values_legacy(
+    svc,
+    sheet_id: str,
+    tab: str,
+    padded_values: list[list[object]],
+    *,
+    value_input_option: str,
+) -> None:
+    """Compatibility path for deliberately incomplete/no-op service metadata."""
+
+    row_count = len(padded_values)
+    max_width = len(padded_values[0])
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"{tab}!A1",
+        valueInputOption=value_input_option,
+        body={"values": padded_values},
+    ).execute()
+    svc.spreadsheets().values().clear(
+        spreadsheetId=sheet_id,
+        range=f"{tab}!A{row_count + 1}:ZZ",
+        body={},
+    ).execute()
+    if max_width < 702:
+        svc.spreadsheets().values().clear(
+            spreadsheetId=sheet_id,
+            range=f"{tab}!{_column_label(max_width + 1)}1:ZZ{row_count}",
+            body={},
+        ).execute()
+
+
 def _replace_tab_values(
     svc,
     sheet_id: str,
@@ -489,28 +577,107 @@ def _replace_tab_values(
     max_width = max(max((len(row) for row in values), default=0), 1)
     padded_values = [list(row) + [""] * (max_width - len(row)) for row in values]
     row_count = len(padded_values)
+    grid = _tab_grid_properties(svc, sheet_id, tab)
+    if grid is None:
+        _replace_tab_values_legacy(
+            svc,
+            sheet_id,
+            tab,
+            padded_values,
+            value_input_option=value_input_option,
+        )
+        return
 
-    svc.spreadsheets().values().update(
+    sheet_gid, existing_rows, existing_columns = grid
+    requests: list[dict[str, object]] = []
+    if row_count > existing_rows:
+        requests.append(
+            {
+                "appendDimension": {
+                    "sheetId": sheet_gid,
+                    "dimension": "ROWS",
+                    "length": row_count - existing_rows,
+                }
+            }
+        )
+    if max_width > existing_columns:
+        requests.append(
+            {
+                "appendDimension": {
+                    "sheetId": sheet_gid,
+                    "dimension": "COLUMNS",
+                    "length": max_width - existing_columns,
+                }
+            }
+        )
+
+    effective_rows = max(existing_rows, row_count)
+    effective_columns = max(existing_columns, max_width)
+    requests.append(
+        {
+            "updateCells": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "startRowIndex": 0,
+                    "endRowIndex": row_count,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": max_width,
+                },
+                "rows": [
+                    {
+                        "values": [
+                            _cell_data(value, value_input_option=value_input_option)
+                            for value in row
+                        ]
+                    }
+                    for row in padded_values
+                ],
+                # Restrict the update to values so existing formatting, notes,
+                # validation, links, and layout survive a normal refresh.
+                "fields": "userEnteredValue",
+            }
+        }
+    )
+
+    # The old transport cleared A:ZZ.  Update only userEnteredValue, with no
+    # replacement rows, across the same logical area so stale rows/formulas
+    # disappear without an intermediate blank-sheet state or extra writes.
+    clear_columns = min(702, effective_columns)
+    if row_count < effective_rows:
+        requests.append(
+            {
+                "updateCells": {
+                    "range": {
+                        "sheetId": sheet_gid,
+                        "startRowIndex": row_count,
+                        "endRowIndex": effective_rows,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": clear_columns,
+                    },
+                    "fields": "userEnteredValue",
+                }
+            }
+        )
+    if max_width < clear_columns:
+        requests.append(
+            {
+                "updateCells": {
+                    "range": {
+                        "sheetId": sheet_gid,
+                        "startRowIndex": 0,
+                        "endRowIndex": row_count,
+                        "startColumnIndex": max_width,
+                        "endColumnIndex": clear_columns,
+                    },
+                    "fields": "userEnteredValue",
+                }
+            }
+        )
+
+    svc.spreadsheets().batchUpdate(
         spreadsheetId=sheet_id,
-        range=f"{tab}!A1",
-        valueInputOption=value_input_option,
-        body={"values": padded_values},
+        body={"requests": requests},
     ).execute()
-
-    # Clear stale rows after the write so the sheet never flashes fully empty mid-sync.
-    svc.spreadsheets().values().clear(
-        spreadsheetId=sheet_id,
-        range=f"{tab}!A{row_count + 1}:ZZ",
-        body={},
-    ).execute()
-
-    # Clear stale cells to the right if the new shape is narrower than the old one.
-    if max_width < 702:
-        svc.spreadsheets().values().clear(
-            spreadsheetId=sheet_id,
-            range=f"{tab}!{_column_label(max_width + 1)}1:ZZ{row_count}",
-            body={},
-        ).execute()
 
 
 def _quoted_sheet_range(tab: str, a1_range: str) -> str:

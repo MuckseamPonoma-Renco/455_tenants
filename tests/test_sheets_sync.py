@@ -64,6 +64,45 @@ class _FakeService:
         return _FakeSpreadsheets(self.calls)
 
 
+class _GridAwareService(_FakeService):
+    def __init__(self, tabs: list[tuple[str, int]], *, row_count: int = 1000, column_count: int = 26):
+        super().__init__()
+        self._tabs = tabs
+        self._row_count = row_count
+        self._column_count = column_count
+
+    def spreadsheets(self):
+        calls = self.calls
+        tabs = self._tabs
+        row_count = self._row_count
+        column_count = self._column_count
+
+        class _GridAwareSpreadsheets(_FakeSpreadsheets):
+            def get(self, **kwargs):
+                return _FakeRequest(
+                    calls,
+                    "get",
+                    kwargs,
+                    response={
+                        "sheets": [
+                            {
+                                "properties": {
+                                    "title": title,
+                                    "sheetId": sheet_gid,
+                                    "gridProperties": {
+                                        "rowCount": row_count,
+                                        "columnCount": column_count,
+                                    },
+                                }
+                            }
+                            for title, sheet_gid in tabs
+                        ]
+                    },
+                )
+
+        return _GridAwareSpreadsheets(calls)
+
+
 class _SingleSheetService(_FakeService):
     def spreadsheets(self):
         calls = self.calls
@@ -159,17 +198,112 @@ def test_service_uses_bounded_authorized_http(monkeypatch, tmp_path):
     assert calls["cache_discovery"] is False
 
 
-def test_replace_tab_values_writes_first_then_clears_stale_cells():
+def test_replace_tab_values_falls_back_when_grid_metadata_is_incomplete():
     service = _FakeService()
 
     _replace_tab_values(service, "sheet-123", "Incidents", [["incident_id"], ["inc-1"]])
 
-    assert [kind for kind, _kwargs in service.calls] == ["update", "clear", "clear"]
-    assert service.calls[0][1]["spreadsheetId"] == "sheet-123"
-    assert service.calls[0][1]["range"] == "Incidents!A1"
-    assert service.calls[0][1]["body"] == {"values": [["incident_id"], ["inc-1"]]}
-    assert service.calls[1][1]["range"] == "Incidents!A3:ZZ"
-    assert service.calls[2][1]["range"] == "Incidents!B1:ZZ2"
+    assert [kind for kind, _kwargs in service.calls] == ["get", "update", "clear", "clear"]
+    assert service.calls[1][1]["spreadsheetId"] == "sheet-123"
+    assert service.calls[1][1]["range"] == "Incidents!A1"
+    assert service.calls[1][1]["body"] == {"values": [["incident_id"], ["inc-1"]]}
+    assert service.calls[2][1]["range"] == "Incidents!A3:ZZ"
+    assert service.calls[3][1]["range"] == "Incidents!B1:ZZ2"
+
+
+def test_replace_tab_values_batches_values_formulas_and_stale_clears_without_touching_formatting():
+    service = _GridAwareService([("Tenant Log", 0)], row_count=50, column_count=26)
+    formula = '=HYPERLINK("https://example.com","Evidence")'
+
+    _replace_tab_values(
+        service,
+        "sheet-123",
+        "Tenant Log",
+        [["label", "link", "count", "verified"], ["row", formula, 3, True]],
+        value_input_option="USER_ENTERED",
+    )
+
+    assert [kind for kind, _kwargs in service.calls] == ["get", "batchUpdate"]
+    body = service.calls[1][1]["body"]
+    assert len(body["requests"]) == 3
+    update = body["requests"][0]["updateCells"]
+    assert update["range"] == {
+        "sheetId": 0,
+        "startRowIndex": 0,
+        "endRowIndex": 2,
+        "startColumnIndex": 0,
+        "endColumnIndex": 4,
+    }
+    assert update["fields"] == "userEnteredValue"
+    assert update["rows"][1]["values"] == [
+        {"userEnteredValue": {"stringValue": "row"}},
+        {"userEnteredValue": {"formulaValue": formula}},
+        {"userEnteredValue": {"numberValue": 3}},
+        {"userEnteredValue": {"boolValue": True}},
+    ]
+    assert body["requests"][1] == {
+        "updateCells": {
+            "range": {
+                "sheetId": 0,
+                "startRowIndex": 2,
+                "endRowIndex": 50,
+                "startColumnIndex": 0,
+                "endColumnIndex": 26,
+            },
+            "fields": "userEnteredValue",
+        }
+    }
+    assert body["requests"][2] == {
+        "updateCells": {
+            "range": {
+                "sheetId": 0,
+                "startRowIndex": 0,
+                "endRowIndex": 2,
+                "startColumnIndex": 4,
+                "endColumnIndex": 26,
+            },
+            "fields": "userEnteredValue",
+        }
+    }
+
+
+def test_replace_tab_values_expands_small_grid_inside_same_write_request():
+    service = _GridAwareService([("PublicRecords", 11)], row_count=2, column_count=2)
+
+    _replace_tab_values(
+        service,
+        "sheet-123",
+        "PublicRecords",
+        [["a", "b", "c"], [1, 2, 3], [4, 5, 6]],
+    )
+
+    assert [kind for kind, _kwargs in service.calls] == ["get", "batchUpdate"]
+    requests = service.calls[1][1]["body"]["requests"]
+    assert requests[:2] == [
+        {"appendDimension": {"sheetId": 11, "dimension": "ROWS", "length": 1}},
+        {"appendDimension": {"sheetId": 11, "dimension": "COLUMNS", "length": 1}},
+    ]
+    assert requests[2]["updateCells"]["fields"] == "userEnteredValue"
+    assert len(requests) == 3
+
+
+def test_watchdog_and_tenant_log_replacements_use_seven_writes_instead_of_twenty_one():
+    tab_names = [
+        "ElevatorWatch",
+        "ProjectStatus",
+        "PublicRecords",
+        "WatchdogChecks",
+        "ActionQueue",
+        "WeeklyDigest",
+        "Tenant Log",
+    ]
+    service = _GridAwareService([(title, index) for index, title in enumerate(tab_names)])
+
+    for title in tab_names:
+        _replace_tab_values(service, "sheet-123", title, [["header"], [title]])
+
+    assert sum(kind == "batchUpdate" for kind, _kwargs in service.calls) == 7
+    assert not any(kind in {"update", "clear"} for kind, _kwargs in service.calls)
 
 
 def test_ensure_tab_exists_can_reuse_single_default_sheet():
