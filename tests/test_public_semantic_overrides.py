@@ -15,6 +15,8 @@ from packages.sheets.public_semantic_overrides import (
 
 RESTORE_MESSAGE_ID = "a1f33f3c5ea919e042d082a0a25768ffafe85230ce57490f155c16b1971086be"
 TRANSIT_MESSAGE_ID = "d2abe256aac02ed84ffd4a7926ae5f8c500fdf7562cd14d842a3799275cf5c38"
+LITTER_MESSAGE_ID = "4ddabad9aedeb1e362ad048e14fb6978f38cf71d7d2755535aad59b58ba793cc"
+MOUSE_MESSAGE_ID = "9a29f78e3fab730079ae60903db277fa3d59f138fbb14845be2149db2e385f03"
 
 
 def _entry(**updates):
@@ -43,8 +45,8 @@ def _write_manifest(tmp_path, entries, **root_updates):
 def test_default_manifest_is_complete_and_privacy_conservative():
     overrides = load_public_semantic_overrides()
 
-    assert len(overrides) == 134
-    assert sum(item.include for item in overrides.values()) == 97
+    assert len(overrides) == 136
+    assert sum(item.include for item in overrides.values()) == 99
     assert sum(not item.include for item in overrides.values()) == 37
 
     restore = overrides[RESTORE_MESSAGE_ID]
@@ -66,6 +68,18 @@ def test_default_manifest_is_complete_and_privacy_conservative():
         "5e14fe204def6391e047d33a647802b5a6bb1251d8e01e67b4f38018a68839c9"
     ].show_evidence is False
 
+    litter = overrides[LITTER_MESSAGE_ID]
+    assert litter.include is True
+    assert litter.summary == (
+        "Stair landing/common-area litter and debris were reported left uncleaned."
+    )
+    assert litter.show_evidence is False
+
+    mouse = overrides[MOUSE_MESSAGE_ID]
+    assert mouse.include is True
+    assert mouse.summary == "A dead mouse was reported at a common-area building threshold."
+    assert mouse.show_evidence is False
+
 
 def test_exact_message_id_and_raw_text_resolve_audited_override():
     override = get_public_semantic_override(RESTORE_MESSAGE_ID, "Both currently working")
@@ -73,6 +87,32 @@ def test_exact_message_id_and_raw_text_resolve_audited_override():
     assert override is not None
     assert override.include is True
     assert override.summary == "Both elevators were reported working."
+
+
+@pytest.mark.parametrize(
+    ("message_id", "raw_text", "expected_summary"),
+    [
+        (
+            LITTER_MESSAGE_ID,
+            "Our flr. I haven't clean it up yet, cuz a little challenging with a dog with me. <This message was edited>",
+            "Stair landing/common-area litter and debris were reported left uncleaned.",
+        ),
+        (
+            MOUSE_MESSAGE_ID,
+            "this building.",
+            "A dead mouse was reported at a common-area building threshold.",
+        ),
+    ],
+)
+def test_media_backed_overrides_are_hash_locked_and_hide_photos(
+    message_id, raw_text, expected_summary
+):
+    override = get_public_semantic_override(message_id, raw_text)
+
+    assert override is not None
+    assert override.include is True
+    assert override.summary == expected_summary
+    assert override.show_evidence is False
 
 
 def test_unknown_message_id_has_no_override():

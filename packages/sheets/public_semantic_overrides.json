@@ -332,6 +332,16 @@
       "reason": "Gothamist article about elevator complaints is an external reference, not a current building outage."
     },
     {
+      "message_id": "4ddabad9aedeb1e362ad048e14fb6978f38cf71d7d2755535aad59b58ba793cc",
+      "raw_text_sha256": "020517f45fa3907055070855ccc23437471838f3d61965e526ee6e79844bc8b4",
+      "include": true,
+      "issue_label": "Stairwell/common-area litter",
+      "category_label": "Other building issue",
+      "summary": "Stair landing/common-area litter and debris were reported left uncleaned.",
+      "show_evidence": false,
+      "reason": "Inspected media verifies the issue; neutral wording and hidden evidence avoid publishing resident-uploaded photos."
+    },
+    {
       "message_id": "506b1f03535be9ae0ae568c5f17cccb2c890a598bc088762be47118ae56bcd02",
       "raw_text_sha256": "0fdff45cf97199d97cd3fa7da4d54718ae1e548d089361f75f6f67a42860e4b1",
       "include": false,
@@ -810,6 +820,16 @@
       "summary": "South elevator was reported working; north elevator was shut down overnight pending restart after overheating.",
       "show_evidence": false,
       "reason": "Current row reports only the south restore and omits the north shutdown."
+    },
+    {
+      "message_id": "9a29f78e3fab730079ae60903db277fa3d59f138fbb14845be2149db2e385f03",
+      "raw_text_sha256": "abb18bea60a5f6878b5c65832d4a5f8f08f6f8337c55d956b38c517d2a49790e",
+      "include": true,
+      "issue_label": "Dead mouse in common area",
+      "category_label": "Pest activity",
+      "summary": "A dead mouse was reported at a common-area building threshold.",
+      "show_evidence": false,
+      "reason": "Inspected media resolves the terse caption; neutral wording and hidden evidence avoid publishing graphic resident-uploaded photos."
     },
     {
       "message_id": "9ab0ecb0e98ec74879925d810241641178e6c65b52568cd936cd18ee33238d21",

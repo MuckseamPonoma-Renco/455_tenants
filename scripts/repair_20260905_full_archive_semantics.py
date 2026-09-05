@@ -37,6 +37,7 @@ from packages.db import (  # noqa: E402
     MessageDecision,
     RawMessage,
     ServiceRequestCase,
+    WatchdogAction,
     get_session,
 )
 from packages.incident import extractor  # noqa: E402
@@ -70,6 +71,7 @@ class DecisionCorrection:
     event_type: str | None
     reason: str
     confidence: int = 96
+    evidence_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,10 @@ class ServiceRequestMigration:
 
 
 WASHER_16_INCIDENT_ID = "2a6a0266533b95ffee7ebfa6feb62c81"
+# These two IDs are the normal extractor `_inc_id` hashes for the declared
+# category, asset, reviewed RawMessage timestamp, and neutral title.
+STAIRWELL_LITTER_INCIDENT_ID = "50c4842a71adf3c3de706720e93fffcc"
+COMMON_AREA_MOUSE_INCIDENT_ID = "466124e800676656507b45f34fa1d419"
 
 
 def _correction(
@@ -109,6 +115,7 @@ def _correction(
     reason: str,
     *,
     confidence: int = 96,
+    evidence_refs: tuple[str, ...] = (),
 ) -> DecisionCorrection:
     return DecisionCorrection(
         message_id=message_id,
@@ -124,6 +131,7 @@ def _correction(
         event_type=after[4],
         reason=reason,
         confidence=confidence,
+        evidence_refs=evidence_refs,
     )
 
 
@@ -474,6 +482,56 @@ CORRECTIONS: tuple[DecisionCorrection, ...] = (
         (True, WASHER_16_INCIDENT_ID, "laundry", "washer_16", "status_update"),
         "The companion video corroborates the same washer 16 cleanliness issue.",
     ),
+    # Exhaustive follow-up review found five context- or media-dependent false
+    # negatives. Three attach to already-materialized incidents and two create
+    # only the exact declared incidents below; none may create a filing job or
+    # watchdog action.
+    _correction(
+        "3740c3acfdb84a42dbb89ca1ec1aa9891d21fb952c828204c21e24cd4d609658",
+        "18c194be94aa2a5bedd8a213c2ad50097f64ecc4f32ad262ecda0d2903a4dfbc",
+        (False, None, None, None),
+        (True, "c0dd69323702288da3d2d3a604acee95", "elevator", "elevator_south", "status_update"),
+        "The prolonged 455 egress time directly records tenant impact during the active south-car outage.",
+        confidence=90,
+    ),
+    _correction(
+        "4ddabad9aedeb1e362ad048e14fb6978f38cf71d7d2755535aad59b58ba793cc",
+        "020517f45fa3907055070855ccc23437471838f3d61965e526ee6e79844bc8b4",
+        (False, None, None, None),
+        (True, STAIRWELL_LITTER_INCIDENT_ID, "other", "stairwell_common_area", "new_issue"),
+        "Two inspected photos show stair-landing/common-area litter and debris left uncleaned; the caption localizes it to the sender's floor.",
+        evidence_refs=(
+            "00001977-PHOTO-2026-04-24-19-43-48.jpg#sha256=2f961f4cfb3fd9f910526a129afee86f038880d8fc347346fbddbf0e90307974",
+            "00001978-PHOTO-2026-04-24-19-43-49.jpg#sha256=2d31060b93be4e08c69849a01beeda7230c2aba51bf64448d518bafaf66e384a",
+        ),
+    ),
+    _correction(
+        "9a29f78e3fab730079ae60903db277fa3d59f138fbb14845be2149db2e385f03",
+        "abb18bea60a5f6878b5c65832d4a5f8f08f6f8337c55d956b38c517d2a49790e",
+        (False, None, None, None),
+        (True, COMMON_AREA_MOUSE_INCIDENT_ID, "pests", "common_area", "new_issue"),
+        "Two inspected photos clearly show a dead mouse at a 455 common-area building threshold; the caption identifies this building.",
+        evidence_refs=(
+            "00002140-PHOTO-2026-05-05-19-42-10.jpg#sha256=be8ff59a5bacab36d2263fc6a11534da14fbd9d2d06a7f830e81d98bb71f82fc",
+            "00002141-PHOTO-2026-05-05-19-42-11.jpg#sha256=b065f8f785e3b96d9d519e63d55ab1e946232bee61bd5894d74e6695e59fe406",
+        ),
+    ),
+    _correction(
+        "99171b20bda6d1950e831e6aaf487ccf86baf59c19b73f03e5696fc5c0af8cb4",
+        "8a9f4d1d1374fef994d4fea018785dcf2e6f17b1c319fdfe1886fed49d902c52",
+        (False, None, None, None),
+        (True, "d0b9b945e4ad2911924ca2d192a98499", "elevator", "elevator_north", "status_update"),
+        "The immediate halftime reply corroborates when the active north-car failure was already occurring.",
+        confidence=90,
+    ),
+    _correction(
+        "69cdcbb3a4746e2b19112973d16e88476623110e5a4c1f206513a76e992fedea",
+        "92c3acda85c38195f7ea4be09b56caa9f1a405fa0e1db6af7952561c1990dbfa",
+        (False, None, None, None),
+        (True, "0ac578e2893619c38387e31bfe8c1cfc", "elevator", "elevator_both", "status_update"),
+        "The immediate reply records direct tenant impact during the active total elevator outage.",
+        confidence=90,
+    ),
     # Correct decision already had both-car semantics, but the incident's
     # materialized asset had drifted to north.  This exact row anchors the
     # aggregate repair to reviewed raw evidence.
@@ -517,7 +575,21 @@ NEW_INCIDENTS: dict[str, NewIncidentSpec] = {
         severity=2,
         title="Washer 16 cleanliness issue",
         summary="Washer 16 was reported and visually verified with hair/debris in the machine.",
-    )
+    ),
+    STAIRWELL_LITTER_INCIDENT_ID: NewIncidentSpec(
+        category="other",
+        asset="stairwell_common_area",
+        severity=2,
+        title="Stairwell/common-area litter and debris",
+        summary="Stair landing/common-area litter and debris were reported left uncleaned.",
+    ),
+    COMMON_AREA_MOUSE_INCIDENT_ID: NewIncidentSpec(
+        category="pests",
+        asset="common_area",
+        severity=2,
+        title="Dead mouse at common-area threshold",
+        summary="A dead mouse was reported at a common-area building threshold.",
+    ),
 }
 
 
@@ -529,6 +601,8 @@ INCIDENT_OVERRIDES: dict[str, IncidentOverride] = {
     ),
     "a563e5594f103b491a0b657bf81dbde1": IncidentOverride(asset="elevator_both"),
     WASHER_16_INCIDENT_ID: IncidentOverride(category="laundry", asset="washer_16"),
+    STAIRWELL_LITTER_INCIDENT_ID: IncidentOverride(category="other", asset="stairwell_common_area"),
+    COMMON_AREA_MOUSE_INCIDENT_ID: IncidentOverride(category="pests", asset="common_area"),
 }
 
 
@@ -559,6 +633,10 @@ DEFERRED_REVIEW: dict[str, str] = {
         "Management's apartment-entry response must attach to the same future security child.",
     "e34fd86beed0dd1e6529f9beead668b26ef89ffef165515f80fd3345b6253da3":
         "Common-area fire-alarm concern is not enough to auto-publish; private certification is required.",
+    "a6f828e0f6650e7ce164651beafdefb0e765b98a9aba96fd42979fc4d8c80c01":
+        "The ambiguous 'my 311' closure lacks a case number or reply anchor, so its elevator incident cannot be chosen safely.",
+    "073350b00c89f9d7312422500b45dfaeeae9dbf6350b9fbec902cefeb351a25d":
+        "The generic reassurance may answer either a smoke-clear update or social thanks; a reply target is required before linking it.",
 }
 
 
@@ -623,6 +701,8 @@ def _correction_needs_change(decision: MessageDecision, correction: DecisionCorr
         return True
     final = _json_object(decision.final_json)
     if final.get("asset") != correction.asset:
+        return True
+    if correction.evidence_refs and final.get("repair_evidence_refs") != list(correction.evidence_refs):
         return True
     return not _has_repair_provenance(decision)
 
@@ -822,6 +902,8 @@ def _apply_decision_correction(
             "repair_reason": correction.reason,
         }
     )
+    if correction.evidence_refs:
+        final["repair_evidence_refs"] = list(correction.evidence_refs)
     decision.incident_id = correction.incident_id
     decision.chosen_source = CHOSEN_SOURCE
     decision.is_issue = correction.is_issue
@@ -834,6 +916,9 @@ def _apply_decision_correction(
 
 
 def _recompute_semantic_materialization(session, incident: Incident) -> None:
+    preserved_closed = incident.status == "closed"
+    preserved_end_ts = incident.end_ts
+    preserved_end_ts_epoch = incident.end_ts_epoch
     _recompute_incident_materialization(session, incident)
     rows = session.execute(
         select(MessageDecision, RawMessage)
@@ -851,14 +936,33 @@ def _recompute_semantic_materialization(session, incident: Incident) -> None:
         incident.category = next(iter(categories))
     incident.start_ts = first_raw.ts_iso
     incident.start_ts_epoch = first_raw.ts_epoch
-    incident.last_ts_epoch = last_raw.ts_epoch
-    incident.status = "closed" if last_decision.event_type == "restore" else "open"
-    if incident.status == "closed":
+    last_evidence_epoch = int(last_raw.ts_epoch or 0)
+    preserves_later_external_close = bool(
+        last_decision.event_type != "restore"
+        and preserved_closed
+        and preserved_end_ts_epoch is not None
+        and last_evidence_epoch <= int(preserved_end_ts_epoch)
+    )
+    if last_decision.event_type == "restore":
+        incident.status = "closed"
         incident.end_ts = last_raw.ts_iso
         incident.end_ts_epoch = last_raw.ts_epoch
+    elif preserves_later_external_close:
+        # Some historical incidents were closed by a verified service-case or
+        # watchdog update rather than a chat ``restore`` decision. Adding
+        # earlier contextual evidence must not reopen those incidents or erase
+        # their later close timestamp.
+        incident.status = "closed"
+        incident.end_ts = preserved_end_ts
+        incident.end_ts_epoch = preserved_end_ts_epoch
     else:
+        incident.status = "open"
         incident.end_ts = None
         incident.end_ts_epoch = None
+    incident.last_ts_epoch = max(
+        last_evidence_epoch,
+        int(incident.end_ts_epoch or 0),
+    ) or None
     incident.needs_review = any(bool(decision.needs_review) for decision, _raw in rows)
     incident.updated_at = _now_iso()
 
@@ -935,16 +1039,19 @@ def repair(*, apply: bool) -> dict[str, object]:
             return plan
 
         filing_jobs_before = session.query(FilingJob).count()
+        watchdog_actions_before = session.query(WatchdogAction).count()
         created_incident_ids: list[str] = []
         for incident_id, spec in NEW_INCIDENTS.items():
             if session.get(Incident, incident_id) is None:
                 _create_declared_incident(session, incident_id, spec, raw_by_id)
                 created_incident_ids.append(incident_id)
 
-        touched_incident_ids: set[str] = set(INCIDENT_OVERRIDES)
+        touched_incident_ids: set[str] = set(created_incident_ids) | set(incident_override_changes)
         source_incident_ids: set[str] = set()
         for correction in CORRECTIONS:
             decision = decision_by_id[correction.message_id]
+            if correction.message_id not in message_changes:
+                continue
             if decision.incident_id:
                 source_incident_ids.add(decision.incident_id)
                 touched_incident_ids.add(decision.incident_id)
@@ -1057,6 +1164,16 @@ def repair(*, apply: bool) -> dict[str, object]:
                 ],
                 "applied": False,
             }
+        watchdog_actions_after = session.query(WatchdogAction).count()
+        if watchdog_actions_after != watchdog_actions_before:
+            session.rollback()
+            return {
+                **plan,
+                "errors": [
+                    "watchdog-action row count changed; semantic repair is not allowed to create or delete actions"
+                ],
+                "applied": False,
+            }
 
         after = {
             row.message_id: {
@@ -1088,8 +1205,18 @@ def repair(*, apply: bool) -> dict[str, object]:
             "materialized_incident_ids": materialized_incident_ids,
             "archive_occurrence_alignment": dict(ARCHIVE_OCCURRENCE_ALIGNMENT),
             "deferred_message_ids": sorted(DEFERRED_REVIEW),
+            "correction_review": {
+                row.message_id: {
+                    "reason": row.reason,
+                    "evidence_refs": list(row.evidence_refs),
+                }
+                for row in CORRECTIONS
+                if row.message_id in message_changes
+            },
             "filing_jobs_before": filing_jobs_before,
             "filing_jobs_after": filing_jobs_after,
+            "watchdog_actions_before": watchdog_actions_before,
+            "watchdog_actions_after": watchdog_actions_after,
             "before": before,
             "after": after,
         }
@@ -1103,6 +1230,8 @@ def repair(*, apply: bool) -> dict[str, object]:
             "materialized_incident_ids": materialized_incident_ids,
             "filing_jobs_before": filing_jobs_before,
             "filing_jobs_after": filing_jobs_after,
+            "watchdog_actions_before": watchdog_actions_before,
+            "watchdog_actions_after": watchdog_actions_after,
             "after": after,
         }
 
