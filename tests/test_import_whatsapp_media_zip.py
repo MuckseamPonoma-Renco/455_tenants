@@ -4,12 +4,8 @@ import json
 import zipfile
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 from packages.audit import sender_hash
-from packages.db import Base, Incident, MessageDecision, RawMessage, get_session
+from packages.db import Incident, MessageDecision, RawMessage, get_session
 from packages.timeutil import parse_ts_to_epoch
 from packages.whatsapp.attachments import (
     attachment_items,
@@ -18,11 +14,12 @@ from packages.whatsapp.attachments import (
     merge_attachment_manifests,
 )
 from packages.whatsapp.parser import ParsedMessage
+from scripts.audit_whatsapp_export_decisions import iter_export_messages, run_audit
 from scripts.import_whatsapp_media_zip import (
     MediaMessage,
     _compatible_placeholder_kinds,
     _exact_placeholder_targets,
-    _generic_aliases_by_export_filename,
+    _media_aliases_by_export_filename,
     _merge_placeholder_media,
     import_media_zip,
 )
@@ -104,6 +101,8 @@ def _stats() -> dict[str, int]:
         "matched_placeholder_media_messages": 0,
         "ambiguous_placeholder_media_messages": 0,
         "reconciled_media_alias_rows": 0,
+        "retained_media_alias_rows": 0,
+        "normalized_media_alias_rows": 0,
         "blocked_media_alias_rows": 0,
     }
 
@@ -164,7 +163,7 @@ def test_gif_file_matches_text_only_gif_placeholder(client):
         ]
 
 
-def test_media_merge_removes_multiple_safe_aliases_and_transfers_their_full_manifests(client):
+def test_media_merge_retains_multiple_aliases_and_transfers_their_full_manifests(client):
     placeholder_id = "d" * 64
     alias_id = "e" * 64
     second_alias_id = "8" * 64
@@ -201,7 +200,7 @@ def test_media_merge_removes_multiple_safe_aliases_and_transfers_their_full_mani
             session,
             message,
             stats=stats,
-            aliases_by_export_filename=_generic_aliases_by_export_filename(session),
+            aliases_by_export_filename=_media_aliases_by_export_filename(session),
             accounted_alias_ids=set(),
         )
         session.commit()
@@ -212,73 +211,22 @@ def test_media_merge_removes_multiple_safe_aliases_and_transfers_their_full_mani
         "matched_placeholder_media_messages": 1,
         "ambiguous_placeholder_media_messages": 0,
         "reconciled_media_alias_rows": 2,
+        "retained_media_alias_rows": 2,
+        "normalized_media_alias_rows": 2,
         "blocked_media_alias_rows": 0,
     }
     with get_session() as session:
         canonical = session.get(RawMessage, placeholder_id)
         assert canonical is not None
-        assert session.get(RawMessage, alias_id) is None
-        assert session.get(RawMessage, second_alias_id) is None
-        assert session.get(MessageDecision, alias_id) is None
-        assert session.get(MessageDecision, second_alias_id) is None
+        assert session.get(RawMessage, alias_id).text == "image omitted"
+        assert session.get(RawMessage, second_alias_id).text == "image omitted"
+        assert session.get(MessageDecision, alias_id) is not None
+        assert session.get(MessageDecision, second_alias_id) is not None
         assert {
             item.get("export_filename")
             for item in attachment_items(canonical.attachments)
             if item.get("export_filename")
         } == {filename, earlier_filename}
-
-
-def test_media_merge_deletes_decision_before_raw_alias_with_foreign_keys_enforced():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-
-    @event.listens_for(engine, "connect")
-    def _enable_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys = ON")
-        cursor.close()
-
-    Base.metadata.create_all(engine)
-    session_factory = sessionmaker(bind=engine)
-    placeholder_id = "4" * 64
-    alias_id = "5" * 64
-    filename = "0002A-PHOTO.jpg"
-    message = _media_message(message_id=alias_id, occurrence=1, filename=filename)
-    with session_factory() as session:
-        session.add_all(
-            [
-                _raw(placeholder_id, text="image omitted", source="zip_import"),
-                _raw(
-                    alias_id,
-                    text="Photo attached",
-                    source="export_media",
-                    attachments=message.manifest,
-                ),
-            ]
-        )
-        session.commit()
-        session.add_all(
-            [_target_decision(placeholder_id), _synthetic_nonissue_decision(alias_id)]
-        )
-        session.commit()
-
-    with session_factory() as session:
-        assert _merge_placeholder_media(
-            session,
-            message,
-            stats=_stats(),
-            aliases_by_export_filename=_generic_aliases_by_export_filename(session),
-            accounted_alias_ids=set(),
-        )
-        session.commit()
-
-    with session_factory() as session:
-        assert session.get(MessageDecision, alias_id) is None
-        assert session.get(RawMessage, alias_id) is None
-    engine.dispose()
 
 
 def test_media_merge_refuses_to_delete_issue_alias(client):
@@ -309,7 +257,7 @@ def test_media_merge_refuses_to_delete_issue_alias(client):
             session,
             message,
             stats=stats,
-            aliases_by_export_filename=_generic_aliases_by_export_filename(session),
+            aliases_by_export_filename=_media_aliases_by_export_filename(session),
             accounted_alias_ids=set(),
         )
         session.commit()
@@ -347,7 +295,7 @@ def test_media_merge_does_not_delete_same_filename_from_another_physical_message
             session,
             message,
             stats=stats,
-            aliases_by_export_filename=_generic_aliases_by_export_filename(session),
+            aliases_by_export_filename=_media_aliases_by_export_filename(session),
             accounted_alias_ids=set(),
         )
         session.commit()
@@ -389,7 +337,7 @@ def test_media_merge_blocks_cross_chat_or_kind_placeholder_ambiguity(client):
             session,
             message,
             stats=stats,
-            aliases_by_export_filename=_generic_aliases_by_export_filename(session),
+            aliases_by_export_filename=_media_aliases_by_export_filename(session),
             accounted_alias_ids=set(),
         )
         session.commit()
@@ -446,7 +394,7 @@ def test_media_merge_preserves_proof_referenced_or_manually_reviewed_aliases(cli
             session,
             message,
             stats=stats,
-            aliases_by_export_filename=_generic_aliases_by_export_filename(session),
+            aliases_by_export_filename=_media_aliases_by_export_filename(session),
             accounted_alias_ids=set(),
         )
         session.commit()
@@ -486,7 +434,7 @@ def test_blocked_alias_is_counted_once_per_import_run(client):
     stats = _stats()
     accounted: set[str] = set()
     with get_session() as session:
-        aliases = _generic_aliases_by_export_filename(session)
+        aliases = _media_aliases_by_export_filename(session)
         for _ in range(2):
             assert _merge_placeholder_media(
                 session,
@@ -569,16 +517,119 @@ def test_import_media_zip_alias_reconciliation_is_idempotent(client, tmp_path: P
     assert first["matched_placeholder_media_messages"] == 1
     assert first["merged_existing"] == 1
     assert first["reconciled_media_alias_rows"] == 2
+    assert first["retained_media_alias_rows"] == 2
+    assert first["normalized_media_alias_rows"] == 2
     assert first["inserted_media_rows"] == 0
     assert second["matched_placeholder_media_messages"] == 1
     assert second["merged_existing"] == 0
-    assert second["reconciled_media_alias_rows"] == 0
+    assert second["reconciled_media_alias_rows"] == 2
+    assert second["retained_media_alias_rows"] == 2
+    assert second["normalized_media_alias_rows"] == 0
     assert second["inserted_media_rows"] == 0
     with get_session() as session:
         canonical = session.get(RawMessage, placeholder_id)
         assert canonical is not None
-        assert session.get(RawMessage, first_alias_id) is None
-        assert session.get(RawMessage, second_alias_id) is None
+        assert session.get(RawMessage, first_alias_id).text == "image omitted"
+        assert session.get(RawMessage, second_alias_id).text == "image omitted"
+        assert session.get(MessageDecision, first_alias_id) is not None
+        assert session.get(MessageDecision, second_alias_id) is not None
         assert {item.get("export_filename") for item in attachment_items(canonical.attachments)} == {
             filename
         }
+
+
+def test_reconciliation_preserves_every_exact_repeated_media_occurrence_for_full_audit(
+    client,
+    tmp_path: Path,
+    monkeypatch,
+):
+    timestamp = "4/24/26, 7:43:48 PM"
+    filenames = [f"000{i}-PHOTO.jpg" for i in range(1, 4)]
+    text_export = tmp_path / "WhatsApp Chat - 455 Tenants.txt"
+    text_export.write_text(
+        "".join(
+            f"[{timestamp}] {SENDER}: image omitted\n"
+            for _ in filenames
+        ),
+        encoding="utf-8",
+    )
+    occurrences = iter_export_messages(text_export, default_chat_name="455 Tenants")
+    assert [row.physical_occurrence for row in occurrences] == [1, 2, 3]
+
+    media_zip = tmp_path / "repeated-media.zip"
+    with zipfile.ZipFile(media_zip, "w") as archive:
+        archive.writestr(
+            "_chat.txt",
+            "".join(
+                f"[{timestamp}] {SENDER}: <attached: {filename}>\n"
+                for filename in filenames
+            ),
+        )
+        for filename in filenames:
+            archive.writestr(filename, b"image-bytes")
+
+    target_ids = ["7" * 64, "8" * 62 + "~2", "9" * 62 + "~3"]
+    with get_session() as session:
+        for target_id, occurrence, filename in zip(target_ids, occurrences, filenames):
+            session.add(
+                _raw(
+                    target_id,
+                    text="image omitted",
+                    source="zip_import",
+                    attachments="omitted:image",
+                    ts_epoch=int(occurrence.ts_epoch or 0),
+                    chat_name="455 Tenants",
+                )
+            )
+            session.add(_target_decision(target_id))
+            session.add(
+                _raw(
+                    occurrence.message_id,
+                    text="Photo attached",
+                    source="export_media",
+                    attachments=_manifest(filename),
+                    ts_epoch=int(occurrence.ts_epoch or 0),
+                    chat_name="455 Tenants",
+                )
+            )
+            session.add(_synthetic_nonissue_decision(occurrence.message_id))
+        session.commit()
+
+    monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(tmp_path / "media"))
+    first = import_media_zip(
+        media_zip,
+        chat_name="455 Tenants",
+        repair_reply_context=False,
+        sync_sheets=False,
+    )
+    second = import_media_zip(
+        media_zip,
+        chat_name="455 Tenants",
+        repair_reply_context=False,
+        sync_sheets=False,
+    )
+
+    assert first["inserted_media_rows"] == 0
+    assert first["merged_existing"] == 3
+    assert first["retained_media_alias_rows"] == 3
+    assert first["normalized_media_alias_rows"] == 3
+    assert second["inserted_media_rows"] == 0
+    assert second["merged_existing"] == 0
+    assert second["retained_media_alias_rows"] == 3
+    assert second["normalized_media_alias_rows"] == 0
+    with get_session() as session:
+        assert all(session.get(RawMessage, row.message_id) is not None for row in occurrences)
+        assert all(session.get(MessageDecision, row.message_id) is not None for row in occurrences)
+        assert all(session.get(RawMessage, row.message_id).text == "image omitted" for row in occurrences)
+
+    summary = run_audit(
+        text_export,
+        since="2000-01-01",
+        out_dir=tmp_path / "full-audit",
+        default_chat_name="455 Tenants",
+    )
+    assert summary["collision_followup_occurrences"] == 2
+    assert summary["missing_db_messages"] == 0
+    assert summary["missing_decisions"] == 0
+    assert summary["llm_review_not_applicable"] == 3
+    assert summary["ok"] is True
