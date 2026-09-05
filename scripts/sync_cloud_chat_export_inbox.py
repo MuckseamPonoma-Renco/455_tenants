@@ -503,6 +503,12 @@ def completed_receipts(
         )
     except httpx.HTTPError as exc:
         raise CloudReceiverError("cloud receiver latest receipt readback failed") from exc
+    # Rolling upgrades can put the Mac client ahead of the Worker briefly.
+    # The legacy receiver has no receipt endpoint, but its export listing and
+    # acknowledgement contract remain valid, so treat only a genuine 404 as
+    # "no remote receipt yet". Authentication and other failures still fail.
+    if response.status_code == 404:
+        return []
     data = _json(response, "latest receipt readback")
     receipt = data.get("receipt")
     if receipt is None:

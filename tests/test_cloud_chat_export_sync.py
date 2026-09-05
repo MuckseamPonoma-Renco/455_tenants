@@ -36,6 +36,19 @@ def _client(handler, *, receipts=None):
     return httpx.Client(transport=httpx.MockTransport(with_receipts), follow_redirects=False)
 
 
+def test_completed_receipts_tolerates_legacy_receiver_during_rolling_upgrade():
+    def handler(request):
+        assert request.url == httpx.URL("https://uploads.example.test/v1/receipts/latest")
+        return httpx.Response(404, json={"error": "not_found"})
+
+    result = cloud_sync.completed_receipts(
+        httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False),
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+    )
+
+    assert result == []
+
+
 def test_run_once_downloads_audits_then_acknowledges(tmp_path, monkeypatch):
     payload = _zip_bytes()
     record = _record(payload)
