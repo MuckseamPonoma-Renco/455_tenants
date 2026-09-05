@@ -659,6 +659,30 @@ def test_public_update_uses_reviewed_fire_decision_when_live_capture_has_no_repl
     )
 
 
+def test_public_update_explains_limited_functional_fire_stair():
+    incident = Incident(
+        incident_id="limited-fire-stair",
+        category="security_access",
+        title="Security / access / safety issue",
+        proof_refs="limited-fire-stair-message",
+    )
+    raw = RawMessage(
+        message_id="limited-fire-stair-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-limited-fire-stair",
+        ts_iso="2026-07-23T13:30:00Z",
+        ts_epoch=1784813400,
+        text="1 lift, 1 functional fire stair.",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_category_label(incident, raw) == "Security / access"
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Limited fire-stair access"
+    assert sheets_sync._public_event_summary(incident, raw) == "Only one fire stair was reported functional."
+
+
 def test_report_form_message_is_public_even_with_whatsapp_chat_allowlist():
     raw = RawMessage(
         message_id="report-form-message",

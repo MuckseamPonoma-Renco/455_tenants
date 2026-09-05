@@ -226,6 +226,10 @@ PUBLIC_CONTEXTUAL_CORROBORATION_RE = re.compile(
     r"\b(?:i\s+was\s+wondering\s+the\s+same\s+thing|same\s+here|me\s+too)\b",
     re.IGNORECASE,
 )
+PUBLIC_LIMITED_FIRE_EGRESS_RE = re.compile(
+    r"\b(?:one|1)\s+(?:functional|working|usable|accessible)\s+fire[\s-]+stair(?:well)?s?\b",
+    re.IGNORECASE,
+)
 PUBLIC_LAUNDRY_MACHINE_NUMBER_RE = re.compile(
     r"\b(?:washer|dryer)(?:\s+(?:number|no\.?))?\s*#?\s*(\d{1,3})\b",
     re.IGNORECASE,
@@ -2064,6 +2068,8 @@ def _public_is_actionable_311_update(incident: Incident, raw: RawMessage | None)
 def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str:
     text = _clean_text(getattr(raw, "text", ""))
     context_text = _public_update_detection_text(raw)
+    if incident.category == "security_access" and PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
+        return "Limited fire-stair access"
     if _public_has_apartment_entry_concern(text):
         if PUBLIC_UNDER_SINK_LEAK_RE.search(text):
             return "Under-sink leak and apartment entry concern"
@@ -2236,6 +2242,8 @@ def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
 def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
     text = _clean_text(getattr(raw, "text", ""))
     context_text = _public_update_detection_text(raw)
+    if incident.category == "security_access" and PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
+        return "Only one fire stair was reported functional."
     if _public_has_apartment_entry_concern(text):
         if PUBLIC_UNDER_SINK_LEAK_RE.search(text):
             return "Resident reported an under-sink leak and possible apartment entry while no one was home."

@@ -185,6 +185,10 @@ CONTEXTUAL_ELEVATOR_DIRECTION_RE = re.compile(
     r"^\s*same\s+going\s+(?:up|down)\W*$",
     re.IGNORECASE,
 )
+CONTEXTUAL_LIMITED_FIRE_EGRESS_RE = re.compile(
+    r"\b(?:one|1)\s+(?:functional|working|usable|accessible)\s+fire[\s-]+stair(?:well)?s?\b",
+    re.IGNORECASE,
+)
 REVIEWED_NONISSUE_CONTEXT_RE = re.compile(
     r"\bshould\s+never\s+enter\b[^.!?\n]{0,120}\b(?:24\s+hours?|notice)\b"
     r"|\bcame\s+with\s+(?:the\s+)?list\s+in\s+hand\b"
@@ -894,6 +898,11 @@ def _contextual_topic_followup_choice(session, rm: RawMessage) -> dict | None:
         title = "Elevator direction performance update"
         summary = "Tenant reports the same elevator performance problem in the other direction."
         severity = 3
+    elif CONTEXTUAL_LIMITED_FIRE_EGRESS_RE.search(text):
+        categories = {"security_access"}
+        title = "Limited functional fire-stair access"
+        summary = "Tenant reports only one fire stair was functional."
+        severity = 4
     elif CONTEXTUAL_REPLACEMENT_PROGRESS_RE.search(text):
         categories = {"fire_safety"}
         max_age_seconds = 4 * 3600
@@ -935,6 +944,7 @@ def _contextual_topic_followup_choice(session, rm: RawMessage) -> dict | None:
         "needs_review": False,
         "preserve_issue": True,
         "preserve_event_type": True,
+        "target_incident_id": incident.incident_id if incident is not None else None,
     }
 
 
@@ -1590,6 +1600,11 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
                     incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", max(confidence, 80), needs_review)
         else:
             best = existing_incident if existing_incident and existing_incident.category == cat else None
+            target_incident_id = str(chosen.get("target_incident_id") or "").strip()
+            if best is None and target_incident_id:
+                targeted = session.get(Incident, target_incident_id)
+                if targeted is not None and targeted.category == cat and targeted.status != "closed":
+                    best = targeted
             if best is None:
                 rows = session.query(Incident).filter(Incident.category == cat, Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast()).all()
                 for candidate in rows:
