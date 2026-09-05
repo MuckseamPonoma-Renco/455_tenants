@@ -651,6 +651,33 @@ def test_external_news_and_general_advice_cannot_become_building_incidents(clien
     assert direct_report['category'] == 'elevator'
 
 
+def test_legacy_reference_material_is_deterministically_nonreporting():
+    examples = {
+        'fwiw, how the building is presented on streeteasy (noting no elevator at all)': 'external_reference',
+        'I have been waiting on the Delancey platform for 20 minutes': 'external_reference',
+        'relatable story in gothamist today: https://gothamist.com/news/broken-elevator-story': 'external_reference',
+        'https://brooklyn.news12.com/ongoing-leak-leaves-mail-wet-inside-kensington-building': 'external_reference',
+        '"The code HHW for NYC elevator inspections stands for an immediately hazardous violation."': 'general_reference',
+        'Pre-thermostat installation it was arctic.': 'historical_reference',
+        'I have never had an issue with the heat; it is as warm as usual.': 'counterexample',
+        'They usually use gel, not spray. They also have glue traps if you need them.': 'general_advisory',
+    }
+
+    for text, reason in examples.items():
+        choice = classify_rules(text)
+        assert choice['is_issue'] is False, text
+        assert choice['nonreport_reason'] == reason, text
+
+
+def test_not_in_service_is_an_elevator_outage_not_a_restore():
+    choice = classify_rules('SOUTH LIFT IS NOT IN SERVICE!!!!')
+
+    assert choice['is_issue'] is True
+    assert choice['category'] == 'elevator'
+    assert choice['asset'] == 'elevator_south'
+    assert choice['kind'] == 'outage'
+
+
 def test_nonissue_reclassification_retires_orphan_draft_and_watchdog(client, monkeypatch):
     monkeypatch.setattr('packages.incident.extractor.LLM_MODE', 'off')
     from packages.incident.extractor import classify_and_upsert_incident

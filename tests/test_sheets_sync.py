@@ -983,6 +983,137 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
     assert "without floor-by-floor service" in sheets_sync._public_event_summary(south_incident, south_raw)
 
 
+def test_public_elevator_status_prefers_current_message_over_quoted_reply():
+    incident = Incident(
+        incident_id="quoted-restore",
+        category="elevator",
+        asset="elevator_both",
+        title="Both elevators currently working",
+    )
+    raw = RawMessage(
+        message_id="quoted-restore-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="quoted-restore-sender",
+        text="Both currently working",
+        attachments=build_attachment_manifest(
+            items=[],
+            message_context={"reply_text": "South lift not working, and north lift rattling."},
+            source="whatsapp_web",
+        ),
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Both elevators working"
+    assert sheets_sync._public_event_summary(incident, raw) == "Both elevators were reported working."
+
+
+def test_public_elevator_status_does_not_treat_reduced_or_negated_service_as_restore():
+    both = Incident(
+        incident_id="reduced-service",
+        category="elevator",
+        asset="elevator_both",
+        title="Elevator service reduced",
+    )
+    one_working = RawMessage(
+        message_id="one-working",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="one-working-sender",
+        text="1 working. Building staff called the mechanic",
+        source="whatsapp_web",
+    )
+    south = Incident(
+        incident_id="south-not-in-service",
+        category="elevator",
+        asset="elevator_south",
+        title="South lift out of service",
+    )
+    not_in_service = RawMessage(
+        message_id="south-not-in-service-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="south-not-in-service-sender",
+        text="SOUTH LIFT IS NOT IN SERVICE!!!!",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_event_issue_label(both, one_working) == "Elevator service reduced"
+    assert sheets_sync._public_event_summary(both, one_working) == (
+        "Elevator service was reported reduced to one working elevator; a mechanic was called."
+    )
+    assert sheets_sync._public_event_issue_label(south, not_in_service) == "South elevator"
+    assert sheets_sync._public_event_summary(south, not_in_service) == "South elevator was reported out of service."
+
+
+def test_public_elevator_terse_negation_uses_reply_only_for_asset_context():
+    incident = Incident(
+        incident_id="north-no-longer-working",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator no longer working",
+    )
+    raw = RawMessage(
+        message_id="north-no-longer-working-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="north-no-longer-working-sender",
+        text="No longer :(",
+        attachments=build_attachment_manifest(
+            items=[],
+            message_context={"reply_text": "North lift working!!!"},
+            source="whatsapp_web",
+        ),
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_issue_label(incident, raw) == "North elevator"
+    assert sheets_sync._public_event_summary(incident, raw) == "North elevator was reported as out."
+
+
+def test_public_non_elevator_summaries_are_neutral_and_privacy_safe():
+    puddle = Incident(
+        incident_id="common-area-puddle",
+        category="leaks_water_damage",
+        title="Puddle",
+    )
+    medical_context = RawMessage(
+        message_id="common-area-puddle-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="common-area-puddle-sender",
+        text=(
+            "That puddle made me gag. I had to walk down many flights to chemo, surgery and "
+            "radiation for breast cancer."
+        ),
+        source="whatsapp_export",
+    )
+    handrail = Incident(
+        incident_id="common-area-handrail",
+        category="other",
+        title="Handrail broken",
+    )
+    handrail_raw = RawMessage(
+        message_id="common-area-handrail-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="common-area-handrail-sender",
+        text="The stair A, 10th flr handrail is kaputt AGAIN. Reported to Jack.",
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_event_summary(puddle, medical_context) == (
+        "A puddle or standing water was reported in a common area."
+    )
+    assert "cancer" not in sheets_sync._public_event_summary(puddle, medical_context).casefold()
+    assert sheets_sync._public_should_include_update(handrail, handrail_raw) is True
+    assert sheets_sync._public_event_issue_label(handrail, handrail_raw) == "Common-area handrail issue"
+    assert sheets_sync._public_event_summary(handrail, handrail_raw) == (
+        "A common-area handrail was reported broken or unsafe."
+    )
+
+
 def test_public_detail_text_falls_back_when_title_redaction_would_be_empty():
     incident = Incident(
         incident_id="inc-public-summary",
@@ -1464,8 +1595,9 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert ',IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=' in public_issue_row[4]
     assert public_issue_row[4].endswith('",4,110,240))')
     assert public_issue_row[5].startswith("https://tenant.example/media/whatsapp/msg-public/0?v=")
-    old_issue_row = next(row for row in incident_rows if len(row) >= 7 and row[1] == "Lobby door did not close")
+    old_issue_row = next(row for row in incident_rows if len(row) >= 7 and row[1] == "Building access issue")
     assert old_issue_row[2] == "Security / access"
+    assert old_issue_row[6] == "A building access or security condition was reported."
 
     case_watch_row = next(idx for idx, row in enumerate(values) if row[0] == "311 case watch")
     assert values[case_watch_row + 1] == ["Case", "NYC status", "Complaint", "Related issue", "Submitted", "NYC lookup", "Notes", "", "", ""]
@@ -2260,6 +2392,40 @@ def test_public_sync_excludes_sensitive_interpersonal_security_reports():
     assert sheets_sync._public_should_include_update(incident, sensitive, decision) is False
     assert sheets_sync._public_should_include_update(incident, building_access, decision) is False
     assert sheets_sync._public_should_include_update(normal_access_incident, building_access, decision) is True
+
+
+def test_public_media_does_not_bypass_external_reference_guardrail(monkeypatch):
+    incident = Incident(
+        incident_id="external-listing",
+        category="elevator",
+        asset="elevator_both",
+        title="Elevator outage",
+    )
+    raw = RawMessage(
+        message_id="external-listing-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="external-listing-sender",
+        text="How the building is presented on StreetEasy, noting no elevator at all",
+        attachments='{"items":[{"kind":"image","status":"downloaded","public_url":"https://example.test/listing.png"}]}',
+        source="whatsapp_export",
+    )
+    decision = MessageDecision(
+        message_id=raw.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="elevator",
+        event_type="outage",
+        needs_review=True,
+    )
+
+    monkeypatch.setattr(
+        sheets_sync,
+        "public_attachment_entries",
+        lambda *_args: [{"kind": "image", "public_url": "https://example.test/listing.png"}],
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw, decision) is False
 
 
 def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypatch, tmp_path):

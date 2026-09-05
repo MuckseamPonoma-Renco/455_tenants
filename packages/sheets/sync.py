@@ -10,6 +10,7 @@ import httplib2
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
+from packages.incident.content_guardrails import nonreporting_content_reason
 from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
@@ -133,13 +134,14 @@ PUBLIC_ELEVATOR_ACTIONABLE_RE = re.compile(
     r"\b("
     r"zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|"
     r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
-    r"out\s+of\s+(?:service|order)|not\s+working|broken|stuck|dead|died|"
+    r"out\s+of\s+(?:service|order)|not\s+in\s+service|not\s+working|broken|stuck|dead|died|"
     r"stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
     r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
     r"only\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)?\s*(?:is\s+)?(?:working|functioning|operational|running|in\s+service)|"
     r"(?:elevators?|lifts?|north|south|left|right)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+|again\s+|remains?\s+|remained\s+|currently\s+)?(?:out|down)|"
     r"(?:they(?:'re| are| were| still| again| remain| remained| currently)|it(?:'s| is| was| still| again| remains| remained| currently))\s+(?:out|down)|"
+    r"still\s+(?:out|down)|no\s+longer\s+(?:working|in\s+service)|"
     r"shutdown|shut\s*off|trapped|entrapment|"
     r"alarm|"
     r"stopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
@@ -176,6 +178,11 @@ PUBLIC_ELEVATOR_CALL_RESPONSE_RE = re.compile(
 )
 PUBLIC_ELEVATOR_WORKING_STATUS_RE = re.compile(
     r"\b(?:working\s+(?:normal(?:ly)?|now|rn)|working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service)|both\s+(?:elevators?|lifts?)?\s*work(?:\s+(?:now|this\s+(?:am|morning)))?)\b",
+    re.IGNORECASE,
+)
+PUBLIC_BOTH_ELEVATORS_WORKING_RE = re.compile(
+    r"\bboth\s+(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?(?:working|functioning|operational|running)\b"
+    r"|\b(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?both\s+(?:working|functioning|operational|running)\b",
     re.IGNORECASE,
 )
 PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE = re.compile(
@@ -232,6 +239,70 @@ PUBLIC_LIMITED_FIRE_EGRESS_RE = re.compile(
 )
 PUBLIC_LAUNDRY_MACHINE_NUMBER_RE = re.compile(
     r"\b(?:washer|dryer)(?:\s+(?:number|no\.?))?\s*#?\s*(\d{1,3})\b",
+    re.IGNORECASE,
+)
+PUBLIC_MEDIA_ONLY_CAPTION_RE = re.compile(
+    r"^\s*(?:photo|image|video|audio|recording|media)(?:\s+(?:attached|included|omitted))?[.!]?\s*$",
+    re.IGNORECASE,
+)
+PUBLIC_WATER_RESTORE_RE = re.compile(
+    r"\b(?:water|hot\s+water|cold\s+water)\b[^.!?\n]{0,100}\b(?:restored|back\s+on|working\s+again|running\s+again)\b"
+    r"|\b(?:restored|back\s+on)\b[^.!?\n]{0,100}\b(?:water|hot\s+water|cold\s+water)\b",
+    re.IGNORECASE,
+)
+PUBLIC_WATER_OUTAGE_RE = re.compile(
+    r"\b(?:no|without)\s+(?:running\s+)?(?:hot\s+|cold\s+)?water\b"
+    r"|\b(?:hot\s+water|cold\s+water|water)\b[^.!?\n]{0,100}\b(?:went\s+out|is\s+out|not\s+running|stopped)\b",
+    re.IGNORECASE,
+)
+PUBLIC_WATER_DISCOLORATION_RE = re.compile(
+    r"\b(?:brown|cloudy|dirty|discolou?red?|murky)\b[^.!?\n]{0,100}\bwater\b"
+    r"|\bwater\b[^.!?\n]{0,100}\b(?:brown|cloudy|dirty|discolou?red?|murky)\b",
+    re.IGNORECASE,
+)
+PUBLIC_MOLD_RE = re.compile(r"\b(?:mold|mould|mildew)\b", re.IGNORECASE)
+PUBLIC_LEAK_REPORT_RE = re.compile(
+    r"\b(?:leak(?:s|ed|ing)?|flood(?:ed|ing)?|water\s+damage|puddle|drip(?:s|ping|ped)?|"
+    r"sprinkler|drain|ceiling\s+(?:collapsed|leak)|standing\s+water)\b",
+    re.IGNORECASE,
+)
+PUBLIC_HEAT_RESTORE_RE = re.compile(
+    r"\b(?:heat|heating|hot\s+water|boiler)\b[^.!?\n]{0,100}\b(?:restored|back\s+on|working\s+again|fixed)\b"
+    r"|\b(?:restored|back\s+on|fixed)\b[^.!?\n]{0,100}\b(?:heat|heating|hot\s+water|boiler)\b",
+    re.IGNORECASE,
+)
+PUBLIC_HEAT_ISSUE_RE = re.compile(
+    r"\b(?:no|without|insufficient)\s+(?:heat|heating|hot\s+water)\b"
+    r"|\b(?:heat|heating|radiator|boiler|hot\s+water)\b[^.!?\n]{0,120}\b(?:off|out|cold|freezing|not\s+working|below\s+\d{2})\b"
+    r"|\b(?:freezing|too\s+cold|under\s+\d{2}\s+degrees?|below\s+\d{2}\s+degrees?)\b",
+    re.IGNORECASE,
+)
+PUBLIC_POSITIVE_HEAT_RE = re.compile(
+    r"\b(?:never\s+had\s+an?\s+issue\s+with\s+(?:the\s+)?heat|as\s+warm\s+as\s+usual|heat\s+stays\s+in)\b",
+    re.IGNORECASE,
+)
+PUBLIC_PEST_REPORT_RE = re.compile(
+    r"\b(?:roach(?:es)?|mice|mouse|rats?|bed\s*bugs?|vermin|pests?)\b",
+    re.IGNORECASE,
+)
+PUBLIC_SECURITY_REPORT_RE = re.compile(
+    r"\b(?:door|doors|lock|locks|locked|unlock(?:ed)?|intercom|entry|entrance|access|"
+    r"key|keys|fob|camera|security|fire[\s-]+stair|stairwell)\b",
+    re.IGNORECASE,
+)
+PUBLIC_REFUSE_ROOM_RE = re.compile(
+    r"\b(?:rubbish|refuse|trash|garbage)\s+room\b[^.!?\n]{0,100}\b(?:locked|closed|inaccessible|can['\u2019]?t\s+(?:enter|access|use))\b"
+    r"|\b(?:locked|closed|inaccessible)\b[^.!?\n]{0,100}\b(?:rubbish|refuse|trash|garbage)\s+room\b",
+    re.IGNORECASE,
+)
+PUBLIC_HANDRAIL_RE = re.compile(
+    r"\b(?:handrail|hand\s+rail|railing)\b[^.!?\n]{0,100}\b(?:broken|loose|detached|kaputt|missing|unsafe)\b"
+    r"|\b(?:broken|loose|detached|kaputt|missing|unsafe)\b[^.!?\n]{0,100}\b(?:handrail|hand\s+rail|railing)\b",
+    re.IGNORECASE,
+)
+PUBLIC_EDIT_MARKER_RE = re.compile(r"\s*<This message was edited>\s*", re.IGNORECASE)
+PUBLIC_MEDIA_PLACEHOLDER_RE = re.compile(
+    r"\b(?:image|video|audio|sticker|gif|document)\s+omitted\b",
     re.IGNORECASE,
 )
 PUBLIC_DEFAULT_REDACTED_NAMES = (
@@ -1466,7 +1537,9 @@ def _public_safe_summary_text(value: str) -> str:
 
 
 def _public_visible_context_text(value: str) -> str:
-    lines = [line.strip() for line in str(value or "").replace("\u202f", " ").replace("\u200e", "").replace("\u200f", "").splitlines()]
+    visible = PUBLIC_EDIT_MARKER_RE.sub("", str(value or ""))
+    visible = PUBLIC_MEDIA_PLACEHOLDER_RE.sub("", visible)
+    lines = [line.strip() for line in visible.replace("\u202f", " ").replace("\u200e", "").replace("\u200f", "").splitlines()]
     cleaned: list[str] = []
     for idx, line in enumerate(lines):
         if not line:
@@ -1816,7 +1889,11 @@ def _public_raw_evidence_cells(raw: RawMessage | None) -> tuple[str, str]:
 
 def _public_elevator_asset_from_text(text: str, fallback_asset: str | None) -> str | None:
     clean = _clean_text(text).casefold()
-    if re.search(r"\b(?:both|zero|no|two|2)\s+(?:elevators?|lifts?)\b", clean):
+    if re.search(
+        r"\b(?:both|zero|no|two|2)\s+(?:elevators?|lifts?)\b"
+        r"|\b(?:elevators?|lifts?)\s+(?:are\s+|were\s+)?both\b",
+        clean,
+    ):
         return "elevator_both"
     if re.search(
         r"\b(?:both|zero|no|two|2)\b[^.!?\n]{0,80}\b"
@@ -1843,7 +1920,7 @@ def _public_elevator_asset_from_text(text: str, fallback_asset: str | None) -> s
             for segment in segments
         )
 
-    affected_status = r"(?:out|down|dead|died|broken|stuck|stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|not\s+working|out\s+of\s+(?:service|order))"
+    affected_status = r"(?:out|down|dead|died|broken|stuck|stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|not\s+in\s+service|not\s+working|no\s+longer\s+(?:working|in\s+service)|out\s+of\s+(?:service|order))"
     working_status = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
     north_affected = side_has("north", affected_status)
     south_affected = side_has("south", affected_status)
@@ -1893,6 +1970,20 @@ def _public_elevator_text_is_working_status(text: str) -> bool:
     clean = _clean_text(text)
     if not clean:
         return False
+    if _public_elevator_text_is_reduced_service(clean):
+        return False
+    if re.search(r"\b(?:not|isn['’]?t|aren['’]?t)\s+in\s+service\b", clean, re.IGNORECASE):
+        return False
+    if re.search(
+        r"\b(?:mechanic|repair\s+(?:person|people|crew))\b[^.!?\n]{0,100}\bworking\b"
+        r"|\b(?:hoping|hope|might|may)\b[^.!?\n]{0,100}\bback\s+up\b"
+        r"|\bservice\s+(?:is\s+)?not\s+confirmed\b",
+        clean,
+        re.IGNORECASE,
+    ):
+        return False
+    if PUBLIC_BOTH_ELEVATORS_WORKING_RE.search(clean):
+        return True
     if PUBLIC_ELEVATOR_ONLY_SIDE_WORKING_RE.search(clean):
         return False
     if PUBLIC_ELEVATOR_NEGATED_FLOOR_SERVICE_RE.search(clean):
@@ -1902,7 +1993,7 @@ def _public_elevator_text_is_working_status(text: str) -> bool:
     if re.search(r"\b(?:working\s+normal(?:ly)?|working\s+rn|working\s+now)\b", clean, re.IGNORECASE):
         return True
     if PUBLIC_ELEVATOR_WORKING_STATUS_RE.search(clean) and not re.search(
-        r"\b(?:not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|dead|out|down|out\s+of\s+(?:service|order)|not\s+working|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|stopped|stuck|trapped|entrapment|alarm)\b",
+        r"\b(?:not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|zero\s+(?:elevators?|lifts?)|no\s+(?:elevators?|lifts?)|dead|out|down|out\s+of\s+(?:service|order)|not\s+in\s+service|not\s+working|no\s+longer\s+(?:working|in\s+service)|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move|stopped|stuck|trapped|entrapment|alarm)\b",
         clean,
         re.IGNORECASE,
     ):
@@ -1918,6 +2009,8 @@ def _public_elevator_text_is_actionable(text: str) -> bool:
         return False
     if PUBLIC_ELEVATOR_SAFETY_DISCUSSION_RE.search(clean):
         return False
+    if _public_elevator_text_is_reduced_service(clean):
+        return True
     if _public_elevator_text_is_working_status(clean):
         return False
     if PUBLIC_ELEVATOR_REPLACEMENT_DISCUSSION_RE.search(clean) and not re.search(
@@ -1967,12 +2060,76 @@ def _public_other_update_issue_label(text: str) -> str:
         return "Stairwell liquid spill"
     if PUBLIC_LAUNDRY_ISSUE_RE.search(clean):
         return "Laundry machine/card issue"
+    if PUBLIC_REFUSE_ROOM_RE.search(clean):
+        return "Refuse-room access issue"
+    if PUBLIC_HANDRAIL_RE.search(clean):
+        return "Common-area handrail issue"
     return ""
 
 
 def _public_has_apartment_entry_concern(text: str) -> bool:
     clean = _clean_text(text)
     return bool(PUBLIC_APARTMENT_ENTRY_RE.search(clean) or PUBLIC_APARTMENT_OCCUPANCY_ENTRY_RE.search(clean))
+
+
+def _public_media_only_caption(text: str) -> bool:
+    clean = _clean_text(text)
+    return bool(is_media_placeholder_text(clean) or PUBLIC_MEDIA_ONLY_CAPTION_RE.fullmatch(clean))
+
+
+def _public_category_has_reportable_signal(category: str, text: str) -> bool:
+    clean = _clean_text(text)
+    if not clean:
+        return False
+    if category == "leaks_water_damage":
+        return bool(
+            PUBLIC_LEAK_REPORT_RE.search(clean)
+            or PUBLIC_MOLD_RE.search(clean)
+            or PUBLIC_WATER_OUTAGE_RE.search(clean)
+            or PUBLIC_WATER_RESTORE_RE.search(clean)
+            or PUBLIC_WATER_DISCOLORATION_RE.search(clean)
+        )
+    if category == "heat_hot_water":
+        if PUBLIC_POSITIVE_HEAT_RE.search(clean):
+            return False
+        return bool(
+            PUBLIC_HEAT_ISSUE_RE.search(clean)
+            or PUBLIC_HEAT_RESTORE_RE.search(clean)
+            or PUBLIC_WATER_OUTAGE_RE.search(clean)
+            or PUBLIC_WATER_RESTORE_RE.search(clean)
+            or PUBLIC_WATER_DISCOLORATION_RE.search(clean)
+        )
+    if category == "pests":
+        return bool(PUBLIC_PEST_REPORT_RE.search(clean))
+    if category == "security_access":
+        return bool(PUBLIC_SECURITY_REPORT_RE.search(clean))
+    if category == "other":
+        return bool(_public_other_update_issue_label(clean))
+    return True
+
+
+def _public_elevator_event_text(raw: RawMessage | None) -> str:
+    """Prefer the author's current statement over older quoted reply context."""
+    text = _clean_text(getattr(raw, "text", ""))
+    if not text:
+        return _public_update_detection_text(raw)
+    if re.fullmatch(r"\s*no\s+longer\W*", text, re.IGNORECASE):
+        reply_text = _raw_reply_context_text(raw)
+        side = re.search(r"\b(north|south|left|right)\b", reply_text, re.IGNORECASE)
+        if side:
+            return f"{side.group(1)} lift no longer working"
+    decisive = bool(
+        PUBLIC_ELEVATOR_WORKING_STATUS_RE.search(text)
+        or PUBLIC_ELEVATOR_ACTIONABLE_RE.search(text)
+        or PUBLIC_ELEVATOR_CALL_RESPONSE_RE.search(text)
+        or PUBLIC_ELEVATOR_IRREGULAR_OPERATION_RE.search(text)
+        or PUBLIC_REPAIR_NOT_COMPLETE_RE.search(text)
+        or PUBLIC_REPAIR_NOT_ON_SITE_RE.search(text)
+        or PUBLIC_REPAIR_ON_SITE_RE.search(text)
+        or PUBLIC_REPAIR_CALLED_RE.search(text)
+        or re.search(r"\b(?:still\s+(?:out|down)|no\s+longer|one|1|both|two|2)\b", text, re.IGNORECASE)
+    )
+    return text if decisive else _public_update_detection_text(raw)
 
 
 def _public_should_include_update(
@@ -1985,6 +2142,10 @@ def _public_should_include_update(
     text = _clean_text(raw.text)
     context_text = _public_update_detection_text(raw)
     if not text:
+        return False
+    if decision is not None and not bool(decision.is_issue):
+        return False
+    if nonreporting_content_reason(text):
         return False
     decision_event = _clean_text(getattr(decision, "event_type", ""))
     decision_category = _clean_text(getattr(decision, "category", ""))
@@ -2003,12 +2164,14 @@ def _public_should_include_update(
         return False
     if PUBLIC_GENERIC_RESOLVED_FRAGMENT_RE.search(text) and not decision_is_elevator_restore:
         return False
-    if public_attachment_entries(raw.message_id, raw.attachments):
+    shareable_media = bool(public_attachment_entries(raw.message_id, raw.attachments))
+    if shareable_media and _public_media_only_caption(text):
         return True
     if _public_has_apartment_entry_concern(text):
         return True
     if incident.category == "elevator":
-        detection_text = _public_update_detection_text(raw)
+        detection_text = _public_elevator_event_text(raw)
+        context_detection_text = _public_update_detection_text(raw)
         has_elevator_context = _public_elevator_text_has_context(detection_text, incident.asset)
         has_repair_context = bool(
             PUBLIC_REPAIR_NOT_COMPLETE_RE.search(detection_text)
@@ -2016,6 +2179,8 @@ def _public_should_include_update(
             or PUBLIC_REPAIR_ON_SITE_RE.search(detection_text)
             or PUBLIC_REPAIR_CALLED_RE.search(detection_text)
         )
+        if not has_elevator_context:
+            has_elevator_context = _public_elevator_text_has_context(context_detection_text, incident.asset)
         if not has_elevator_context and not has_repair_context and not decision_is_elevator_restore:
             return False
         return bool(
@@ -2037,7 +2202,7 @@ def _public_should_include_update(
                 and decision_event in {"new_issue", "still_out", "status_update", "restore"}
             )
         )
-    return True
+    return _public_category_has_reportable_signal(incident.category, context_text)
 
 
 def _public_incident_has_includeable_update(
@@ -2065,6 +2230,134 @@ def _public_is_actionable_311_update(incident: Incident, raw: RawMessage | None)
     return _public_elevator_text_is_actionable(text) or _public_elevator_text_confirms_same_issue(text)
 
 
+def _public_category_semantic_text(incident: Incident, raw: RawMessage | None) -> str:
+    text = _clean_text(getattr(raw, "text", ""))
+    if _public_category_has_reportable_signal(incident.category, text):
+        return text
+    return _public_update_detection_text(raw)
+
+
+def _public_non_elevator_issue_label(incident: Incident, raw: RawMessage | None) -> str:
+    text = _public_category_semantic_text(incident, raw)
+    lowered = text.casefold()
+    if incident.category == "leaks_water_damage":
+        if PUBLIC_WATER_RESTORE_RE.search(text):
+            return "Water service restored"
+        if PUBLIC_WATER_OUTAGE_RE.search(text):
+            return "Water service outage"
+        if PUBLIC_WATER_DISCOLORATION_RE.search(text):
+            return "Hot-water discoloration" if "hot" in lowered else "Water discoloration"
+        if PUBLIC_MOLD_RE.search(text):
+            return "Mold / moisture concern"
+        if re.search(r"\b(?:puddle|standing\s+water)\b", text, re.IGNORECASE):
+            return "Common-area water / puddle"
+        if re.search(r"\b(?:notice|posted|posting)\b", text, re.IGNORECASE) and PUBLIC_LEAK_REPORT_RE.search(text):
+            return "Water-leak notice"
+        return "Leak / water damage"
+    if incident.category == "heat_hot_water":
+        if PUBLIC_WATER_RESTORE_RE.search(text) or PUBLIC_HEAT_RESTORE_RE.search(text):
+            return "Heat / hot water restored"
+        if PUBLIC_WATER_OUTAGE_RE.search(text):
+            return "Hot-water outage" if "hot water" in lowered else "Water service outage"
+        if PUBLIC_WATER_DISCOLORATION_RE.search(text):
+            return "Hot-water discoloration" if "hot" in lowered else "Water discoloration"
+        return "Insufficient heat"
+    if incident.category == "pests":
+        if re.search(r"\b(?:exterminator|extermination|pest\s+control|treatment)\b", text, re.IGNORECASE):
+            return "Pest-control update"
+        if re.search(r"\b(?:mice|mouse|rats?|rodent)\b", text, re.IGNORECASE):
+            return "Rodent report"
+        if re.search(r"\b(?:roach(?:es)?)\b", text, re.IGNORECASE):
+            return "Roach report"
+        return "Pest report"
+    if incident.category == "security_access":
+        if PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
+            return "Limited fire-stair access"
+        if re.search(r"\b(?:lock|locks|locked|unlock(?:ed)?)\b", text, re.IGNORECASE):
+            return "Door / lock access issue"
+        if re.search(r"\bintercom\b", text, re.IGNORECASE):
+            return "Intercom / entry issue"
+        if re.search(r"\b(?:fire[\s-]+stair|stairwell)\b", text, re.IGNORECASE):
+            return "Fire-stair access issue"
+        return "Building access issue"
+    if incident.category == "other":
+        return _public_other_update_issue_label(text) or "Other building issue"
+    return _public_issue_label(incident)
+
+
+def _public_non_elevator_summary(incident: Incident, raw: RawMessage | None) -> str:
+    text = _public_category_semantic_text(incident, raw)
+    lowered = text.casefold()
+    if incident.category == "leaks_water_damage":
+        if PUBLIC_WATER_RESTORE_RE.search(text):
+            return "Building water service was reported restored."
+        if PUBLIC_WATER_OUTAGE_RE.search(text):
+            if "hot water" in lowered:
+                return "Hot-water service was reported unavailable."
+            if "cold water" in lowered:
+                return "Cold-water service was reported unavailable."
+            return "Water service was reported unavailable."
+        if PUBLIC_WATER_DISCOLORATION_RE.search(text):
+            if "hot" in lowered:
+                return "Discolored hot water was reported."
+            return "Cloudy, dirty, or discolored water was reported."
+        if PUBLIC_MOLD_RE.search(text):
+            if "vent" in lowered:
+                return "Recurring mold or moisture was reported near a ventilation issue."
+            return "Mold or persistent moisture was reported."
+        if re.search(r"\b(?:puddle|standing\s+water)\b", text, re.IGNORECASE):
+            return "A puddle or standing water was reported in a common area."
+        if re.search(r"\b(?:notice|posted|posting)\b", text, re.IGNORECASE):
+            return "Building management was reported to have posted a water-leak notice."
+        if re.search(r"\bsprinkler\b", text, re.IGNORECASE):
+            return "A sprinkler or associated drainage leak was reported."
+        return "A leak or water-damage condition was reported."
+    if incident.category == "heat_hot_water":
+        if PUBLIC_WATER_RESTORE_RE.search(text) or PUBLIC_HEAT_RESTORE_RE.search(text):
+            return "Heat or hot-water service was reported restored."
+        if PUBLIC_WATER_OUTAGE_RE.search(text):
+            return "Hot-water service was reported unavailable." if "hot water" in lowered else "Water service was reported unavailable."
+        if PUBLIC_WATER_DISCOLORATION_RE.search(text):
+            return "Discolored hot water was reported." if "hot" in lowered else "Discolored water was reported."
+        if re.search(r"\b(?:under|below)\s+\d{2}\s+degrees?\b", text, re.IGNORECASE):
+            return "An indoor temperature below the required heating level was reported."
+        return "Insufficient apartment heat was reported."
+    if incident.category == "pests":
+        if re.search(r"\b(?:exterminator|extermination|pest\s+control|treatment)\b", text, re.IGNORECASE):
+            return "A pest-control treatment or visit was reported."
+        if re.search(r"\b(?:mice|mouse|rats?|rodent)\b", text, re.IGNORECASE):
+            return "Rodent activity was reported in the building."
+        if re.search(r"\broach(?:es)?\b", text, re.IGNORECASE):
+            return "Roach activity was reported in the building."
+        return "Pest activity was reported in the building."
+    if incident.category == "security_access":
+        if PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
+            return "Only one fire stair was reported functional."
+        if re.search(r"\b(?:lock|locks)\b", text, re.IGNORECASE):
+            if re.search(r"\b(?:fix|fixed|repair|repaired|replace|replaced|changed)\b", text, re.IGNORECASE):
+                return "A door-lock failure and repair or replacement were reported."
+            return "A door-lock or access failure was reported."
+        if re.search(r"\bintercom\b", text, re.IGNORECASE):
+            return "An intercom or building-entry problem was reported."
+        if re.search(r"\b(?:fire[\s-]+stair|stairwell)\b", text, re.IGNORECASE):
+            return "A fire-stair or common-area access problem was reported."
+        return "A building access or security condition was reported."
+    if incident.category == "other":
+        if PUBLIC_REFUSE_ROOM_RE.search(text):
+            return "A refuse room was reported locked or inaccessible."
+        if PUBLIC_HANDRAIL_RE.search(text):
+            return "A common-area handrail was reported broken or unsafe."
+        if PUBLIC_STAIR_SPILL_RE.search(text):
+            return "Liquid spill was reported in the stairwell/common area."
+        if PUBLIC_LAUNDRY_ISSUE_RE.search(text):
+            machine = PUBLIC_LAUNDRY_MACHINE_NUMBER_RE.search(text)
+            if machine:
+                return f"Washer #{machine.group(1)} was reported unable to read a laundry card."
+            return "A laundry machine/card problem was reported."
+        return "A building condition was reported."
+    return "A building condition was reported."
+
+
 def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str:
     text = _clean_text(getattr(raw, "text", ""))
     context_text = _public_update_detection_text(raw)
@@ -2075,7 +2368,7 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
             return "Under-sink leak and apartment entry concern"
         return "Apartment entry / access concern"
     if incident.category == "elevator":
-        detection_text = _public_update_detection_text(raw)
+        detection_text = _public_elevator_event_text(raw)
         asset = _public_elevator_asset_from_text(detection_text, incident.asset)
         working_status = _public_elevator_text_is_working_status(detection_text)
         actionable = _public_elevator_text_is_actionable(detection_text)
@@ -2109,6 +2402,8 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
             return _public_title_issue_label(incident, fallback="Elevator not responding to floor call")
         if actionable:
             lowered = detection_text.casefold()
+            if re.search(r"\b(?:trapped|entrapment|stuck\s+in)\b", lowered):
+                return "Elevator entrapment"
             if "alarm" in lowered:
                 return _public_issue_label(incident) or "Elevator alarm"
             if PUBLIC_ELEVATOR_IRREGULAR_OPERATION_RE.search(detection_text):
@@ -2132,7 +2427,7 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
                     return "North elevator"
                 if asset == "elevator_south":
                     return "South elevator"
-            if re.search(r"\b(?:one|1)\s+(?:working\s+)?(?:elevator|lift)\b|\bback\s+to\s+one\b|\bdown\s+to\s+one\b", lowered):
+            if _public_elevator_text_is_reduced_service(detection_text):
                 return "Elevator service reduced"
             if asset == "elevator_both":
                 return "Both elevators"
@@ -2148,6 +2443,11 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
             return "Elevator repair expected"
         if repair_label == "Repair not completed":
             return "Elevator repair not completed"
+        if _public_media_only_caption(text):
+            return _public_title_issue_label(incident, fallback="Elevator evidence")
+        return "Elevator service update"
+    if incident.category in {"leaks_water_damage", "heat_hot_water", "pests", "security_access"}:
+        return _public_non_elevator_issue_label(incident, raw)
     if incident.category == "laundry":
         machine = PUBLIC_LAUNDRY_MACHINE_NUMBER_RE.search(context_text)
         suffix = f" #{machine.group(1)}" if machine else ""
@@ -2185,6 +2485,10 @@ def _public_elevator_text_is_reduced_service(text: str) -> bool:
             r"\b(?:back|down)\s+to\s+one\b"
             r"|\bonly\s+one\s+(?:working\s+)?(?:elevator|lift)\b"
             r"|\bone\s+(?:working\s+)?(?:elevator|lift)\b"
+            r"|\b(?:one|1)\s+(?:elevator|lift)\s+(?:is\s+|was\s+|currently\s+)?(?:working|in\s+service)\b"
+            r"|\b(?:one|1)\s+(?:elevator|lift)\s+(?:is\s+|was\s+|currently\s+)?(?:out|down|not\s+working|not\s+in\s+service)\b"
+            r"|\b(?:one|1)\s+working\b"
+            r"|\bat\s+least\s+(?:one|1)\s+(?:of\s+the\s+)?(?:elevators?|lifts?)?\s*(?:is\s+)?(?:working|in\s+service)\b"
             r"|\bone\s+(?:elevator|lift)\s+(?:is\s+|was\s+|currently\s+)?(?:out|down|dead|broken|not\s+working|out\s+of\s+(?:service|order))\b",
             lowered,
         )
@@ -2205,12 +2509,12 @@ def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
         if asset == "elevator_south":
             return "South elevator was reported making a loud clunk, bouncing, or opening slowly."
         return "Elevator was reported making a loud clunk, bouncing, or opening slowly."
+    if re.search(r"\btrapped\b|\bentrapment\b|\bstuck\s+in\b", lowered):
+        return "A person was reported trapped in an elevator."
     if "alarm" in lowered:
         return "Elevator alarm was reported."
     if re.search(r"\bfloor[- ]by[- ]floor\b|\bstopping\s+(?:(?:at|on)\s+)?(?:each|every|all)\s+floor\b|\bskipping\b|\birregular\s+floor\b", lowered):
         return "Elevator floor-service issue was reported."
-    if re.search(r"\btrapped\b|\bentrapment\b", lowered):
-        return "A person was reported trapped in an elevator."
     if re.search(r"\b(?:stopped|not\s+moving|doesn['’]?t\s+seem\s+to\s+be\s+moving|won['’]?t\s+move)\b", lowered):
         if asset == "elevator_both":
             return "Both elevators were reported stopped or not moving."
@@ -2226,6 +2530,12 @@ def _public_elevator_outage_summary(asset: str | None, text: str) -> str:
         ):
             return "One elevator was reported out of service."
         return "Elevator service was reported reduced to one working elevator."
+    if re.search(r"\bnot\s+in\s+service\b", lowered):
+        if asset == "elevator_north":
+            return "North elevator was reported out of service."
+        if asset == "elevator_south":
+            return "South elevator was reported out of service."
+        return "An elevator was reported out of service."
     still = bool(re.search(r"\bstill\b|\bagain\b|\bcontinued?\b|\bremains?\b", lowered))
     state = "still out" if still else "out"
     if "down" in lowered and "out" not in lowered:
@@ -2251,7 +2561,7 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             return "Resident reported a response about apartment entry; the super would be advised."
         return "Resident reported an apartment entry or access concern."
     if incident.category == "elevator":
-        detection_text = _public_update_detection_text(raw)
+        detection_text = _public_elevator_event_text(raw)
         asset = _public_elevator_asset_from_text(detection_text, incident.asset)
         if _public_elevator_text_is_working_status(detection_text):
             normal_floor_service = bool(
@@ -2260,6 +2570,8 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             )
             if asset == "elevator_both" and _public_elevator_text_is_current_working_after_past_outage(detection_text):
                 return "Both elevators were reported working; one had been down earlier."
+            if asset == "elevator_both" and re.search(r"\balarm\b", detection_text, re.IGNORECASE):
+                return "Both elevators were reported working after an alarm had rung."
             if asset == "elevator_both" and normal_floor_service:
                 return "Both elevators were reported working normally, without floor-by-floor service."
             if asset == "elevator_both":
@@ -2282,6 +2594,8 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             label = _public_title_issue_label(incident, fallback="Elevator not responding to floor call")
             return _public_detail_text(incident, label)
         if _public_elevator_text_is_actionable(detection_text) and PUBLIC_REPAIR_CALLED_RE.search(detection_text):
+            if _public_elevator_text_is_reduced_service(detection_text):
+                return "Elevator service was reported reduced to one working elevator; a mechanic was called."
             if asset == "elevator_both":
                 return "Both elevators were reported out, and repair people were expected."
             return "Elevator outage was reported, and repair people were expected."
@@ -2294,6 +2608,11 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             return "Elevator repair was reported not completed yet."
         if _public_elevator_text_is_actionable(detection_text):
             return _public_elevator_outage_summary(asset, detection_text)
+        if _public_media_only_caption(text):
+            return _public_detail_text(incident, _public_focus_label(incident))
+        return "An elevator service condition was reported."
+    if incident.category in {"leaks_water_damage", "heat_hot_water", "pests", "security_access"}:
+        return _public_non_elevator_summary(incident, raw)
     if incident.category == "laundry":
         machine = PUBLIC_LAUNDRY_MACHINE_NUMBER_RE.search(context_text)
         if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
@@ -2311,13 +2630,8 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
         if PUBLIC_CONTEXTUAL_CORROBORATION_RE.search(text):
             return "A second tenant corroborated the missing building fire hoses."
         return "A building fire-hose safety update was reported."
-    if incident.category == "other" and PUBLIC_STAIR_SPILL_RE.search(text):
-        return "Liquid spill was reported in the stairwell/common area."
-    if incident.category == "other" and PUBLIC_LAUNDRY_ISSUE_RE.search(text):
-        machine = PUBLIC_LAUNDRY_MACHINE_NUMBER_RE.search(text)
-        if machine:
-            return f"Washer #{machine.group(1)} was reported unable to read a laundry card."
-        return "A laundry machine/card problem was reported."
+    if incident.category == "other":
+        return _public_non_elevator_summary(incident, raw)
     context = _public_visible_context_text(text)
     summary = _truncate_public_text(_public_safe_summary_text(context), limit=320)
     if summary and summary[-1] not in ".!?":

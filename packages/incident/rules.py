@@ -27,7 +27,7 @@ FLOOR_SERVICE_NORMAL = re.compile(
 )
 
 OUT = re.compile(
-    r"(out\s+of\s+service|out\s+of\s+order|not\s+working|broken|stuck|"
+    r"(out\s+of\s+service|out\s+of\s+order|not\s+in\s+service|not\s+working|broken|stuck|"
     r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
     r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
@@ -164,7 +164,7 @@ FRONT_DESK_PHONE_WORKS = re.compile(
     re.I,
 )
 
-ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+working|stuck|shutdown|shut\s*off)"
+ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+in\s+service|not\s+working|stuck|shutdown|shut\s*off)"
 ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
 
 
