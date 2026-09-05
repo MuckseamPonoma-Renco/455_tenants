@@ -2,6 +2,10 @@ import pytest
 
 from packages.db import Incident, MessageDecision, get_session
 from packages.incident.rules import classify_rules
+from scripts.repair_recent_whatsapp_semantics import (
+    CROSS_SOURCE_TARGET_ALIASES,
+    _align_cross_source_alias_decisions,
+)
 
 
 def _auth_headers():
@@ -123,3 +127,47 @@ def test_direction_followup_inherits_north_slow_elevator(client, monkeypatch):
         incident = session.get(Incident, slow_decision.incident_id)
         assert incident.asset == "elevator_north"
         assert incident.status == "open"
+
+
+def test_repair_aligns_archive_alias_with_contextually_classified_live_decision(client):
+    archive_message_id, live_message_id = next(iter(CROSS_SOURCE_TARGET_ALIASES.items()))
+    with get_session() as session:
+        session.add_all(
+            [
+                MessageDecision(
+                    message_id=archive_message_id,
+                    is_issue=False,
+                    event_type="non_issue",
+                    chosen_source="rules",
+                ),
+                MessageDecision(
+                    message_id=live_message_id,
+                    incident_id="fire-incident",
+                    is_issue=True,
+                    category="fire_safety",
+                    event_type="status_update",
+                    chosen_source="rules_context",
+                    confidence=88,
+                    needs_review=False,
+                    auto_file_candidate=False,
+                    final_json='{"category":"fire_safety"}',
+                ),
+            ]
+        )
+        session.flush()
+
+        aligned = _align_cross_source_alias_decisions(session)
+        archive = session.get(MessageDecision, archive_message_id)
+
+        assert aligned == [
+            {
+                "archive_message_id": archive_message_id,
+                "live_message_id": live_message_id,
+                "incident_id": "fire-incident",
+            }
+        ]
+        assert archive.is_issue is True
+        assert archive.category == "fire_safety"
+        assert archive.event_type == "status_update"
+        assert archive.incident_id == "fire-incident"
+        assert archive.chosen_source == "rules_context"

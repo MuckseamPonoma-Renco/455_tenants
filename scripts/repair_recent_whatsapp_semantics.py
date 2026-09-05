@@ -42,6 +42,15 @@ REPAIRABLE_OLD_INCIDENT_IDS = (
 
 NORTH_SLOW_INCIDENT_ID = "8040453a06f8e7da4083145091b2533e"
 
+# These archive rows are the same physical updates as the live-capture rows,
+# but historical chat-label drift prevented contextual classification. Align
+# their decision semantics before the existing exact-alias reconciler chooses
+# the stable archive ID and removes the live duplicate.
+CROSS_SOURCE_TARGET_ALIASES = {
+    TARGET_MESSAGE_IDS[4]: TARGET_MESSAGE_IDS[3],
+    TARGET_MESSAGE_IDS[9]: TARGET_MESSAGE_IDS[8],
+}
+
 EXPECTED_CATEGORY_EVENT = {
     TARGET_MESSAGE_IDS[0]: ("laundry", "new_issue"),
     TARGET_MESSAGE_IDS[1]: ("fire_safety", "new_issue"),
@@ -54,6 +63,38 @@ EXPECTED_CATEGORY_EVENT = {
     TARGET_MESSAGE_IDS[8]: ("elevator", "status_update"),
     TARGET_MESSAGE_IDS[9]: ("elevator", "status_update"),
 }
+
+
+def _align_cross_source_alias_decisions(session) -> list[dict[str, str]]:
+    aligned: list[dict[str, str]] = []
+    fields = (
+        "incident_id",
+        "chosen_source",
+        "is_issue",
+        "category",
+        "event_type",
+        "confidence",
+        "needs_review",
+        "auto_file_candidate",
+        "rules_json",
+        "llm_json",
+        "final_json",
+    )
+    for archive_message_id, live_message_id in CROSS_SOURCE_TARGET_ALIASES.items():
+        archive = session.get(MessageDecision, archive_message_id)
+        live = session.get(MessageDecision, live_message_id)
+        if archive is None or live is None or not live.is_issue or not live.incident_id:
+            continue
+        for field in fields:
+            setattr(archive, field, getattr(live, field))
+        aligned.append(
+            {
+                "archive_message_id": archive_message_id,
+                "live_message_id": live_message_id,
+                "incident_id": str(live.incident_id),
+            }
+        )
+    return aligned
 
 
 def _protected_references(session, incident_ids: set[str]) -> list[dict[str, object]]:
@@ -119,6 +160,8 @@ def repair(*, apply: bool, reconcile: bool = True) -> dict[str, object]:
             extractor.LLM_MODE = original_llm_mode
 
         session.flush()
+        aligned_aliases = _align_cross_source_alias_decisions(session)
+        session.flush()
         after_rows = session.query(MessageDecision).filter(MessageDecision.message_id.in_(TARGET_MESSAGE_IDS)).all()
         after = {
             row.message_id: {
@@ -142,17 +185,17 @@ def repair(*, apply: bool, reconcile: bool = True) -> dict[str, object]:
         fire_ids = {
             after[message_id]["incident_id"]
             for message_id in TARGET_MESSAGE_IDS[1:5] + (TARGET_MESSAGE_IDS[6],)
-            if message_id in after
+            if message_id in after and after[message_id].get("incident_id")
         }
         laundry_ids = {
             after[message_id]["incident_id"]
             for message_id in (TARGET_MESSAGE_IDS[0], TARGET_MESSAGE_IDS[5])
-            if message_id in after
+            if message_id in after and after[message_id].get("incident_id")
         }
         slow_ids = {
             after[message_id]["incident_id"]
             for message_id in TARGET_MESSAGE_IDS[7:]
-            if message_id in after
+            if message_id in after and after[message_id].get("incident_id")
         }
         if len(fire_ids) != 1:
             errors.append(f"fire-safety updates did not consolidate: {sorted(fire_ids)}")
@@ -182,12 +225,19 @@ def repair(*, apply: bool, reconcile: bool = True) -> dict[str, object]:
         {
             "message_ids": list(TARGET_MESSAGE_IDS),
             "old_incident_ids": list(REPAIRABLE_OLD_INCIDENT_IDS),
+            "aligned_cross_source_aliases": aligned_aliases,
             "before": before,
             "after": after,
         },
     )
     daily_hash_chain()
-    result: dict[str, object] = {**plan, "applied": True, "validation_errors": [], "after": after}
+    result: dict[str, object] = {
+        **plan,
+        "applied": True,
+        "validation_errors": [],
+        "aligned_cross_source_aliases": aligned_aliases,
+        "after": after,
+    }
     if reconcile:
         result["cross_source_reconciliation"] = run_reconciliation()
     return result
