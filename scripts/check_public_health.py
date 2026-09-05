@@ -12,6 +12,19 @@ import urllib.request
 from typing import Any
 
 
+ACTIVE_CHAT_EXPORT_STATES = {
+    'ready',
+    'no_export',
+    'waiting_for_download',
+    'discovered',
+    'processing',
+    'pending_cloud_exports',
+    'sheet_sync_pending',
+    'sheet_readback_pending',
+    'pending_acknowledgement',
+}
+
+
 def _parse_timestamp(value: Any) -> dt.datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -101,18 +114,31 @@ def validate_health(
     else:
         sync_state = sync.get('state')
         quota_blocked = allow_blocked_model_review and sync_state == 'blocked_model_review'
-        if sync_state not in {'ready', 'no_export', 'waiting_for_download'} and not quota_blocked:
+        if sync_state not in ACTIVE_CHAT_EXPORT_STATES and not quota_blocked:
             failures.append(f"chat export sync is {sync_state or 'unknown'}")
         if sync.get('has_error') is True and not quota_blocked:
             failures.append('chat export sync has an error')
         if quota_blocked:
             details['chat_export_sync_warning'] = 'blocked_model_review'
+        elif sync_state in ACTIVE_CHAT_EXPORT_STATES - {'ready', 'no_export', 'waiting_for_download'}:
+            details['chat_export_sync_warning'] = 'pipeline_in_progress'
         import_age = _age_seconds(sync.get('last_checked_at'), now)
         details['chat_export_sync_age_seconds'] = import_age
         if import_age is None:
             failures.append('chat export sync has no valid last_checked_at timestamp')
         elif import_age > max_import_age_seconds:
             failures.append(f'chat export sync is stale ({import_age}s old)')
+        latest_export = sync.get('latest_export')
+        if isinstance(latest_export, dict):
+            details['chat_export_latest_source'] = latest_export.get('source')
+            details['chat_export_latest_status'] = latest_export.get('status')
+            stages = latest_export.get('stages')
+            if isinstance(stages, dict):
+                details['chat_export_latest_stages'] = {
+                    str(name): str(state)
+                    for name, state in stages.items()
+                    if isinstance(name, str) and isinstance(state, str)
+                }
 
     cloud_receiver = payload.get('cloud_export_receiver')
     if isinstance(cloud_receiver, dict):

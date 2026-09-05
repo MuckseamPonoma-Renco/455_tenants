@@ -248,27 +248,24 @@ PY
 }
 
 chat_export_sync_probe() {
-  local python_bin state_path interval_seconds
+  local python_bin
   python_bin="$(mac_service_runtime_python)" || return 1
-  state_path="$MAC_SERVICE_STATE_DIR/chat-export-sync.json"
-  interval_seconds="${CHAT_EXPORT_SYNC_INTERVAL_SECONDS:-900}"
-  "$python_bin" - "$state_path" "$interval_seconds" <<'PY'
+  [[ -s "$LOCAL_BODY_FILE" ]] || return 1
+  "$python_bin" - "$LOCAL_BODY_FILE" <<'PY'
 import datetime as dt
 import json
 import pathlib
 import sys
 
-state_path = pathlib.Path(sys.argv[1])
 try:
-    interval = max(60, int(sys.argv[2]))
+    payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 except Exception:
-    interval = 900
-try:
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-except Exception:
-    state = {}
+    raise SystemExit(1)
+sync = payload.get("chat_export_sync")
+if not isinstance(sync, dict):
+    raise SystemExit(1)
 
-checked_at = str(state.get("last_checked_at") or "")
+checked_at = str(sync.get("last_checked_at") or "")
 age_seconds = None
 if checked_at:
     try:
@@ -279,28 +276,9 @@ if checked_at:
     except Exception:
         pass
 
-source = ""
-for key in ("last_pending_fingerprint", "last_seen_fingerprint", "last_processed_fingerprint"):
-    value = state.get(key)
-    if isinstance(value, dict) and value.get("path"):
-        source = str(value["path"])
-        break
-
-last_error = str(state.get("last_error") or "")
-if age_seconds is None or age_seconds > max(interval * 3, 1800):
-    action = "stale"
-elif last_error.startswith("waiting for complete iCloud export:"):
-    action = "waiting_for_download"
-elif "model review incomplete:" in last_error or "insufficient_quota" in last_error:
-    action = "blocked_model_review"
-elif last_error:
-    action = "error"
-elif state.get("last_processed_fingerprint"):
-    action = "processed"
-else:
-    action = "no_export_found"
-
-print(json.dumps({"action": action, "source": source, "age_seconds": age_seconds}, sort_keys=True))
+latest_export = sync.get("latest_export")
+source = str(latest_export.get("source") or "") if isinstance(latest_export, dict) else ""
+print(json.dumps({"action": str(sync.get("state") or "unknown"), "source": source, "age_seconds": age_seconds}, sort_keys=True))
 PY
 }
 
@@ -390,14 +368,13 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
 ' 2>/dev/null || true)"
         IFS=$'\t' read -r action source <<<"$parsed"
         case "$action" in
-          unchanged_skip|no_export_found|processed)
+          ready|no_export)
             state="healthy"
             reason="chat-export-sync action=${action}"
             ;;
-          would_process)
+          discovered|processing|pending_cloud_exports|sheet_sync_pending|sheet_readback_pending|pending_acknowledgement)
             state="pending"
-            needs_repair="true"
-            reason="new chat export is waiting to be imported: ${source:-unknown source}"
+            reason="chat-export pipeline action=${action} source=${source:-unknown source}"
             ;;
           waiting_for_download)
             state="pending"
@@ -406,6 +383,15 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("source") or 
           blocked_model_review)
             state="blocked"
             reason="chat export is safely staged but required OpenAI model review is incomplete; restore API quota, then the scheduled sync will retry"
+            ;;
+          legacy_unverified|sheet_sync_unverified|sheet_readback_unverified)
+            state="blocked"
+            reason="chat export completed but durable verification is incomplete: ${action}"
+            ;;
+          sheet_sync_failed|sheet_readback_failed|acknowledgement_error|audit_error|processing_error|cloud_error|cloud_state_missing|cloud_state_unreadable|cloud_state_unknown|stale|unknown)
+            state="unhealthy"
+            needs_repair="true"
+            reason="chat-export pipeline action=${action} source=${source:-unknown source}"
             ;;
           *)
             state="unhealthy"
@@ -446,8 +432,13 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("pending_expo
           reason="private cloud chat-export receiver is not configured"
           ;;
         ready)
-          state="healthy"
-          reason="private cloud receiver and authenticated export listing are ready; pending_exports=${pending:-0}"
+          if [[ "$pending" =~ ^[0-9]+$ && "$pending" -gt 0 ]]; then
+            state="pending"
+            reason="private cloud receiver is ready with pending_exports=${pending}"
+          else
+            state="healthy"
+            reason="private cloud receiver and authenticated export listing are ready; pending_exports=${pending:-0}"
+          fi
           ;;
         *)
           state="unhealthy"

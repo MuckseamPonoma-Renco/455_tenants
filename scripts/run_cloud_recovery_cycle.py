@@ -21,6 +21,17 @@ if str(ROOT) not in sys.path:
 from packages.local_env import load_local_env_file
 
 MODES = ("exports", "status", "watchdog", "full")
+PRIMARY_ACTIVE_CHAT_EXPORT_STATES = {
+    "ready",
+    "no_export",
+    "waiting_for_download",
+    "discovered",
+    "processing",
+    "pending_cloud_exports",
+    "sheet_sync_pending",
+    "sheet_readback_pending",
+    "pending_acknowledgement",
+}
 DEFAULT_PRIMARY_HEALTH_URL = "https://api.455tenants.com/health"
 REQUIRED_ENVIRONMENT = (
     "DATABASE_URL",
@@ -111,7 +122,7 @@ def primary_automation_healthy(
     chat_export_sync = payload.get("chat_export_sync")
     if not isinstance(chat_export_sync, dict):
         return False
-    if chat_export_sync.get("state") not in {"ready", "no_export", "waiting_for_download"}:
+    if chat_export_sync.get("state") not in PRIMARY_ACTIVE_CHAT_EXPORT_STATES:
         return False
     if chat_export_sync.get("has_error") is True:
         return False
@@ -141,6 +152,7 @@ def _compact_cloud_result(result: dict[str, Any]) -> dict[str, int | str]:
         "blocked_model_review_exports": len(blocked) if isinstance(blocked, list) else 0,
         "pending_exports": int(result.get("pending_exports") or 0),
         "recovered_acknowledgements": int(result.get("recovered_acknowledgements") or 0),
+        "recovered_cloud_receipts": int(result.get("recovered_cloud_receipts") or 0),
     }
 
 

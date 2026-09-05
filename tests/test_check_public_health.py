@@ -179,6 +179,36 @@ def test_validate_health_still_rejects_quota_block_without_explicit_allowance():
     assert "chat export sync has an error" in failures
 
 
+def test_validate_health_reports_fresh_cloud_processing_as_in_progress():
+    payload = _payload()
+    payload["chat_export_sync"].update(
+        {
+            "state": "sheet_readback_pending",
+            "latest_export": {
+                "source": "cloud_receiver",
+                "status": "sheet_readback_pending",
+                "stages": {"sheet_sync": "complete", "sheet_readback": "pending"},
+            },
+        }
+    )
+
+    failures, details = validate_health(
+        payload,
+        now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600,
+        max_automation_age_seconds=1200,
+        max_import_age_seconds=3600,
+    )
+
+    assert failures == []
+    assert details["chat_export_sync_warning"] == "pipeline_in_progress"
+    assert details["chat_export_latest_status"] == "sheet_readback_pending"
+    assert details["chat_export_latest_stages"] == {
+        "sheet_sync": "complete",
+        "sheet_readback": "pending",
+    }
+
+
 def test_validate_health_rejects_low_host_storage():
     payload = _payload()
     payload["storage"] = {"state": "low_disk", "low_disk": True}

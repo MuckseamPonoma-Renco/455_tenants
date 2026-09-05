@@ -31,6 +31,7 @@ def test_full_cycle_runs_exports_and_maintenance_without_portal_filing():
             "processed": [{"key": "pending/one"}],
             "pending_exports": 2,
             "recovered_acknowledgements": 1,
+            "recovered_cloud_receipts": 1,
         },
         sync_311_statuses=lambda: calls.append(("status", None)) or {"ok": True, "updated": 2},
         sync_replacement_watchdog=lambda: calls.append(("watchdog", None)) or {"ok": True, "actions_open": 1},
@@ -46,6 +47,7 @@ def test_full_cycle_runs_exports_and_maintenance_without_portal_filing():
         "blocked_model_review_exports": 0,
         "pending_exports": 2,
         "recovered_acknowledgements": 1,
+        "recovered_cloud_receipts": 1,
     }
     assert result["status_sync"]["updated"] == 2
     assert result["replacement_watchdog"]["actions_open"] == 1
@@ -106,6 +108,10 @@ def test_primary_automation_health_requires_a_fresh_working_heartbeat(monkeypatc
 
     assert recovery.primary_automation_healthy(now=now) is True
 
+    payload["chat_export_sync"]["state"] = "sheet_readback_pending"
+    assert recovery.primary_automation_healthy(now=now) is True
+    payload["chat_export_sync"]["state"] = "ready"
+
     payload["automation"]["last_cycle_at"] = "2026-07-20T04:00:00Z"
     assert recovery.primary_automation_healthy(now=now) is False
 
@@ -142,4 +148,5 @@ def test_compact_cloud_result_excludes_local_paths_and_audit_content():
         "blocked_model_review_exports": 0,
         "pending_exports": 0,
         "recovered_acknowledgements": 0,
+        "recovered_cloud_receipts": 0,
     }

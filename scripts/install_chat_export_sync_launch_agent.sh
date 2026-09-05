@@ -28,6 +28,7 @@ if [[ ! -f "$RUNTIME_ROOT/.env" ]]; then
   echo "Refusing to copy .env from the working tree. Provision the runtime config once, then rerun this installer." >&2
   exit 1
 fi
+chmod 600 "$RUNTIME_ROOT/.env"
 
 if ! command -v rsync >/dev/null 2>&1; then
   echo "install_chat_export_sync_launch_agent.sh requires rsync" >&2

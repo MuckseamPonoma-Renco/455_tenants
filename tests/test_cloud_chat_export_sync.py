@@ -1,5 +1,6 @@
 import io
 import json
+import stat
 import zipfile
 
 import httpx
@@ -26,8 +27,13 @@ def _record(payload: bytes) -> dict[str, object]:
     }
 
 
-def _client(handler):
-    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+def _client(handler, *, receipts=None):
+    def with_receipts(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/receipts/latest"):
+            return httpx.Response(200, json={"receipt": (receipts or [None])[0]})
+        return handler(request)
+
+    return httpx.Client(transport=httpx.MockTransport(with_receipts), follow_redirects=False)
 
 
 def test_run_once_downloads_audits_then_acknowledges(tmp_path, monkeypatch):
@@ -57,6 +63,12 @@ def test_run_once_downloads_audits_then_acknowledges(tmp_path, monkeypatch):
                 "missing_db_messages": 0,
                 "missing_decisions": 0,
                 "review_roster_rows": 1,
+                "unique_physical_message_ids": 12,
+                "colliding_base_message_ids": 1,
+                "collision_followup_occurrences": 1,
+                "sheet_sync_requested": True,
+                "sheet_sync_complete": True,
+                "sheet_readback_verified": True,
                 "message_text": "must not leave the machine",
             },
         },
@@ -82,9 +94,35 @@ def test_run_once_downloads_audits_then_acknowledges(tmp_path, monkeypatch):
         "missing_db_messages": 0,
         "missing_decisions": 0,
         "review_roster_rows": 1,
+        "unique_physical_message_ids": 12,
+        "colliding_base_message_ids": 1,
+        "collision_followup_occurrences": 1,
     }
+    assert acknowledgements[0]["pipeline_receipt"]["receipt_version"] == cloud_sync.CLOUD_RECEIPT_VERSION
+    assert acknowledgements[0]["pipeline_receipt"]["stages"]["sheet_sync"]["state"] == "complete"
+    assert acknowledgements[0]["pipeline_receipt"]["stages"]["sheet_readback"]["state"] == "complete"
+    assert acknowledgements[0]["pipeline_receipt"]["stages"]["acknowledgement"]["state"] == "pending"
+    assert "staged_export" not in acknowledgements[0]["pipeline_receipt"]
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert stat.S_IMODE((tmp_path / "state.json").stat().st_mode) == 0o600
+    assert state["schema_version"] == cloud_sync.CLOUD_STATE_SCHEMA_VERSION
     assert state["pending_acknowledgements"] == {}
+    assert state["pending_export_keys"] == []
+    assert state["latest_receipt_key"] == record["key"]
+    receipt = state["receipts"][record["key"]]
+    assert receipt["receipt_version"] == cloud_sync.CLOUD_RECEIPT_VERSION
+    assert receipt["uploaded_at"] == record["uploaded_at"]
+    assert receipt["status"] == "ready"
+    assert {name: stage["state"] for name, stage in receipt["stages"].items()} == {
+        "upload": "complete",
+        "discovery": "complete",
+        "download": "complete",
+        "processing": "complete",
+        "audit": "complete",
+        "sheet_sync": "complete",
+        "sheet_readback": "complete",
+        "acknowledgement": "complete",
+    }
 
 
 def test_run_once_recovers_a_saved_acknowledgement_before_listing(tmp_path):
@@ -121,7 +159,46 @@ def test_run_once_recovers_a_saved_acknowledgement_before_listing(tmp_path):
     assert result["action"] == "unchanged_skip"
     assert result["recovered_acknowledgements"] == 1
     assert call_order == ["ack", "list"]
-    assert json.loads(state_path.read_text(encoding="utf-8"))["pending_acknowledgements"] == {}
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["pending_acknowledgements"] == {}
+    receipt = state["receipts"][key]
+    assert receipt["recovered_from_pending_acknowledgement"] is True
+    assert receipt["status"] == "sheet_readback_unverified"
+    assert receipt["stages"]["sheet_sync"]["state"] == "complete"
+    assert receipt["stages"]["sheet_readback"]["state"] == "not_reported"
+    assert receipt["stages"]["acknowledgement"]["state"] == "complete"
+
+
+def test_run_once_reconstructs_an_unverified_receipt_for_pre_upgrade_staged_export(tmp_path):
+    dest_dir = tmp_path / "incoming"
+    dest_dir.mkdir()
+    staged = dest_dir / "cloud-0123456789abcdef-WhatsApp Chat - 455 Tenants.zip"
+    staged.write_bytes(_zip_bytes())
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"last_success_at": "2026-07-20T03:10:00Z"}), encoding="utf-8")
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": []})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    result = cloud_sync.run_once(
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+        dest_dir=dest_dir,
+        state_path=state_path,
+        client=_client(handler),
+    )
+
+    assert result["action"] == "unchanged_skip"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    receipt = state["receipts"][state["latest_receipt_key"]]
+    assert receipt["legacy_reconstructed"] is True
+    assert receipt["status"] == "legacy_unverified"
+    assert receipt["stages"]["upload"]["state"] == "complete"
+    assert receipt["stages"]["download"]["state"] == "complete"
+    assert receipt["stages"]["audit"]["state"] == "not_reported"
+    assert receipt["stages"]["sheet_readback"]["state"] == "not_reported"
+    assert receipt["stages"]["acknowledgement"]["state"] == "not_reported"
 
 
 def test_run_once_keeps_quota_blocked_export_pending_without_failing(tmp_path, monkeypatch):
@@ -169,6 +246,185 @@ def test_run_once_keeps_quota_blocked_export_pending_without_failing(tmp_path, m
     assert result["pending_exports"] == 1
     assert result["blocked_exports"][0]["reason"] == "insufficient_quota"
     assert acknowledgements == []
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    receipt = state["receipts"][record["key"]]
+    assert receipt["status"] == "blocked_model_review"
+    assert receipt["stages"]["processing"]["state"] == "complete"
+    assert receipt["stages"]["audit"]["state"] == "blocked_model_review"
+    assert receipt["stages"]["acknowledgement"]["state"] == "pending"
+
+
+def test_run_once_persists_failed_acknowledgement_as_a_retryable_receipt(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    record = _record(payload)
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": [record]})
+        if request.url == httpx.URL("https://signed.example.test/export"):
+            return httpx.Response(200, content=payload, headers={"Content-Length": str(len(payload))})
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports/ack"):
+            return httpx.Response(503, json={"error": "unavailable"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: {
+            "audit_summary": {
+                "parsed_messages": 12,
+                "sheet_sync_requested": True,
+                "sheet_sync_complete": True,
+                "sheet_readback_complete": True,
+            }
+        },
+    )
+    state_path = tmp_path / "state.json"
+
+    with pytest.raises(cloud_sync.CloudReceiverError, match="acknowledgement returned HTTP 503"):
+        cloud_sync.run_once(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=tmp_path / "incoming",
+            state_path=state_path,
+            client=_client(handler),
+        )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert record["key"] in state["pending_acknowledgements"]
+    assert record["key"] in state["pending_export_keys"]
+    receipt = state["receipts"][record["key"]]
+    assert receipt["status"] == "acknowledgement_error"
+    assert receipt["stages"]["sheet_sync"]["state"] == "complete"
+    assert receipt["stages"]["sheet_readback"]["state"] == "complete"
+    assert receipt["stages"]["acknowledgement"]["state"] == "error"
+
+
+def test_run_once_preserves_audit_success_when_sheet_sync_fails(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    record = _record(payload)
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": [record]})
+        if request.url == httpx.URL("https://signed.example.test/export"):
+            return httpx.Response(200, content=payload, headers={"Content-Length": str(len(payload))})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    summary = {
+        "parsed_messages": 12,
+        "audited_messages": 4,
+        "llm_review_complete": True,
+        "sheet_sync_requested": True,
+        "sheet_sync_complete": False,
+        "error": "post-audit sheet sync failed: temporary Google API failure",
+    }
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            cloud_sync.AuditPipelineError(summary, "post-audit sheet sync failed")
+        ),
+    )
+    state_path = tmp_path / "state.json"
+
+    with pytest.raises(cloud_sync.AuditPipelineError, match="sheet sync failed"):
+        cloud_sync.run_once(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=tmp_path / "incoming",
+            state_path=state_path,
+            client=_client(handler),
+        )
+
+    receipt = json.loads(state_path.read_text(encoding="utf-8"))["receipts"][record["key"]]
+    assert receipt["status"] == "sheet_sync_failed"
+    assert receipt["stages"]["processing"]["state"] == "complete"
+    assert receipt["stages"]["audit"]["state"] == "complete"
+    assert receipt["stages"]["sheet_sync"]["state"] == "error"
+    assert receipt["stages"]["acknowledgement"]["state"] == "pending"
+
+
+def test_run_once_does_not_mislabel_audit_integrity_failure_as_sheet_failure(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    record = _record(payload)
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": [record]})
+        if request.url == httpx.URL("https://signed.example.test/export"):
+            return httpx.Response(200, content=payload, headers={"Content-Length": str(len(payload))})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    summary = {
+        "parsed_messages": 12,
+        "missing_db_messages": 1,
+        "missing_decisions": 0,
+        "error": "strict audit reconciliation failed",
+    }
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(cloud_sync.AuditPipelineError(summary, "audit failed")),
+    )
+    state_path = tmp_path / "state.json"
+
+    with pytest.raises(cloud_sync.AuditPipelineError, match="audit failed"):
+        cloud_sync.run_once(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=tmp_path / "incoming",
+            state_path=state_path,
+            client=_client(handler),
+        )
+
+    receipt = json.loads(state_path.read_text(encoding="utf-8"))["receipts"][record["key"]]
+    assert receipt["status"] == "audit_error"
+    assert receipt["stages"]["processing"]["state"] == "complete"
+    assert receipt["stages"]["audit"]["state"] == "error"
+    assert receipt["stages"]["sheet_sync"]["state"] == "not_started"
+
+
+def test_run_once_records_explicit_sheet_readback_failure_without_acknowledging(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    record = _record(payload)
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": [record]})
+        if request.url == httpx.URL("https://signed.example.test/export"):
+            return httpx.Response(200, content=payload, headers={"Content-Length": str(len(payload))})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    summary = {
+        "parsed_messages": 12,
+        "missing_db_messages": 0,
+        "missing_decisions": 0,
+        "llm_review_complete": True,
+        "sheet_sync_requested": True,
+        "sheet_sync_complete": True,
+        "sheet_readback_verified": False,
+    }
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            cloud_sync.AuditPipelineError(summary, "sheet readback failed")
+        ),
+    )
+    state_path = tmp_path / "state.json"
+
+    with pytest.raises(cloud_sync.AuditPipelineError, match="readback failed"):
+        cloud_sync.run_once(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=tmp_path / "incoming",
+            state_path=state_path,
+            client=_client(handler),
+        )
+
+    receipt = json.loads(state_path.read_text(encoding="utf-8"))["receipts"][record["key"]]
+    assert receipt["status"] == "sheet_readback_failed"
+    assert receipt["stages"]["audit"]["state"] == "complete"
+    assert receipt["stages"]["sheet_sync"]["state"] == "complete"
+    assert receipt["stages"]["sheet_readback"]["state"] == "error"
+    assert receipt["stages"]["acknowledgement"]["state"] == "pending"
 
 
 def test_run_once_checks_newest_export_first_and_continues_after_quota_block(tmp_path, monkeypatch):
@@ -240,6 +496,85 @@ def test_run_once_skips_when_another_export_pipeline_run_holds_the_lock(tmp_path
     assert result["processed"] == []
 
 
+def test_run_once_recovers_latest_completed_receipt_from_cloud_state(tmp_path):
+    payload = _zip_bytes()
+    key = str(_record(payload)["key"])
+    stages = {
+        name: {"state": "complete", "at": "2026-07-20T03:10:00Z"}
+        for name in cloud_sync.RECEIPT_STAGE_NAMES
+    }
+    remote_receipt = {
+        "receipt_version": cloud_sync.CLOUD_RECEIPT_VERSION,
+        "key": key,
+        "uploaded_at": "2026-07-20T03:04:05Z",
+        "discovered_at": "2026-07-20T03:05:00Z",
+        "updated_at": "2026-07-20T03:10:00Z",
+        "acknowledged_at": "2026-07-20T03:10:00Z",
+        "sha256": "a" * 64,
+        "audit": {
+            "parsed_messages": 12,
+            "unique_physical_message_ids": 12,
+            "colliding_base_message_ids": 0,
+            "collision_followup_occurrences": 0,
+        },
+        "stages": stages,
+    }
+
+    def handler(request):
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            return httpx.Response(200, json={"exports": []})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    state_path = tmp_path / "state.json"
+    result = cloud_sync.run_once(
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+        dest_dir=tmp_path / "incoming",
+        state_path=state_path,
+        client=_client(handler, receipts=[remote_receipt]),
+    )
+
+    assert result["recovered_cloud_receipts"] == 1
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    receipt = state["receipts"][key]
+    assert state["latest_receipt_key"] == key
+    assert receipt["status"] == "ready"
+    assert receipt["recovered_from_cloud_receipt"] is True
+    assert receipt["audit"]["unique_physical_message_ids"] == 12
+
+
+def test_receipt_retention_keeps_every_pending_key_and_newest_completed_receipt():
+    pending_keys = [
+        f"pending/20260720T030405000Z-{index:032x}-WhatsApp Chat.zip"
+        for index in range(105)
+    ]
+    receipts = {
+        key: {
+            "key": key,
+            "uploaded_at": "2026-07-20T03:04:05Z",
+            "discovered_at": "2026-07-20T06:00:00Z",
+        }
+        for key in pending_keys
+    }
+    newest_key = "pending/20260721T030405000Z-ffffffffffffffffffffffffffffffff-WhatsApp Chat.zip"
+    receipts[newest_key] = {
+        "key": newest_key,
+        "uploaded_at": "2026-07-21T03:04:05Z",
+        "discovered_at": "2026-07-21T03:05:00Z",
+    }
+    state = {
+        "receipts": receipts,
+        "pending_export_keys": pending_keys,
+        "pending_acknowledgements": {},
+    }
+
+    cloud_sync._refresh_receipt_index(state, max_receipts=1)
+
+    assert set(pending_keys).issubset(state["receipts"])
+    assert newest_key in state["receipts"]
+    assert len(state["receipts"]) == len(pending_keys) + 1
+    assert state["latest_receipt_key"] == newest_key
+
+
 def test_pending_exports_follows_cloud_receiver_pagination():
     first = _record(_zip_bytes())
     first["key"] = "pending/20260720T030405Z-0123456789abcdef0123456789abcdef-WhatsApp Chat - 455 Tenants 12.zip"
@@ -296,7 +631,12 @@ def test_probe_checks_public_health_and_authenticated_listing():
         client=_client(handler),
     )
 
-    assert result == {"ok": True, "action": "ready", "pending_exports": 0}
+    assert result == {
+        "ok": True,
+        "action": "ready",
+        "pending_exports": 0,
+        "completed_receipts": 0,
+    }
 
 
 @pytest.mark.parametrize("url", ["http://uploads.example.test", "https://uploads.example.test/v1/exports", "not-a-url"])
