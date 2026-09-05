@@ -98,6 +98,8 @@ def test_live_laundry_repair_is_fail_closed_atomic_and_idempotent(client, monkey
             assert decision.chosen_source == f"review:{repair_module.REPAIR_ID}"
             assert decision.auto_file_candidate is False
             assert final["asset"] == "washer_15"
+            assert final["title"] == repair_module.MESSAGE_SPECS[message_id]["title"]
+            assert final["summary"] == repair_module.MESSAGE_SPECS[message_id]["summary"]
             assert final["review_status"] == "completed"
 
     repeated = repair_module.repair(apply=True)

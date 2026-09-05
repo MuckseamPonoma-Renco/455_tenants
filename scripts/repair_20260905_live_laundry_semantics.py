@@ -37,11 +37,18 @@ MESSAGE_SPECS = {
         "text_sha256": "a73e9c88c15aa069ec2dd729ffb1d8b99640080cad345f5dfed7fbdc3bd0677e",
         "ts_epoch": 1788629460,
         "event_type": "new_issue",
+        "title": "Washer #15 detergent dispenser problem",
+        "summary": "Washer #15 failed to dispense detergent; the tenant said they could contact Hercules.",
     },
     "26d0635ef3918e7e92233ce85d088f5600546e94fa9acc9fb2d790d1618786be": {
         "text_sha256": "31d33d6b0c28043b8ad69248e396d15eb59b63f68bd32e05fbfd6c7157294d91",
         "ts_epoch": 1788636600,
         "event_type": "still_out",
+        "title": "Washer #15 detergent problem recurred after repair",
+        "summary": (
+            "The tenant confirmed that Washer #15 had the same detergent problem again after "
+            "it was reported fixed on Thursday."
+        ),
     },
 }
 DESIRED_TITLE = "Washer #15 detergent dispenser problem"
@@ -93,6 +100,8 @@ def _is_desired(message_id: str, row: MessageDecision) -> bool:
         and not row.needs_review
         and not row.auto_file_candidate
         and final.get("asset") == ASSET
+        and final.get("title") == expected["title"]
+        and final.get("summary") == expected["summary"]
         and final.get("review_status") == "completed"
         and final.get("review_outcome") == "corrected"
     )
@@ -205,6 +214,8 @@ def repair(*, apply: bool) -> dict[str, object]:
                     "category": "laundry",
                     "asset": ASSET,
                     "event_type": spec["event_type"],
+                    "title": spec["title"],
+                    "summary": spec["summary"],
                     "confidence": max(90, int(decision.confidence or 0)),
                     "needs_review": False,
                     "review_status": "completed",
