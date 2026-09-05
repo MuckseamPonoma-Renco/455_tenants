@@ -68,6 +68,73 @@ def test_status_cycle_does_not_download_or_file_exports():
     assert calls == ["status", "audit"]
 
 
+def test_status_cycle_skips_when_core_is_healthy_despite_export_degradation():
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: (_ for _ in ()).throw(AssertionError("receiver should not be used")),
+        sync_cloud_exports=lambda _config: (_ for _ in ()).throw(AssertionError("exports should not be synced")),
+        sync_311_statuses=lambda: (_ for _ in ()).throw(AssertionError("status should not be synced")),
+        sync_replacement_watchdog=lambda: (_ for _ in ()).throw(AssertionError("watchdog should not run")),
+        audit_public_tenant_log=lambda: (_ for _ in ()).throw(AssertionError("sheet should not be audited")),
+    )
+
+    result = run_cycle(
+        "status",
+        operations=operations,
+        primary_healthy=lambda: False,
+        primary_core_healthy=lambda: True,
+    )
+
+    assert result == {"ok": True, "mode": "status", "action": "skipped_primary_healthy"}
+
+
+def test_watchdog_cycle_skips_when_core_is_healthy_despite_export_degradation():
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: (_ for _ in ()).throw(AssertionError("receiver should not be used")),
+        sync_cloud_exports=lambda _config: (_ for _ in ()).throw(AssertionError("exports should not be synced")),
+        sync_311_statuses=lambda: (_ for _ in ()).throw(AssertionError("status should not be synced")),
+        sync_replacement_watchdog=lambda: (_ for _ in ()).throw(AssertionError("watchdog should not run")),
+        audit_public_tenant_log=lambda: (_ for _ in ()).throw(AssertionError("sheet should not be audited")),
+    )
+
+    result = run_cycle(
+        "watchdog",
+        operations=operations,
+        primary_healthy=lambda: False,
+        primary_core_healthy=lambda: True,
+    )
+
+    assert result == {"ok": True, "mode": "watchdog", "action": "skipped_primary_healthy"}
+
+
+def test_full_cycle_runs_only_exports_when_core_is_healthy():
+    calls = []
+    receiver = object()
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: receiver,
+        sync_cloud_exports=lambda config: calls.append(("exports", config)) or {
+            "action": "unchanged_skip",
+            "processed": [],
+            "pending_exports": 0,
+        },
+        sync_311_statuses=lambda: (_ for _ in ()).throw(AssertionError("status should not be synced")),
+        sync_replacement_watchdog=lambda: (_ for _ in ()).throw(AssertionError("watchdog should not run")),
+        audit_public_tenant_log=lambda: (_ for _ in ()).throw(AssertionError("sheet should not be audited")),
+    )
+
+    result = run_cycle(
+        "full",
+        operations=operations,
+        primary_healthy=lambda: False,
+        primary_core_healthy=lambda: True,
+    )
+
+    assert calls == [("exports", receiver)]
+    assert result["action"] == "partial_recovery_run"
+    assert "status_sync" not in result
+    assert "replacement_watchdog" not in result
+    assert "public_tenant_log_qa" not in result
+
+
 def test_cycle_skips_without_loading_runtime_operations_when_primary_is_healthy():
     result = run_cycle("full", primary_healthy=lambda: True)
 
@@ -119,11 +186,9 @@ def test_primary_automation_health_requires_a_fresh_working_heartbeat(monkeypatc
     assert recovery.primary_automation_healthy(now=now) is False
 
     payload["automation"]["last_cycle_at"] = "2026-07-20T04:20:00Z"
-    payload["chat_export_sync"] = {
-        "state": "blocked_model_review",
-        "has_error": True,
-    }
+    payload["chat_export_sync"] = {"state": "legacy_unverified", "has_error": True}
     assert recovery.primary_automation_healthy(now=now) is False
+    assert recovery.primary_automation_healthy(now=now, require_chat_export_sync=False) is True
 
 
 def test_primary_automation_health_tolerates_invalid_maximum_age(monkeypatch):

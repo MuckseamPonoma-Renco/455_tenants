@@ -84,8 +84,15 @@ def primary_automation_healthy(
     url: str | None = None,
     *,
     now: dt.datetime | None = None,
+    require_chat_export_sync: bool = True,
 ) -> bool:
-    """Return true only when the Mac's public automation heartbeat is fresh."""
+    """Return true when the Mac can own maintenance for this capability.
+
+    Status and watchdog recovery only require the core automation heartbeat.
+    Export recovery additionally requires a healthy chat-export pipeline.  Keeping
+    those signals separate prevents an export-only degradation from authorizing a
+    second host to rewrite maintenance-backed public Sheets.
+    """
     endpoint = (url or os.environ.get("CLOUD_RECOVERY_PRIMARY_HEALTH_URL") or DEFAULT_PRIMARY_HEALTH_URL).strip()
     maximum_age = _primary_maximum_age_seconds()
     current_time = now or dt.datetime.now(dt.UTC)
@@ -119,13 +126,14 @@ def primary_automation_healthy(
     age_seconds = int((current_time - last_cycle).total_seconds())
     if not 0 <= age_seconds <= maximum_age:
         return False
-    chat_export_sync = payload.get("chat_export_sync")
-    if not isinstance(chat_export_sync, dict):
-        return False
-    if chat_export_sync.get("state") not in PRIMARY_ACTIVE_CHAT_EXPORT_STATES:
-        return False
-    if chat_export_sync.get("has_error") is True:
-        return False
+    if require_chat_export_sync:
+        chat_export_sync = payload.get("chat_export_sync")
+        if not isinstance(chat_export_sync, dict):
+            return False
+        if chat_export_sync.get("state") not in PRIMARY_ACTIVE_CHAT_EXPORT_STATES:
+            return False
+        if chat_export_sync.get("has_error") is True:
+            return False
     return True
 
 
@@ -161,30 +169,47 @@ def run_cycle(
     *,
     operations: CloudRecoveryOperations | None = None,
     primary_healthy: Callable[[], bool] | None = None,
+    primary_core_healthy: Callable[[], bool] | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"mode must be one of: {', '.join(MODES)}")
-    is_primary_healthy = primary_healthy or primary_automation_healthy
-    if not force and is_primary_healthy():
-        return {"ok": True, "mode": mode, "action": "skipped_primary_healthy"}
+    export_health_check = primary_healthy or primary_automation_healthy
+    core_health_check = primary_core_healthy or primary_healthy or (
+        lambda: primary_automation_healthy(require_chat_export_sync=False)
+    )
+    run_exports = mode in {"exports", "full"}
+    run_maintenance = mode in {"status", "watchdog", "full"}
+    if not force:
+        core_healthy = core_health_check() if run_maintenance else False
+        export_healthy = export_health_check() if run_exports else False
+        run_maintenance = run_maintenance and not core_healthy
+        run_exports = run_exports and not export_healthy
+        if not run_exports and not run_maintenance:
+            return {"ok": True, "mode": mode, "action": "skipped_primary_healthy"}
 
     operations = operations or _runtime_operations()
-    result: dict[str, Any] = {"ok": True, "mode": mode, "action": "recovery_run"}
+    result: dict[str, Any] = {
+        "ok": True,
+        "mode": mode,
+        "action": "recovery_run",
+    }
+    if not force and mode == "full" and (not run_exports or not run_maintenance):
+        result["action"] = "partial_recovery_run"
 
-    if mode in {"exports", "full"}:
+    if run_exports:
         config = operations.receiver_config()
         if config is None:
             raise RuntimeError("private cloud export receiver is not configured")
         result["cloud_exports"] = _compact_cloud_result(operations.sync_cloud_exports(config))
 
-    if mode in {"status", "full"}:
+    if run_maintenance and mode in {"status", "full"}:
         result["status_sync"] = operations.sync_311_statuses()
 
-    if mode in {"watchdog", "full"}:
+    if run_maintenance and mode in {"watchdog", "full"}:
         result["replacement_watchdog"] = operations.sync_replacement_watchdog()
 
-    if mode in {"status", "watchdog", "full"}:
+    if run_maintenance and mode in {"status", "watchdog", "full"}:
         result["public_tenant_log_qa"] = operations.audit_public_tenant_log()
 
     return result

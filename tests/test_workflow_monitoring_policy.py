@@ -24,6 +24,17 @@ def test_cloud_capable_recovery_remains_scheduled() -> None:
     assert "cron:" in triggers
 
 
+def test_cloud_recovery_refuses_stale_renderer_revisions() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "cloud-recovery.yml").read_text()
+
+    assert "cancel-in-progress: ${{ github.event_name == 'push' }}" in workflow
+    assert "ref: main" in workflow
+    assert "git fetch --no-tags --depth=1 origin" in workflow
+    assert 'git rev-parse HEAD' in workflow
+    assert 'git rev-parse origin/main' in workflow
+    assert workflow.index('exit 3') < workflow.index('python scripts/run_cloud_recovery_cycle.py --env-file "$env_file" --mode "$MODE"')
+
+
 def test_workflows_use_node_24_action_releases() -> None:
     public_health = (REPO_ROOT / ".github" / "workflows" / "public-service-health.yml").read_text()
     cloud_recovery = (REPO_ROOT / ".github" / "workflows" / "cloud-recovery.yml").read_text()

@@ -160,8 +160,13 @@ def sync_311_statuses():
     with get_session() as session:
         results = sync_all_case_statuses(session)
         session.commit()
-    _safe_sync_sheets()
-    append_audit_event("SYNC_311_STATUSES", None, {"updated": len(results)})
+    if results:
+        _safe_sync_sheets()
+    append_audit_event(
+        "SYNC_311_STATUSES",
+        None,
+        {"updated": len(results), "sheet_sync": "updated" if results else "skipped_no_changes"},
+    )
     return {"ok": True, "updated": len(results)}
 
 
