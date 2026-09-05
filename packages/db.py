@@ -131,7 +131,12 @@ class MessageDecision(Base):
     message_id: Mapped[str] = mapped_column(String(64), ForeignKey("raw_messages.message_id"), primary_key=True)
     incident_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("incidents.incident_id"), nullable=True)
     created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    chosen_source: Mapped[str] = mapped_column(String(32), default="none")
+    # Classifier provenance labels can include both a decision path and the
+    # authoritative-rule-state suffix (for example,
+    # ``hybrid_open_incident_context_rule_state``).  Keep enough room for the
+    # complete label so PostgreSQL does not make model-dependent decisions fail
+    # at flush time.
+    chosen_source: Mapped[str] = mapped_column(String(64), default="none")
     is_issue: Mapped[bool] = mapped_column(Boolean, default=False)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -298,6 +303,11 @@ def _ensure_added_columns() -> None:
             "corroborating_records_json": "TEXT",
         }
     }
+    widened_varchars = {
+        "message_decisions": {
+            "chosen_source": 64,
+        }
+    }
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     with engine.begin() as conn:
@@ -308,6 +318,27 @@ def _ensure_added_columns() -> None:
             for column_name, column_type in columns.items():
                 if column_name not in existing_columns:
                     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+        # SQLite does not enforce VARCHAR lengths.  Production uses PostgreSQL,
+        # where create_all() does not widen an existing column after the ORM
+        # declaration changes, so apply the small compatibility migration here.
+        if engine.dialect.name == "postgresql":
+            for table_name, columns in widened_varchars.items():
+                if table_name not in existing_tables:
+                    continue
+                existing_columns = {
+                    column["name"]: column
+                    for column in inspector.get_columns(table_name)
+                }
+                for column_name, minimum_length in columns.items():
+                    column = existing_columns.get(column_name)
+                    current_length = getattr((column or {}).get("type"), "length", None)
+                    if isinstance(current_length, int) and current_length < minimum_length:
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE {table_name} ALTER COLUMN {column_name} "
+                                f"TYPE VARCHAR({minimum_length})"
+                            )
+                        )
 
 
 def init_db():
