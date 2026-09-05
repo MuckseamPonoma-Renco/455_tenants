@@ -26,6 +26,9 @@ NY = ZoneInfo("America/New_York")
 PUBLIC_MANAGED_COLUMNS = 10
 PUBLIC_READ_RANGE = "A:ZZ"
 APPROVED_PUBLIC_FORMULA_PREFIXES = ("=HYPERLINK(", "=IMAGE(")
+PUBLIC_REFRESH_MAX_AGE_SECONDS = 2 * 60 * 60
+PUBLIC_REFRESH_MAX_FUTURE_DRIFT_SECONDS = 5 * 60
+DIAGNOSTIC_TEXT_LIMIT = 500
 
 REQUIRED_PUBLIC_ROWS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("section", "At a glance", ("At a glance",)),
@@ -218,6 +221,10 @@ def _expected_values() -> list[list[object]]:
         sheets_sync._service = original_service
     for kind, kwargs in fake.calls:
         if kind == "update" and kwargs.get("range") == f"{sheets_sync._public_updates_tab()}!A1":
+            if kwargs.get("valueInputOption") != "USER_ENTERED":
+                raise RuntimeError(
+                    "public tenant log renderer must use USER_ENTERED so approved formulas are evaluated"
+                )
             return kwargs["body"]["values"]
     raise RuntimeError("public tenant log renderer did not produce Tenant Log values")
 
@@ -300,6 +307,13 @@ def _cell_text(value: object) -> str:
     return str(value)
 
 
+def _diagnostic_text(value: object) -> str:
+    text = _cell_text(value)
+    if len(text) <= DIAGNOSTIC_TEXT_LIMIT:
+        return text
+    return f"{text[:DIAGNOSTIC_TEXT_LIMIT]}..."
+
+
 def _cell(values: list[list[object]], row_index: int, column_index: int) -> object:
     if row_index >= len(values) or column_index >= len(values[row_index]):
         return ""
@@ -337,6 +351,11 @@ def _parse_public_datetime(value: object) -> datetime | None:
     return None
 
 
+def _localized_public_datetime(value: object) -> datetime | None:
+    parsed = _parse_public_datetime(value)
+    return parsed.replace(tzinfo=NY) if parsed is not None else None
+
+
 def _display_cells_equivalent(expected: object, live: object) -> bool:
     if _cell_text(expected) == _cell_text(live):
         return True
@@ -346,6 +365,109 @@ def _display_cells_equivalent(expected: object, live: object) -> bool:
         expected_datetime is not None
         and live_datetime is not None
         and expected_datetime == live_datetime
+    )
+
+
+def _looks_like_formula_literal(value: object) -> bool:
+    clean = _cell_text(value).strip()
+    return clean.startswith("=") or clean.startswith("'=")
+
+
+def _volatile_timestamp_coordinates(
+    expected_values: list[list[object]],
+) -> dict[tuple[int, int], str]:
+    coordinates: dict[tuple[int, int], str] = {}
+    last_refresh_rows = [
+        row_index
+        for row_index, row in enumerate(expected_values)
+        if _cell_text(row[0] if row else "") == "Last refresh"
+    ]
+    if len(last_refresh_rows) == 1:
+        coordinates[(last_refresh_rows[0], 1)] = "last_refresh"
+
+    for row_index, row in enumerate(expected_values):
+        if (
+            _cell_text(row[1] if len(row) > 1 else "") == "Quiet"
+            and _cell_text(row[2] if len(row) > 2 else "") == "No public incidents yet"
+        ):
+            coordinates[(row_index, 0)] = "quiet_placeholder"
+    return coordinates
+
+
+def _volatile_timestamp_audit(
+    expected_values: list[list[object]],
+    live_values: list[list[object]],
+    *,
+    now: datetime,
+    limit: int,
+) -> tuple[dict[str, object], dict[tuple[int, int], str]]:
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=NY)
+    else:
+        now = now.astimezone(NY)
+
+    coordinates = _volatile_timestamp_coordinates(expected_values)
+    cells: list[dict[str, object]] = []
+    parsed_live: dict[str, datetime] = {}
+    errors: dict[tuple[int, int], str] = {}
+    for (row_index, column_index), role in coordinates.items():
+        expected = _cell(expected_values, row_index, column_index)
+        live = _cell(live_values, row_index, column_index)
+        expected_dt = _localized_public_datetime(expected)
+        live_dt = _localized_public_datetime(live)
+        age_seconds = int((now - live_dt).total_seconds()) if live_dt is not None else None
+        reason = ""
+        if expected_dt is None:
+            reason = "renderer emitted an invalid volatile timestamp"
+        elif live_dt is None:
+            reason = "live volatile timestamp is missing or invalid"
+        elif age_seconds is not None and age_seconds > PUBLIC_REFRESH_MAX_AGE_SECONDS:
+            reason = "live volatile timestamp is stale"
+        elif age_seconds is not None and age_seconds < -PUBLIC_REFRESH_MAX_FUTURE_DRIFT_SECONDS:
+            reason = "live volatile timestamp is too far in the future"
+        else:
+            parsed_live[role] = live_dt
+        if reason:
+            errors[(row_index, column_index)] = reason
+        cells.append(
+            {
+                "role": role,
+                "row": row_index + 1,
+                "column": column_index + 1,
+                "expected": _diagnostic_text(expected),
+                "live": _diagnostic_text(live),
+                "age_seconds": age_seconds,
+                "ok": not reason,
+                "reason": reason,
+            }
+        )
+
+    refresh_dt = parsed_live.get("last_refresh")
+    quiet_dt = parsed_live.get("quiet_placeholder")
+    if refresh_dt is not None and quiet_dt is not None and refresh_dt != quiet_dt:
+        quiet_coordinate = next(
+            coordinate
+            for coordinate, role in coordinates.items()
+            if role == "quiet_placeholder"
+        )
+        errors[quiet_coordinate] = "quiet placeholder timestamp differs from Last refresh"
+        for cell in cells:
+            if cell["role"] == "quiet_placeholder":
+                cell["ok"] = False
+                cell["reason"] = errors[quiet_coordinate]
+
+    last_refresh_ok = "last_refresh" in parsed_live
+    return (
+        {
+            "ok": last_refresh_ok and not errors,
+            "expected_cell_count": len(coordinates),
+            "error_count": len(errors),
+            "last_refresh_ok": last_refresh_ok,
+            "max_age_seconds": PUBLIC_REFRESH_MAX_AGE_SECONDS,
+            "max_future_drift_seconds": PUBLIC_REFRESH_MAX_FUTURE_DRIFT_SECONDS,
+            "cells": cells[: max(limit, 0)],
+        },
+        errors,
     )
 
 
@@ -372,8 +494,10 @@ def _coordinate_details(
             {
                 "row": row_index + 1,
                 "column": column_index + 1,
-                "display": _cell_text(_cell(live.formatted_values, row_index, column_index)),
-                "formula": _cell_text(formula) if _is_formula(formula) else "",
+                "display": _diagnostic_text(
+                    _cell(live.formatted_values, row_index, column_index)
+                ),
+                "formula": _diagnostic_text(formula) if _is_formula(formula) else "",
             }
         )
     return details
@@ -382,6 +506,8 @@ def _coordinate_details(
 def _required_rows_audit(
     expected_values: list[list[object]],
     live_values: list[list[object]],
+    *,
+    limit: int,
 ) -> dict[str, object]:
     details: list[dict[str, object]] = []
     for kind, name, signature in REQUIRED_PUBLIC_ROWS:
@@ -418,7 +544,10 @@ def _required_rows_audit(
                 "kind": kind,
                 "name": name,
                 "expected_row": expected_row + 1 if expected_row is not None else None,
-                "live_matching_rows": [row + 1 for row in live_matches],
+                "live_match_count": len(live_matches),
+                "live_matching_rows": [
+                    row + 1 for row in live_matches[: max(limit, 0)]
+                ],
                 "renderer_signature_ok": expected_signature_ok,
                 "live_signature_ok": live_signature_ok,
                 "ok": expected_signature_ok and live_signature_ok,
@@ -484,6 +613,7 @@ def _audit_logical_tenant_log(
     live: LiveTenantLog,
     *,
     limit: int,
+    now: datetime | None = None,
 ) -> dict[str, object]:
     expected_row_count = len(expected_values)
     renderer_payload_width = max((len(row) for row in expected_values), default=0)
@@ -496,19 +626,33 @@ def _audit_logical_tenant_log(
     live_used_rows, live_used_columns = _used_shape(
         live.formatted_values, live.formula_values
     )
+    volatile_timestamp_coordinates = _volatile_timestamp_coordinates(expected_values)
+    volatile_timestamps, volatile_timestamp_errors = _volatile_timestamp_audit(
+        expected_values,
+        live.formatted_values,
+        now=now or datetime.now(tz=NY),
+        limit=limit,
+    )
 
     mismatch_count = 0
     mismatches: list[dict[str, object]] = []
     renderer_formula_errors: list[dict[str, object]] = []
     expected_formula_count = 0
     exact_formula_match_count = 0
+    nonliteral_formula_display_count = 0
     for row_index in range(expected_row_count):
         for column_index in range(PUBLIC_MANAGED_COLUMNS):
             expected = _cell(expected_values, row_index, column_index)
             display = _cell(live.formatted_values, row_index, column_index)
             formula = _cell(live.formula_values, row_index, column_index)
             reason = ""
-            if _is_formula(expected):
+            coordinate = (row_index, column_index)
+            if coordinate in volatile_timestamp_errors:
+                reason = volatile_timestamp_errors[coordinate]
+            elif coordinate in volatile_timestamp_coordinates:
+                if _is_formula(formula):
+                    reason = "unexpected formula in a volatile timestamp cell"
+            elif _is_formula(expected):
                 expected_formula_count += 1
                 expected_formula = _cell_text(expected)
                 if not expected_formula.startswith(APPROVED_PUBLIC_FORMULA_PREFIXES):
@@ -517,13 +661,17 @@ def _audit_logical_tenant_log(
                         {
                             "row": row_index + 1,
                             "column": column_index + 1,
-                            "formula": expected_formula,
+                            "formula": _diagnostic_text(expected_formula),
                         }
                     )
                 elif _cell_text(formula) != expected_formula:
                     reason = "formula differs from the exact renderer formula"
                 else:
                     exact_formula_match_count += 1
+                    if _looks_like_formula_literal(display):
+                        reason = "formula is displayed as literal text instead of evaluated"
+                    else:
+                        nonliteral_formula_display_count += 1
             elif _is_formula(formula):
                 reason = "unexpected formula in a renderer value cell"
             elif not _display_cells_equivalent(expected, display):
@@ -537,9 +685,9 @@ def _audit_logical_tenant_log(
                     {
                         "row": row_index + 1,
                         "column": column_index + 1,
-                        "expected": _cell_text(expected),
-                        "live_display": _cell_text(display),
-                        "live_formula": _cell_text(formula) if _is_formula(formula) else "",
+                        "expected": _diagnostic_text(expected),
+                        "live_display": _diagnostic_text(display),
+                        "live_formula": _diagnostic_text(formula) if _is_formula(formula) else "",
                         "reason": reason,
                     }
                 )
@@ -578,7 +726,11 @@ def _audit_logical_tenant_log(
         if coordinate[1] >= PUBLIC_MANAGED_COLUMNS
     }
 
-    required_rows = _required_rows_audit(expected_values, live.formatted_values)
+    required_rows = _required_rows_audit(
+        expected_values,
+        live.formatted_values,
+        limit=limit,
+    )
     metadata = _tab_metadata_audit(
         live.tab_properties,
         expected_rows=expected_row_count,
@@ -589,6 +741,7 @@ def _audit_logical_tenant_log(
     formula_ok = bool(
         not renderer_formula_errors
         and exact_formula_match_count == expected_formula_count
+        and nonliteral_formula_display_count == expected_formula_count
         and not unexpected_formula_coordinates
     )
     content_ok = mismatch_count == 0
@@ -605,6 +758,7 @@ def _audit_logical_tenant_log(
             not beyond_managed_coordinates,
             required_rows["ok"],
             metadata["ok"],
+            volatile_timestamps["ok"],
         )
     )
     workbook_properties = live.metadata.get("properties")
@@ -627,6 +781,7 @@ def _audit_logical_tenant_log(
         "source_live_content_ok": content_ok,
         "expected_formula_count": expected_formula_count,
         "exact_formula_match_count": exact_formula_match_count,
+        "nonliteral_formula_display_count": nonliteral_formula_display_count,
         "renderer_formula_errors": renderer_formula_errors[: max(limit, 0)],
         "unexpected_formula_cell_count": len(unexpected_formula_coordinates),
         "unexpected_formula_cells": _coordinate_details(
@@ -646,6 +801,7 @@ def _audit_logical_tenant_log(
         ),
         "no_populated_or_formula_cells_beyond_managed_range": not beyond_managed_coordinates,
         "required_rows": required_rows,
+        "volatile_timestamps": volatile_timestamps,
         "tab_metadata": metadata,
         "workbook_title": _cell_text(workbook_properties.get("title")),
         "workbook_time_zone": _cell_text(workbook_properties.get("timeZone")),
@@ -663,11 +819,14 @@ def _recent(rows: list[PublicRow], *, days: int) -> list[PublicRow]:
 
 
 def _row_dicts(rows: list[PublicRow], *, limit: int) -> list[dict[str, str]]:
-    return [asdict(row) for row in rows[:limit]]
+    return [asdict(row) for row in rows[: max(limit, 0)]]
 
 
 def _source_row_dicts(rows: list[SourcePublicRow], *, limit: int) -> list[dict[str, object]]:
-    return [{"message_id": row.message_id, **asdict(row.row)} for row in rows[:limit]]
+    return [
+        {"message_id": row.message_id, **asdict(row.row)}
+        for row in rows[: max(limit, 0)]
+    ]
 
 
 def _public_row_covers_source_row(public_row: PublicRow, source_row: PublicRow) -> bool:
@@ -835,7 +994,7 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
             last_error = ""
             break
         except Exception as exc:
-            last_error = str(exc)
+            last_error = _diagnostic_text(exc)
             if attempt + 1 >= retries:
                 break
             time.sleep(retry_sleep)

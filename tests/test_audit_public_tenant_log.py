@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import scripts.audit_public_tenant_log as public_audit
 from scripts.audit_public_tenant_log import (
     LiveTenantLog,
@@ -6,6 +8,9 @@ from scripts.audit_public_tenant_log import (
     _dedupe_source_rows,
     _public_row_covers_source_row,
 )
+
+
+AUDIT_NOW = datetime(2026, 6, 27, 17, 0, tzinfo=public_audit.NY)
 
 
 def _pad(*values):
@@ -368,8 +373,16 @@ def test_source_public_rows_drop_matching_updates_inside_duplicate_window():
 
 def test_quiet_audit_window_keeps_the_rendered_latest_update_as_the_truth(monkeypatch):
     values = _tenant_log_values()
+    now = datetime.now(tz=public_audit.NY).replace(second=0, microsecond=0)
+    values[4][1] = now.strftime("%Y-%m-%d %I:%M %p")
+    live_values = [list(row) for row in values]
+    live_values[4][1] = (now - timedelta(minutes=30)).strftime("%Y-%m-%d %I:%M %p")
     monkeypatch.setattr(public_audit, "_expected_values", lambda: values)
-    monkeypatch.setattr(public_audit, "_live_values", lambda: _live_tenant_log(values))
+    monkeypatch.setattr(
+        public_audit,
+        "_live_values",
+        lambda: _live_tenant_log(values, formatted=live_values, formulas=live_values),
+    )
     monkeypatch.setattr(public_audit, "_source_public_rows", lambda *, days: [])
 
     result = public_audit.run_audit(days=7, resync=False, retries=1, retry_sleep=0, limit=5)
@@ -379,6 +392,7 @@ def test_quiet_audit_window_keeps_the_rendered_latest_update_as_the_truth(monkey
     assert result["expected_latest_update"] == "Both elevators working"
     assert result["latest_update_ok"] is True
     assert result["full_tenant_log_ok"] is True
+    assert result["logical_tenant_log"]["volatile_timestamps"]["ok"] is True
     assert result["ok"] is True
 
 
@@ -392,6 +406,7 @@ def test_full_log_allows_google_to_drop_leading_zero_from_display_hour():
         expected,
         _live_tenant_log(expected, formatted=formatted),
         limit=5,
+        now=AUDIT_NOW,
     )
 
     assert result["source_live_mismatch_count"] == 0
@@ -408,6 +423,7 @@ def test_full_log_rejects_stale_extra_rows_and_bounds_details():
         expected,
         _live_tenant_log(expected, formatted=formatted),
         limit=2,
+        now=AUDIT_NOW,
     )
 
     assert result["ok"] is False
@@ -426,6 +442,7 @@ def test_full_log_rejects_populated_cells_beyond_ten_managed_columns():
         expected,
         _live_tenant_log(expected, formatted=formatted),
         limit=5,
+        now=AUDIT_NOW,
     )
 
     assert result["ok"] is False
@@ -442,6 +459,7 @@ def test_full_log_requires_exact_approved_formulas_and_rejects_stale_formulas():
         expected,
         _live_tenant_log(expected),
         limit=5,
+        now=AUDIT_NOW,
     )
     assert exact["expected_formula_count"] == 1
     assert exact["exact_formula_match_count"] == 1
@@ -453,6 +471,7 @@ def test_full_log_requires_exact_approved_formulas_and_rejects_stale_formulas():
         expected,
         _live_tenant_log(expected, formulas=changed_formula_values),
         limit=5,
+        now=AUDIT_NOW,
     )
     assert changed["ok"] is False
     assert changed["exact_formula_match_count"] == 0
@@ -466,6 +485,7 @@ def test_full_log_requires_exact_approved_formulas_and_rejects_stale_formulas():
         expected,
         _live_tenant_log(expected, formulas=unexpected_formula_values),
         limit=5,
+        now=AUDIT_NOW,
     )
     assert unexpected["ok"] is False
     assert unexpected["unexpected_formula_cell_count"] == 1
@@ -484,6 +504,7 @@ def test_full_log_rejects_a_missing_required_section_and_header():
         expected,
         _live_tenant_log(expected, formatted=formatted, formulas=formulas),
         limit=5,
+        now=AUDIT_NOW,
     )
 
     required = result["required_rows"]
@@ -503,7 +524,108 @@ def test_full_log_cell_mismatch_details_are_bounded():
         expected,
         _live_tenant_log(expected, formatted=formatted),
         limit=2,
+        now=AUDIT_NOW,
     )
 
     assert result["source_live_mismatch_count"] == 6
     assert len(result["source_live_mismatches"]) == 2
+
+
+def test_full_log_accepts_fresh_volatile_timestamps_from_an_earlier_sync():
+    expected = _tenant_log_values(hour="04:47")
+    expected[16] = _pad(
+        "2026-06-27 04:47 PM",
+        "Quiet",
+        "No public incidents yet",
+    )
+    formatted = [list(row) for row in expected]
+    formulas = [list(row) for row in expected]
+    formatted[4][1] = "2026-06-27 4:20 PM"
+    formulas[4][1] = "2026-06-27 4:20 PM"
+    formatted[16][0] = "2026-06-27 4:20 PM"
+    formulas[16][0] = "2026-06-27 4:20 PM"
+
+    result = public_audit._audit_logical_tenant_log(
+        expected,
+        _live_tenant_log(expected, formatted=formatted, formulas=formulas),
+        limit=5,
+        now=AUDIT_NOW,
+    )
+
+    assert result["source_live_mismatch_count"] == 0
+    assert result["volatile_timestamps"]["ok"] is True
+    assert result["volatile_timestamps"]["expected_cell_count"] == 2
+    assert result["ok"] is True
+
+
+def test_full_log_rejects_stale_and_future_volatile_timestamps():
+    expected = _tenant_log_values()
+    stale = [list(row) for row in expected]
+    stale[4][1] = "2026-06-27 02:59 PM"
+    stale_result = public_audit._audit_logical_tenant_log(
+        expected,
+        _live_tenant_log(expected, formatted=stale),
+        limit=5,
+        now=AUDIT_NOW,
+    )
+    assert stale_result["ok"] is False
+    assert stale_result["volatile_timestamps"]["cells"][0]["reason"] == (
+        "live volatile timestamp is stale"
+    )
+
+    future = [list(row) for row in expected]
+    future[4][1] = "2026-06-27 05:06 PM"
+    future_result = public_audit._audit_logical_tenant_log(
+        expected,
+        _live_tenant_log(expected, formatted=future),
+        limit=5,
+        now=AUDIT_NOW,
+    )
+    assert future_result["ok"] is False
+    assert future_result["volatile_timestamps"]["cells"][0]["reason"] == (
+        "live volatile timestamp is too far in the future"
+    )
+
+
+def test_full_log_rejects_formula_text_that_was_not_evaluated():
+    expected = _tenant_log_values()
+    live = _live_tenant_log(expected)
+    live.formatted_values[16][4] = expected[16][4]
+
+    result = public_audit._audit_logical_tenant_log(
+        expected,
+        live,
+        limit=5,
+        now=AUDIT_NOW,
+    )
+
+    assert result["ok"] is False
+    assert result["exact_formula_match_count"] == 1
+    assert result["nonliteral_formula_display_count"] == 0
+    assert result["formula_cells_ok"] is False
+    assert result["source_live_mismatches"][0]["reason"] == (
+        "formula is displayed as literal text instead of evaluated"
+    )
+
+
+def test_required_row_duplicate_diagnostics_are_bounded():
+    expected = _tenant_log_values()
+    formatted = [list(row) for row in expected]
+    formulas = [list(row) for row in expected]
+    for _ in range(10):
+        formatted.append(_pad("At a glance"))
+        formulas.append(_pad("At a glance"))
+
+    result = public_audit._audit_logical_tenant_log(
+        expected,
+        _live_tenant_log(expected, formatted=formatted, formulas=formulas),
+        limit=2,
+        now=AUDIT_NOW,
+    )
+    at_a_glance = next(
+        row for row in result["required_rows"]["rows"] if row["name"] == "At a glance"
+    )
+
+    assert result["ok"] is False
+    assert at_a_glance["live_match_count"] == 11
+    assert len(at_a_glance["live_matching_rows"]) == 2
