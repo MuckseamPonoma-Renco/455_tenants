@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
+import re
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -76,6 +79,10 @@ SAFE_AUDIT_KEYS = (
 
 
 class CloudReceiverError(RuntimeError):
+    pass
+
+
+class LegacyReceiptCertificationError(CloudReceiverError):
     pass
 
 
@@ -531,6 +538,49 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_remote_export(
+    client: httpx.Client,
+    record: dict[str, Any],
+    *,
+    max_bytes: int,
+) -> str:
+    """Hash one signed pending export without staging or acknowledging it."""
+    expected_size = int(record["size_bytes"])
+    if expected_size <= 0 or expected_size > max_bytes:
+        raise CloudReceiverError("cloud receiver pending export exceeds its permitted size")
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with client.stream("GET", str(record["download_url"])) as response:
+            _require_success(response, "pending export verification download")
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                except ValueError as exc:
+                    raise CloudReceiverError(
+                        "cloud receiver pending export verification has an invalid Content-Length"
+                    ) from exc
+                if declared_size != expected_size or declared_size > max_bytes:
+                    raise CloudReceiverError(
+                        "cloud receiver pending export verification size does not match its listing"
+                    )
+            for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes or total > expected_size:
+                    raise CloudReceiverError(
+                        "cloud receiver pending export verification exceeded its permitted size"
+                    )
+                digest.update(chunk)
+    except httpx.HTTPError as exc:
+        raise CloudReceiverError("cloud receiver pending export verification download failed") from exc
+    if total != expected_size:
+        raise CloudReceiverError(
+            "cloud receiver pending export verification size does not match its listing"
+        )
+    return digest.hexdigest()
+
+
 def _validate_download(path: Path, *, expected_size: int) -> None:
     if not path.is_file() or path.stat().st_size != expected_size or path.stat().st_size <= 0:
         raise CloudReceiverError(f"downloaded export is incomplete: {path.name}")
@@ -695,6 +745,290 @@ def _pending_acknowledgements(state: dict[str, Any]) -> dict[str, dict[str, Any]
     if isinstance(pending, dict):
         return {str(key): value for key, value in pending.items() if isinstance(value, dict)}
     return {}
+
+
+def _certification_count(summary: dict[str, Any], name: str) -> int:
+    value = summary.get(name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise LegacyReceiptCertificationError(
+            f"legacy receipt audit is missing a valid {name} count"
+        )
+    return value
+
+
+def _require_certifiable_audit(summary: Any) -> dict[str, int]:
+    """Require every success signal produced by the full import/audit pipeline."""
+    if not isinstance(summary, dict):
+        raise LegacyReceiptCertificationError("legacy receipt audit returned an invalid summary")
+    if summary.get("ok") is not True:
+        raise LegacyReceiptCertificationError("legacy receipt audit did not report success")
+
+    parsed = _certification_count(summary, "parsed_messages")
+    audited = _certification_count(summary, "audited_messages")
+    matched = _certification_count(summary, "matched_messages")
+    unique = _certification_count(summary, "unique_physical_message_ids")
+    if parsed <= 0 or audited <= 0:
+        raise LegacyReceiptCertificationError("legacy receipt audit did not inspect any messages")
+    if audited > parsed or matched != audited or unique != audited:
+        raise LegacyReceiptCertificationError(
+            "legacy receipt audit message reconciliation is incomplete"
+        )
+    if _certification_count(summary, "missing_db_messages") != 0:
+        raise LegacyReceiptCertificationError("legacy receipt audit has messages missing from the database")
+    if _certification_count(summary, "missing_decisions") != 0:
+        raise LegacyReceiptCertificationError("legacy receipt audit has missing decisions")
+    if summary.get("llm_review_complete") is not True:
+        raise LegacyReceiptCertificationError("legacy receipt model review is incomplete")
+    if _certification_count(summary, "llm_review_missing") != 0:
+        raise LegacyReceiptCertificationError("legacy receipt model review has missing results")
+    if _certification_count(summary, "llm_review_failed") != 0:
+        raise LegacyReceiptCertificationError("legacy receipt model review has failed results")
+    if summary.get("sheet_sync_requested") is not True or summary.get("sheet_sync_complete") is not True:
+        raise LegacyReceiptCertificationError("legacy receipt Sheet sync is not verified complete")
+    if (
+        summary.get("sheet_readback_requested") is not True
+        or summary.get("sheet_readback_verified") is not True
+    ):
+        raise LegacyReceiptCertificationError("legacy receipt Sheet readback is not verified complete")
+    readback = summary.get("sheet_readback_audit")
+    if not isinstance(readback, dict) or readback.get("ok") is not True:
+        raise LegacyReceiptCertificationError("legacy receipt Sheet readback audit is missing or failed")
+    return compact_audit(summary)
+
+
+def _select_legacy_receipt(
+    state: dict[str, Any],
+    *,
+    receipt_key: str | None,
+) -> tuple[str, dict[str, Any]]:
+    receipts = _receipts(state)
+    selected_key = receipt_key if receipt_key is not None else state.get("latest_receipt_key")
+    if not isinstance(selected_key, str) or not selected_key.strip():
+        raise LegacyReceiptCertificationError(
+            "legacy receipt certification requires an exact receipt key or a saved latest receipt"
+        )
+    selected_key = selected_key.strip()
+    receipt = receipts.get(selected_key)
+    if not isinstance(receipt, dict) or str(receipt.get("key") or "") != selected_key:
+        raise LegacyReceiptCertificationError(f"legacy receipt was not found: {selected_key}")
+    if receipt.get("legacy_reconstructed") is not True:
+        raise LegacyReceiptCertificationError(f"selected receipt is not legacy reconstructed: {selected_key}")
+    if receipt.get("receipt_version") != CLOUD_RECEIPT_VERSION:
+        raise LegacyReceiptCertificationError(f"selected legacy receipt has an unsupported version: {selected_key}")
+    stages = receipt.get("stages")
+    if not isinstance(stages, dict) or any(
+        not isinstance(stages.get(name), dict) or stages[name].get("state") != "complete"
+        for name in ("upload", "discovery", "download")
+    ):
+        raise LegacyReceiptCertificationError(
+            f"selected legacy receipt is missing reconstructed source stages: {selected_key}"
+        )
+    if selected_key in _pending_acknowledgements(state):
+        raise LegacyReceiptCertificationError(
+            f"selected legacy receipt has a conflicting pending acknowledgement: {selected_key}"
+        )
+    return selected_key, receipt
+
+
+def _validate_legacy_staged_export(
+    receipt: dict[str, Any],
+    *,
+    receipt_key: str,
+    dest_dir: Path,
+    max_bytes: int,
+) -> tuple[Path, str, int]:
+    staged_value = receipt.get("staged_export")
+    if not isinstance(staged_value, str) or not staged_value.strip():
+        raise LegacyReceiptCertificationError("selected legacy receipt has no staged export")
+    staged = Path(staged_value).expanduser().resolve()
+    allowed_dir = dest_dir.expanduser().resolve()
+    if not staged.is_relative_to(allowed_dir):
+        raise LegacyReceiptCertificationError(
+            "selected legacy receipt staged export is outside the configured cloud export directory"
+        )
+    try:
+        size_bytes = int(receipt.get("size_bytes"))
+    except (TypeError, ValueError) as exc:
+        raise LegacyReceiptCertificationError(
+            "selected legacy receipt has an invalid staged export size"
+        ) from exc
+    if size_bytes <= 0 or size_bytes > max_bytes:
+        raise LegacyReceiptCertificationError(
+            "selected legacy receipt staged export size is outside the permitted range"
+        )
+    try:
+        _validate_download(staged, expected_size=size_bytes)
+    except (CloudReceiverError, OSError) as exc:
+        raise LegacyReceiptCertificationError(
+            f"selected legacy receipt staged export is invalid: {staged.name}"
+        ) from exc
+
+    expected_sha256 = receipt.get("sha256")
+    if not isinstance(expected_sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+        raise LegacyReceiptCertificationError("selected legacy receipt has an invalid SHA256")
+    if receipt_key != f"legacy-local/{expected_sha256}":
+        raise LegacyReceiptCertificationError(
+            "selected legacy receipt key does not bind its recorded SHA256"
+        )
+    observed_sha256 = _sha256_file(staged)
+    if not hmac.compare_digest(observed_sha256, expected_sha256):
+        raise LegacyReceiptCertificationError(
+            "selected legacy receipt staged export SHA256 does not match its receipt"
+        )
+    return staged, expected_sha256, size_bytes
+
+
+def _certify_legacy_receipt_unlocked(
+    config: ReceiverConfig,
+    *,
+    dest_dir: Path,
+    state_path: Path,
+    receipt_key: str | None,
+    since: str,
+    max_bytes: int,
+    client: httpx.Client | None,
+) -> dict[str, Any]:
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    state = _load_state(state_path)
+    selected_key, receipt = _select_legacy_receipt(state, receipt_key=receipt_key)
+    staged, expected_sha256, size_bytes = _validate_legacy_staged_export(
+        receipt,
+        receipt_key=selected_key,
+        dest_dir=dest_dir,
+        max_bytes=max_bytes,
+    )
+
+    # This is intentionally a full rerun: import, strict decision audit, model
+    # review, Sheet synchronization, and live Sheet readback all happen here.
+    audit_result = run_import_and_audit(staged, since=since)
+    audit = audit_result.get("audit_summary") if isinstance(audit_result, dict) else None
+    compacted_audit = _require_certifiable_audit(audit)
+
+    owns_client = client is None
+    if client is None:
+        client = httpx.Client(
+            timeout=httpx.Timeout(connect=30.0, read=900.0, write=30.0, pool=30.0),
+            follow_redirects=False,
+        )
+    try:
+        # /v1/exports is authenticated. Hash every same-size pending payload so
+        # a renamed export cannot be mistaken for an already acknowledged one.
+        pending = pending_exports(client, config, max_bytes=max_bytes)
+        same_size_hashed = 0
+        for record in pending:
+            if int(record["size_bytes"]) != size_bytes:
+                continue
+            same_size_hashed += 1
+            remote_sha256 = _sha256_remote_export(client, record, max_bytes=max_bytes)
+            if hmac.compare_digest(remote_sha256, expected_sha256):
+                raise LegacyReceiptCertificationError(
+                    "matching cloud export remains pending; run the normal cloud export sync first"
+                )
+    finally:
+        if owns_client:
+            client.close()
+
+    # Revalidate after the long-running audit and receiver checks so a changed
+    # local file can never be promoted using an earlier digest.
+    final_staged, final_sha256, final_size = _validate_legacy_staged_export(
+        receipt,
+        receipt_key=selected_key,
+        dest_dir=dest_dir,
+        max_bytes=max_bytes,
+    )
+    if final_staged != staged or final_size != size_bytes or not hmac.compare_digest(
+        final_sha256, expected_sha256
+    ):
+        raise LegacyReceiptCertificationError(
+            "selected legacy receipt staged export changed during certification"
+        )
+
+    certified_at = _now()
+    promoted_state = copy.deepcopy(state)
+    promoted_state["receipts"] = _receipts(promoted_state)
+    promoted_state["pending_acknowledgements"] = _pending_acknowledgements(promoted_state)
+    promoted_receipt = promoted_state["receipts"][selected_key]
+    promoted_receipt["audit"] = compacted_audit
+    promoted_receipt["legacy_certification"] = {
+        "certified_at": certified_at,
+        "receipt_key": selected_key,
+        "staged_export": str(staged),
+        "sha256": expected_sha256,
+        "size_bytes": size_bytes,
+        "since": since,
+        "receiver_origin": config.base_url,
+        "pending_exports_checked": len(pending),
+        "same_size_pending_exports_hashed": same_size_hashed,
+        "matching_pending_exports": 0,
+        "audit": compacted_audit,
+        "basis": [
+            "staged_export_valid_and_sha256_matched",
+            "full_import_and_audit_completed",
+            "database_and_decision_reconciliation_completed",
+            "model_review_completed",
+            "sheet_sync_completed",
+            "sheet_readback_verified",
+            "authenticated_receiver_has_no_matching_pending_export",
+        ],
+    }
+    promoted_receipt["acknowledgement_basis"] = (
+        "certified_absent_from_authenticated_pending_export_listing"
+    )
+    promoted_receipt.pop("last_error", None)
+    for stage_name in ("processing", "audit", "sheet_sync", "sheet_readback", "acknowledgement"):
+        _set_receipt_stage(promoted_receipt, stage_name, "complete", at=certified_at)
+    # Preserve reconstruction provenance in legacy_certification, but only
+    # remove the unverified marker after every check above has succeeded.
+    promoted_receipt.pop("legacy_reconstructed", None)
+    promoted_receipt["status"] = _receipt_status(promoted_receipt)
+    promoted_state["pending_export_keys"] = [str(record["key"]) for record in pending]
+    promoted_state["last_checked_at"] = certified_at
+    promoted_state["last_legacy_receipt_certification_at"] = certified_at
+    promoted_state["last_legacy_receipt_certification_key"] = selected_key
+    _save_cloud_state(state_path, promoted_state)
+    return {
+        "ok": True,
+        "action": "legacy_receipt_certified",
+        "receipt_key": selected_key,
+        "staged_export": str(staged),
+        "sha256": expected_sha256,
+        "audit": compacted_audit,
+        "pending_exports_checked": len(pending),
+        "same_size_pending_exports_hashed": same_size_hashed,
+        "state_path": str(state_path),
+    }
+
+
+def certify_legacy_receipt(
+    config: ReceiverConfig,
+    *,
+    dest_dir: Path = LOCAL_CLOUD_EXPORT_DIR,
+    state_path: Path = DEFAULT_STATE_PATH,
+    receipt_key: str | None = None,
+    since: str = DEFAULT_SINCE,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Re-verify one persisted legacy receipt and promote it atomically."""
+    lock_path = state_path.parent / "chat-export-pipeline.lock"
+    with try_file_lock(lock_path) as acquired:
+        if not acquired:
+            return {
+                "ok": True,
+                "action": "skipped_concurrent_run",
+                "receipt_key": receipt_key or "",
+                "state_path": str(state_path),
+            }
+        return _certify_legacy_receipt_unlocked(
+            config,
+            dest_dir=dest_dir,
+            state_path=state_path,
+            receipt_key=receipt_key,
+            since=since,
+            max_bytes=max_bytes,
+            client=client,
+        )
 
 
 def _run_once_unlocked(
@@ -950,8 +1284,28 @@ def main() -> None:
     parser.add_argument("--since", default=DEFAULT_SINCE, help=f"Audit cutoff timestamp. Default: {DEFAULT_SINCE}")
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help="Reject exports larger than this many bytes.")
     parser.add_argument("--max-exports", type=int, default=DEFAULT_MAX_EXPORTS, help="Maximum cloud exports to process in one run.")
-    parser.add_argument("--probe", action="store_true", help="Verify receiver health and authenticated listing without downloading exports.")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument(
+        "--probe",
+        action="store_true",
+        help="Verify receiver health and authenticated listing without downloading exports.",
+    )
+    action.add_argument(
+        "--certify-legacy-receipt",
+        action="store_true",
+        help=(
+            "Explicitly rerun the full audit/Sheet pipeline for one legacy reconstructed receipt, "
+            "verify it is absent from the authenticated pending inbox, and promote its local receipt."
+        ),
+    )
+    parser.add_argument(
+        "--receipt-key",
+        help="Exact legacy receipt key to certify. With --certify-legacy-receipt, defaults to the saved latest receipt.",
+    )
     args = parser.parse_args()
+
+    if args.receipt_key and not args.certify_legacy_receipt:
+        parser.error("--receipt-key requires --certify-legacy-receipt")
 
     config = receiver_config(args.receiver_url, args.pull_token)
     if config is None:
@@ -959,6 +1313,15 @@ def main() -> None:
         return
     if args.probe:
         result = probe(config, max_bytes=args.max_bytes)
+    elif args.certify_legacy_receipt:
+        result = certify_legacy_receipt(
+            config,
+            dest_dir=Path(args.dest_dir).expanduser(),
+            state_path=Path(args.state_path).expanduser(),
+            receipt_key=args.receipt_key,
+            since=args.since,
+            max_bytes=args.max_bytes,
+        )
     else:
         result = run_once(
             config,

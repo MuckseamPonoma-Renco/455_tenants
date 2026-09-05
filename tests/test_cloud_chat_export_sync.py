@@ -1,6 +1,7 @@
 import io
 import json
 import stat
+import sys
 import zipfile
 
 import httpx
@@ -34,6 +35,80 @@ def _client(handler, *, receipts=None):
         return handler(request)
 
     return httpx.Client(transport=httpx.MockTransport(with_receipts), follow_redirects=False)
+
+
+def _successful_certification_summary() -> dict[str, object]:
+    return {
+        "ok": True,
+        "parsed_messages": 12,
+        "audited_messages": 4,
+        "matched_messages": 4,
+        "unique_physical_message_ids": 4,
+        "missing_db_messages": 0,
+        "missing_decisions": 0,
+        "llm_review_required": 4,
+        "llm_review_completed": 4,
+        "llm_review_missing": 0,
+        "llm_review_failed": 0,
+        "llm_review_complete": True,
+        "review_roster_rows": 0,
+        "sheet_sync_requested": True,
+        "sheet_sync_complete": True,
+        "sheet_readback_requested": True,
+        "sheet_readback_verified": True,
+        "sheet_readback_audit": {"ok": True},
+    }
+
+
+def _write_legacy_receipt(tmp_path, *, payload: bytes | None = None):
+    payload = payload or _zip_bytes()
+    dest_dir = tmp_path / "incoming"
+    dest_dir.mkdir()
+    staged = dest_dir / "cloud-0123456789abcdef-WhatsApp Chat - 455 Tenants.zip"
+    staged.write_bytes(payload)
+    sha256 = cloud_sync._sha256_file(staged)
+    key = f"legacy-local/{sha256}"
+    reconstructed_at = "2026-09-05T12:10:08Z"
+    receipt = {
+        "receipt_version": cloud_sync.CLOUD_RECEIPT_VERSION,
+        "source": "cloud_receiver",
+        "key": key,
+        "filename": staged.name,
+        "size_bytes": len(payload),
+        "uploaded_at": "",
+        "discovered_at": reconstructed_at,
+        "updated_at": reconstructed_at,
+        "sha256": sha256,
+        "staged_export": str(staged),
+        "legacy_reconstructed": True,
+        "status": "legacy_unverified",
+        "stages": {
+            "upload": {"state": "complete"},
+            "discovery": {"state": "complete", "at": reconstructed_at},
+            "download": {"state": "complete", "at": reconstructed_at},
+            "processing": {"state": "not_reported"},
+            "audit": {"state": "not_reported"},
+            "sheet_sync": {"state": "not_reported"},
+            "sheet_readback": {"state": "not_reported"},
+            "acknowledgement": {"state": "not_reported"},
+        },
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": cloud_sync.CLOUD_STATE_SCHEMA_VERSION,
+                "receipts": {key: receipt},
+                "latest_receipt_key": key,
+                "pending_acknowledgements": {},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return dest_dir, state_path, staged, key
 
 
 def test_completed_receipts_tolerates_legacy_receiver_during_rolling_upgrade():
@@ -212,6 +287,228 @@ def test_run_once_reconstructs_an_unverified_receipt_for_pre_upgrade_staged_expo
     assert receipt["stages"]["audit"]["state"] == "not_reported"
     assert receipt["stages"]["sheet_readback"]["state"] == "not_reported"
     assert receipt["stages"]["acknowledgement"]["state"] == "not_reported"
+
+
+def test_certify_legacy_receipt_runs_full_checks_then_atomically_promotes_latest(
+    tmp_path, monkeypatch
+):
+    dest_dir, state_path, staged, key = _write_legacy_receipt(tmp_path)
+    audited = []
+    requests = []
+
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda export_path, *, since: audited.append((export_path, since))
+        or {"audit_summary": _successful_certification_summary()},
+    )
+
+    def handler(request):
+        requests.append((request.method, str(request.url)))
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            assert request.headers["Authorization"] == "Bearer pull-token"
+            return httpx.Response(200, json={"exports": []})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    result = cloud_sync.certify_legacy_receipt(
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+        dest_dir=dest_dir,
+        state_path=state_path,
+        client=_client(handler),
+    )
+
+    assert result["action"] == "legacy_receipt_certified"
+    assert result["receipt_key"] == key
+    assert result["pending_exports_checked"] == 0
+    assert result["same_size_pending_exports_hashed"] == 0
+    assert audited == [(staged.resolve(), cloud_sync.DEFAULT_SINCE)]
+    assert requests == [("GET", "https://uploads.example.test/v1/exports")]
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+    receipt = state["receipts"][key]
+    assert "legacy_reconstructed" not in receipt
+    assert receipt["status"] == "ready"
+    assert receipt["acknowledgement_basis"] == (
+        "certified_absent_from_authenticated_pending_export_listing"
+    )
+    assert {name: stage["state"] for name, stage in receipt["stages"].items()} == {
+        name: "complete" for name in cloud_sync.RECEIPT_STAGE_NAMES
+    }
+    certification = receipt["legacy_certification"]
+    assert certification["receipt_key"] == key
+    assert certification["sha256"] == cloud_sync._sha256_file(staged)
+    assert certification["matching_pending_exports"] == 0
+    assert certification["pending_exports_checked"] == 0
+    assert certification["same_size_pending_exports_hashed"] == 0
+    assert certification["basis"] == [
+        "staged_export_valid_and_sha256_matched",
+        "full_import_and_audit_completed",
+        "database_and_decision_reconciliation_completed",
+        "model_review_completed",
+        "sheet_sync_completed",
+        "sheet_readback_verified",
+        "authenticated_receiver_has_no_matching_pending_export",
+    ]
+    assert receipt["stages"]["acknowledgement"]["at"] == certification["certified_at"]
+
+
+def test_certify_legacy_receipt_fails_closed_when_audit_is_incomplete(tmp_path, monkeypatch):
+    dest_dir, state_path, _staged, _key = _write_legacy_receipt(tmp_path)
+    original_state = state_path.read_bytes()
+    summary = _successful_certification_summary()
+    summary["sheet_readback_verified"] = False
+    summary["sheet_readback_audit"] = {"ok": False}
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: {"audit_summary": summary},
+    )
+
+    with pytest.raises(
+        cloud_sync.LegacyReceiptCertificationError,
+        match="Sheet readback is not verified complete",
+    ):
+        cloud_sync.certify_legacy_receipt(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=dest_dir,
+            state_path=state_path,
+            client=_client(lambda request: (_ for _ in ()).throw(AssertionError(request.url))),
+        )
+
+    assert state_path.read_bytes() == original_state
+
+
+def test_certify_legacy_receipt_fails_closed_when_matching_export_is_still_pending(
+    tmp_path, monkeypatch
+):
+    payload = _zip_bytes()
+    dest_dir, state_path, _staged, _key = _write_legacy_receipt(tmp_path, payload=payload)
+    original_state = state_path.read_bytes()
+    record = _record(payload)
+    requests = []
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: {"audit_summary": _successful_certification_summary()},
+    )
+
+    def handler(request):
+        requests.append((request.method, str(request.url)))
+        if request.url == httpx.URL("https://uploads.example.test/v1/exports"):
+            assert request.headers["Authorization"] == "Bearer pull-token"
+            return httpx.Response(200, json={"exports": [record]})
+        if request.url == httpx.URL("https://signed.example.test/export"):
+            return httpx.Response(
+                200,
+                content=payload,
+                headers={"Content-Length": str(len(payload))},
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    with pytest.raises(
+        cloud_sync.LegacyReceiptCertificationError,
+        match="matching cloud export remains pending",
+    ):
+        cloud_sync.certify_legacy_receipt(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=dest_dir,
+            state_path=state_path,
+            client=_client(handler),
+        )
+
+    assert requests == [
+        ("GET", "https://uploads.example.test/v1/exports"),
+        ("GET", "https://signed.example.test/export"),
+    ]
+    assert state_path.read_bytes() == original_state
+
+
+def test_certify_legacy_receipt_rejects_a_staged_sha_mismatch_before_audit(
+    tmp_path, monkeypatch
+):
+    dest_dir, state_path, _staged, key = _write_legacy_receipt(tmp_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    bad_sha256 = "0" * 64
+    receipt = state["receipts"].pop(key)
+    receipt["key"] = f"legacy-local/{bad_sha256}"
+    receipt["sha256"] = bad_sha256
+    state["receipts"][receipt["key"]] = receipt
+    state["latest_receipt_key"] = receipt["key"]
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    original_state = state_path.read_bytes()
+    monkeypatch.setattr(
+        cloud_sync,
+        "run_import_and_audit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("audit must not run")),
+    )
+
+    with pytest.raises(
+        cloud_sync.LegacyReceiptCertificationError,
+        match="SHA256 does not match",
+    ):
+        cloud_sync.certify_legacy_receipt(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=dest_dir,
+            state_path=state_path,
+            client=_client(lambda request: (_ for _ in ()).throw(AssertionError(request.url))),
+        )
+
+    assert state_path.read_bytes() == original_state
+
+
+def test_certify_legacy_receipt_skips_when_pipeline_lock_is_held(tmp_path):
+    dest_dir, state_path, _staged, key = _write_legacy_receipt(tmp_path)
+    with try_file_lock(tmp_path / "chat-export-pipeline.lock") as acquired:
+        assert acquired is True
+        result = cloud_sync.certify_legacy_receipt(
+            cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+            dest_dir=dest_dir,
+            state_path=state_path,
+            receipt_key=key,
+            client=_client(lambda request: (_ for _ in ()).throw(AssertionError(request.url))),
+        )
+
+    assert result == {
+        "ok": True,
+        "action": "skipped_concurrent_run",
+        "receipt_key": key,
+        "state_path": str(state_path),
+    }
+
+
+def test_certify_legacy_receipt_cli_accepts_an_exact_receipt_key(monkeypatch, capsys):
+    key = "legacy-local/" + "a" * 64
+    captured = {}
+    config = cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token")
+    monkeypatch.setattr(cloud_sync, "receiver_config", lambda *_args, **_kwargs: config)
+    monkeypatch.setattr(
+        cloud_sync,
+        "certify_legacy_receipt",
+        lambda supplied_config, **kwargs: captured.update(config=supplied_config, **kwargs)
+        or {"ok": True, "action": "legacy_receipt_certified"},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sync_cloud_chat_export_inbox.py",
+            "--certify-legacy-receipt",
+            "--receipt-key",
+            key,
+            "--state-path",
+            "/tmp/test-cloud-state.json",
+            "--dest-dir",
+            "/tmp/test-cloud-exports",
+        ],
+    )
+
+    cloud_sync.main()
+
+    assert json.loads(capsys.readouterr().out)["action"] == "legacy_receipt_certified"
+    assert captured["config"] == config
+    assert captured["receipt_key"] == key
+    assert captured["state_path"] == cloud_sync.Path("/tmp/test-cloud-state.json")
+    assert captured["dest_dir"] == cloud_sync.Path("/tmp/test-cloud-exports")
 
 
 def test_run_once_keeps_quota_blocked_export_pending_without_failing(tmp_path, monkeypatch):
