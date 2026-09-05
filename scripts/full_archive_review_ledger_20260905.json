@@ -1,0 +1,2896 @@
+{
+  "schema_version": 1,
+  "certification_id": "2026-09-05-full-archive-manual-review-v1",
+  "reviewed_by": "codex:2026-09-05-full-archive-manual-audit",
+  "expected_counts": {
+    "total": 206,
+    "unchanged_correct": 199,
+    "deferred_missing_evidence": 7
+  },
+  "reviews": [
+    {
+      "export_ordinal": 172,
+      "message_id": "0a4ff349eb9bc1ad36f93067ba881525055f8092c77bbacecc6662cee4aed3f6",
+      "raw_text_sha256": "9c62ead7dac0b15ec341e5a51212880df1d0b357260125f188ecddacbfbc8ea7",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A question about an omitted image does not establish a current reportable condition."
+    },
+    {
+      "export_ordinal": 250,
+      "message_id": "e148849d62e4620dbe3b77f2f9eb043fe195dd874ce85f653c7b4e29710f9b~2",
+      "raw_text_sha256": "27f65f114e9349e6a433e5c77adc3145b232335fac1b2cb8398b4f10c23a79a9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The raw content is only a deleted-message tombstone; surrounding rows discuss old listing features but cannot supply recoverable incident evidence."
+    },
+    {
+      "export_ordinal": 267,
+      "message_id": "92814d895a014094270c28e865aadc96ec5d645828513879c6c939ec5fa0448d",
+      "raw_text_sha256": "89d6e5453b0fb43c28a7f657353b2d6cf42efbc253aadf652c29304edeb99b44",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The pool throwback is historical social content, not a current building issue."
+    },
+    {
+      "export_ordinal": 1089,
+      "message_id": "e1b529284f8001fe431ce8dbbee75c3f481ff6bdeef5f7c5cb3a65f923b2ae0f",
+      "raw_text_sha256": "775046954d4f68673fc66bbc414f3271242234a0f490788d4e176d6dc565c18e",
+      "review_outcome": "deferred_missing_evidence",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": null,
+        "event_type": "restore",
+        "incident_id": "6afa620236856712c6fe372a31f1d1f1"
+      },
+      "audit_rationale": "One raw message combines elevator restoration with a future laundry closure and card transition; an evidence-preserving split is required."
+    },
+    {
+      "export_ordinal": 1090,
+      "message_id": "ef69f1b70779f8269b151525e06718cb789c76fa60b15effd3bb64ebec6648e6",
+      "raw_text_sha256": "3895a3feb46212e9a2aa62d897f966be14c867e8025c0740b9dd5c34b0ca0a85",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This parenthetical only explains that the prior laundry/elevator notice was posted without a photo; it adds no independent condition or state transition."
+    },
+    {
+      "export_ordinal": 1131,
+      "message_id": "3f9ad00fb91249361bb84ebb176fec530f37e517f92f5b79541cfb812082b700",
+      "raw_text_sha256": "5519805c04ad3707f4bb030bee5927e9a8807c380eb38563f942c71801a78259",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "restore",
+        "incident_id": "a3d94ffb29cb1e90d02520c18b4a9342"
+      },
+      "audit_rationale": "The message explicitly reports both elevators functioning, correctly recording a restoration."
+    },
+    {
+      "export_ordinal": 1147,
+      "message_id": "35564985e1cc5bb599cfcf5575200f1290e84d2d3b4c5095d9216a26762b2a59",
+      "raw_text_sha256": "ae903567aae63faccfbf2d9bd1b05f16f09bfd763c24104709a949ad403a1921",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A conversational promise to keep one another updated does not itself report laundry or elevator status."
+    },
+    {
+      "export_ordinal": 1165,
+      "message_id": "ac108202e53d1dd12dc5960503fd6eedacdde7c7b44f5ba6bc431cd0322f6f5e",
+      "raw_text_sha256": "048bfc14e7c9720ba48626af0c981ec93d547ef21ea6ccb45b60d001af6c7d7f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message is a tenant-meeting reminder, not a condition report."
+    },
+    {
+      "export_ordinal": 1166,
+      "message_id": "3750ed41cdb2257c300ac9213a6c883aff6e44576e563784af3497d18b8c2f8a",
+      "raw_text_sha256": "048bfc14e7c9720ba48626af0c981ec93d547ef21ea6ccb45b60d001af6c7d7f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The duplicate message is a tenant-meeting reminder, not a condition report."
+    },
+    {
+      "export_ordinal": 1238,
+      "message_id": "d7427fb7e6ed89074675f6c039cbdc9b06d4ef325438da59b65908de8caccf93",
+      "raw_text_sha256": "dbdb7a53d34e1938120c6299f77240f7187fa9a3fffc8883ba6fbfe6beb50f43",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "restore",
+        "incident_id": "0946f33cd441124e1bf68031b1950df6"
+      },
+      "audit_rationale": "The message explicitly reports both elevators working, correctly recording a restoration."
+    },
+    {
+      "export_ordinal": 1267,
+      "message_id": "99d7549b909bd304bfeae6c0813fe2462ff699ebfd831b57baf4eb7a64cfd8ba",
+      "raw_text_sha256": "6c94dbd5c197ff48522d31d1381529a7c04e00058f1de4aec3c35f9f33f2e0be",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a 311 filing-resource link offered during an already documented elevator discussion, not a new observation or service-state update."
+    },
+    {
+      "export_ordinal": 1291,
+      "message_id": "5b450343300acebdebe4f057709b10b4f461ebdccb1aae33d3e4de92b9ae64ba",
+      "raw_text_sha256": "b260f511dd9a80fa1aab5b899474b2fae0940cd54474b66049a294f6c5a15e90",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "outage",
+        "incident_id": "333eb6271ce3ad25eaa940201f1841f6"
+      },
+      "audit_rationale": "The edited message explicitly reports both elevators out of service."
+    },
+    {
+      "export_ordinal": 1330,
+      "message_id": "50dbd6046bf41ba26bbc97b8db98684da16c0c0b87005e595ecab8952fb71f29",
+      "raw_text_sha256": "b301eb72f0bda5e70bdbc568af92c7b7bacf9a21b79221948f4415f6988a18a4",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The tenant states a minimum expectation for management communications; no current elevator condition is newly reported."
+    },
+    {
+      "export_ordinal": 1341,
+      "message_id": "9d39fd4091a3b19d955d31d84890e7c09e9e323829c1df0a19635d5537c8a846",
+      "raw_text_sha256": "a2a9e8563103dfd667134076068ed94952685554fc29700d06a9a59f67f11430",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "outage",
+        "incident_id": "17a7810a83b11e8a7f177eefa2c28d96"
+      },
+      "audit_rationale": "The message directly confirms that both elevators remain out of service."
+    },
+    {
+      "export_ordinal": 1346,
+      "message_id": "420d53bb0eddfba382b077dbcdb61a4c8f27f4dbdca6f38770eea5561957d21b",
+      "raw_text_sha256": "1eeb9762a93a1e2031e0b6d94083660b47a7bb7aff53c8ccd5e006cfd7308e19",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is an offer to help with carrying a delivery during the already reported outage, not an independent outage observation."
+    },
+    {
+      "export_ordinal": 1347,
+      "message_id": "8b0da129f814a79eca0b9bad7007a65de7ebc0524f8a530c530cfddd1ab58687",
+      "raw_text_sha256": "139bdd9b9ff6165595aa00b96a87c0d543d845e857b3a7f99fe842bc34443959",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Hoping one elevator will work before a delivery is speculative and depends on the already captured outage; it is not a fresh status check."
+    },
+    {
+      "export_ordinal": 1352,
+      "message_id": "66f5be4e5a9bb5fa0990b0835875c7051c237fd949803085fbb1efb09beaf7ee",
+      "raw_text_sha256": "26f3daf42efb823bbbc9de26e65127700fdf671ef33fa29b2634c6097ddd2a4f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a standing offer for a stairwell handoff whenever a malfunction occurs, not evidence that a new malfunction began or continued."
+    },
+    {
+      "export_ordinal": 1359,
+      "message_id": "fe29a6213c38ed14ae4903e3874b6dedfe6d6b99acda43087a02eb35ddcad3c3",
+      "raw_text_sha256": "73207b3904b225da268f5a034cb486f7dc4ad253d75b52dbf86943071dc2fa63",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message shares a city testimony form as longer-range advocacy; adjacent elevator reports do not turn the link into condition evidence."
+    },
+    {
+      "export_ordinal": 1368,
+      "message_id": "7e6bf1aa69a227817136bab0d373e86800eb2c9ceaed7c6977fd79ef0ab1324f",
+      "raw_text_sha256": "c4662628c74532ecc7d48d1d6eea5ce910c64805c34d0b9c4e5af81a86c7ea8c",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Advice to communicate with management and counsel in writing is organizing/legal process guidance, not a building-condition report."
+    },
+    {
+      "export_ordinal": 1390,
+      "message_id": "a8831b20d985d049cf794d25415c7dda6d97f9c0c3c0b7065bd4f2ccc94d1aa8",
+      "raw_text_sha256": "568d3a90b14f2bddce8f0e1381f3a2f3d575a53409fa89a78711b9f728f57c62",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A statement of mutual support follows discussion of a possible replacement process and adds no factual incident state."
+    },
+    {
+      "export_ordinal": 1392,
+      "message_id": "b535350bee0a7f34d45a2742b9d49693783d93d76ed4b04ca908c998c94b3b89",
+      "raw_text_sha256": "8960903a92820ddc3d7809111d1a15427465af1df145aca3fa9bb6742b3a0ea4",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This quotes a citywide landlord-income report and does not assert a condition at 455 Ocean Parkway."
+    },
+    {
+      "export_ordinal": 1394,
+      "message_id": "ee8366f82444337b9ece7c2c832e20848186bd2bdaea584ea38b64d8cb149ce7",
+      "raw_text_sha256": "0ca2e067fbb5c8fd6e1efed41e632c8363e34d493253703d76eaab52dcb97d9d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This estimates how many volunteers would make a bucket brigade manageable; it is logistical commentary, not an outage report."
+    },
+    {
+      "export_ordinal": 1395,
+      "message_id": "7b089f1e25c00ff865d8edcb0210c05ef93cccab58de687b90df1529c5c49490",
+      "raw_text_sha256": "9d07f65e5b648db194e2d6d2eb6acfaa44f89327e7700a4300473e978609cc71",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is only a conversational preamble to the following tenant-meeting poll and contains no condition claim."
+    },
+    {
+      "export_ordinal": 1396,
+      "message_id": "d9d49be3955a0508bfc86d06a6c0d164102650023784ac5f5a02475f8337bbcd",
+      "raw_text_sha256": "f4c459beaa4e110b637a0dbd8355acdac267fb3604081c196e91ea6d2f5bd5d0",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message is a poll about where to hold the April 16 tenant meeting, not a maintenance or service incident."
+    },
+    {
+      "export_ordinal": 1407,
+      "message_id": "d9e1ef3453093a3423044bb480a734704d8d18a60b86d41ad9f0a7de73c399dc",
+      "raw_text_sha256": "81349093c84156086864b4c63eb5ad27515a64ac4aa4db1ce35016c973b11107",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This repeats the tenant-meeting location poll; nearby elevator messages are separate and do not change its meaning."
+    },
+    {
+      "export_ordinal": 1530,
+      "message_id": "02fae0aa1dc8d739401ebf98a2b9b35f21e28a95873d2f28bf4c7546e26ddc44",
+      "raw_text_sha256": "8b63818028fe68c4cbf0d18d7268aa1d2ba6636332c1253f4065c425a38b6c38",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp community-join system event, not a building report."
+    },
+    {
+      "export_ordinal": 1531,
+      "message_id": "9e1811b161a79b94f6f6c6ddefd6944ca4883ed6c6c822de598fc73714dbbc46",
+      "raw_text_sha256": "17b0f513195f03ac63805e571e83b1704720f87ea47eaa97aac8d414e362d881",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a group-add system event and contains no incident information."
+    },
+    {
+      "export_ordinal": 1677,
+      "message_id": "3db0ab422fa102db0d2b3fdf2e6fbf1df3b91902e73a74244de97edf15811afb",
+      "raw_text_sha256": "5b584d2e3a456dd520688ef274c57c6598414a3c05bbaf253eb0311d351a7fc2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This notes a management-contact posting change and criticizes responsiveness; it does not report a current physical condition."
+    },
+    {
+      "export_ordinal": 1694,
+      "message_id": "85701c92d48eaabc1ec3fa21cdbb731c8f2e5e64797ced35bf28fb09dd901263",
+      "raw_text_sha256": "8e0f8f6f95d277e57b49384f4f0aaa427d7f091cf04f4a66754fb984c3ba2042",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This encourages continued flyering after direct reports of removed flyers; it is organizing guidance rather than a new interference observation."
+    },
+    {
+      "export_ordinal": 1696,
+      "message_id": "79be2f7d9232bd70a7d17b9093a8e36f3c5c95e5f791ea6cfc06980b32d89774",
+      "raw_text_sha256": "a1363f1a81ec355c7c16681b9e552eb240390fac8c9ceebb0b8432a4160fb5f2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A request to document any future witnessed interference is not itself evidence that the sender witnessed an event."
+    },
+    {
+      "export_ordinal": 1698,
+      "message_id": "b7149c8ee95f8ec1a14ee47b8865d0aecd90911cf76b0bdc1202e1f2703377e7",
+      "raw_text_sha256": "af81a28f1b19944bde624ad56f7ba129bf7e7005556f209664f24790ae2a4d4f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Suggesting flyering after business hours is tactical advice and adds no independently observed interference."
+    },
+    {
+      "export_ordinal": 1709,
+      "message_id": "f89a36c649afe0c57ae7fac7369c66b8b2924df6c36b2db2e898820182dc9ce7",
+      "raw_text_sha256": "04fa20fec3863a5f37127695f12bec1a17833a0cdb7865b876f2fd4fd39fad44",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a sarcastic comparison of management urgency, not a specific condition report."
+    },
+    {
+      "export_ordinal": 1710,
+      "message_id": "8a939d24ce2b31c193e9afdf00ef4e8f8ec9e5dc956beeddc8136dcaeeabf4ca",
+      "raw_text_sha256": "a79e37ec5745e1bc3122f950090641cd8c3773f74288eb04e9a4de94ac32a3f8",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is agreement with the preceding sarcastic comment and supplies no incident detail."
+    },
+    {
+      "export_ordinal": 1713,
+      "message_id": "f10f03baba84baf44266e8371b34f0e3ab3d000304ee1cc54b2fafe0dafb96~2",
+      "raw_text_sha256": "6275d60a66ddf8b9ff73577a039d71c379f628c84609da5e148bf08dd1773575",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The caption refers to a social photo after encountering neighbors, not photographic proof of flyer removal or a building defect."
+    },
+    {
+      "export_ordinal": 1807,
+      "message_id": "d5208241c7d9c1b09ba9756b1e45f97a916bb8686b58ec15f860f039b144999f",
+      "raw_text_sha256": "0301223ce50c71576367c2444d8ab998790c139f5b0645abc1621dcac788c703",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This speculates about doorman union membership and a possible strike; it does not report a building service failure."
+    },
+    {
+      "export_ordinal": 1808,
+      "message_id": "b522f400345ab4be5af4f4d13460ce9efb372f06d8c487dd2e024da3f9cac6eb",
+      "raw_text_sha256": "1c00e99aeb3ccb2f5c7e3d3b09e7ec72005066a55e3ac72e0d0cdabd658023e9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message is advocacy about replacement timing, possible future loss of access, damages, and a rent strike; contemporaneous direct outage rows carry the actual incident evidence."
+    },
+    {
+      "export_ordinal": 1809,
+      "message_id": "68c7a1108e9493543dfa3f6210ec05c7285a4daa1071ae9512b4c762f51dc3e7",
+      "raw_text_sha256": "5f74b9eca0db2f7da6f17bafbefb454f60e418aa645c7193e427b7806878fd15",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This asks whether management communicated directly or the information came only from News12; it does not itself establish a project fact."
+    },
+    {
+      "export_ordinal": 1810,
+      "message_id": "bd9b04f225b67895ee44a47e115656d8761a5862ee9d342d97c20dd490607f0b",
+      "raw_text_sha256": "0b91e8aa550bc2b8b47df6a669fac2339c1edc94c46ced51d8d74412a11544b9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Agreement to discuss a rent strike at a meeting is organizing logistics, not a physical-building report."
+    },
+    {
+      "export_ordinal": 1811,
+      "message_id": "08bdb2508810139cb8376731008337379363516c9b12211697f51dd1c2a77bb8",
+      "raw_text_sha256": "a99fd1c6ed21081929e9cde5804fb5dc874d23b217a7ec763c5b231c73b972b1",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This relays secondhand rent-strike and escrow experience and confirms the replacement claim came from News12; it is not incident evidence."
+    },
+    {
+      "export_ordinal": 1812,
+      "message_id": "88e1273cb853864c854cf7df7d09cd6336274c18c35df1d722745ebc70b0e692",
+      "raw_text_sha256": "afbf719af6f37dfc45d996c98c9707b8fef3b844788b049dec8b9ae6cd934103",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Adding a rent-strike topic to the meeting agenda is an internal organizing action, not a building incident."
+    },
+    {
+      "export_ordinal": 1813,
+      "message_id": "9eff27ccf3ebc21d87a09f9376c99e0ad9317d9a2e76e3285a2a24b71e00fe3d",
+      "raw_text_sha256": "5d835e8666bd5cf65be66efbca6847b24e41fd85993448a211ad7be5fea559ab",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The salute emoji is acknowledgment of the agenda update and contains no semantic condition signal."
+    },
+    {
+      "export_ordinal": 1816,
+      "message_id": "815d87edd8ffedb9f2cec990e85ee4e6bd0a985ff88f90fc72a529bd496be35b",
+      "raw_text_sha256": "32445ac40b2fdd56873eb8c82cb7fa39ba692b0cba565c362c448beddd657d8d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This comments sarcastically on management communication shown in preceding images; the caption itself does not state elevator state."
+    },
+    {
+      "export_ordinal": 1817,
+      "message_id": "b6f038c45affbed664b4c8f1d1410b55f436e44ab031765b02d8c876ea9083e8",
+      "raw_text_sha256": "c3d3752bfe6e99a856714c4b5285131cd9ce2bd3c53bb4cc7c7f0caa53644e2d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This proposes what an adequate elevator notice should say; it is not a direct assertion that an elevator is currently out or under repair."
+    },
+    {
+      "export_ordinal": 1818,
+      "message_id": "705fa4216b8d14d67dc1cd82e60bc5c51a2179f34813a34db10ef159bc965365",
+      "raw_text_sha256": "5f50c4001fde1117e39132bb32d382f3d143db1032516e5af7ac3d3dbabb4e01",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This records a tenant's call questioning 311/DOB closure practices; it does not add a new elevator observation beyond existing incidents."
+    },
+    {
+      "export_ordinal": 1819,
+      "message_id": "8c0bbccadd05adb0d290069ce1a47c64a6e57fc0ce22e0649bd7e38051762531",
+      "raw_text_sha256": "d0154ea3aec4770cb0180bada7f5302af0265c85a8c4bbf34f2354a3cd515f5d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This relays general agency-contact advice and asks whether anyone tried it; it is not a service or incident update."
+    },
+    {
+      "export_ordinal": 1820,
+      "message_id": "72b722831f7c483d7810b4ede80b925d9ef259d1d437901387c88d01c5ca5419",
+      "raw_text_sha256": "9f2871c7c344258998d317e5fe7b2f89b0b08e2fbf2e780cf35f6112cf5d3272",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is the sender recognizing an existing DHCR complaint, not reporting a new filing, result, or building condition."
+    },
+    {
+      "export_ordinal": 1821,
+      "message_id": "93c3a91b4e8a74980eef4ca040d777804ac0cceffece4a465d57e566a3aeb1a1",
+      "raw_text_sha256": "14bf4e7dd541758570afb490b10cc785a093b902cecc93a2fb988bd3d2470080",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This clarifies how tenants contacted DHCR and contains no new agency disposition or incident state."
+    },
+    {
+      "export_ordinal": 1822,
+      "message_id": "25ff9ebd12b335f568d44d0b22f578c9ab6d7c7ddd046b7fcf6cdd0c51825b0f",
+      "raw_text_sha256": "be3872adb273b1b27b9c93fff35269acd30af2ff37b43ec8e209ceb38a32a690",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is an unattributed recollection about rent-reduction eligibility, not a verified decision or physical condition."
+    },
+    {
+      "export_ordinal": 1823,
+      "message_id": "bfca83060603adc87bc0cc1567dc742ba44bb8cb6e1245b3f59292c4fa283a3d",
+      "raw_text_sha256": "816d4604ddc20b5f27e629ebc0b974fe2e9c0f6f9bbd8a590415096aae5adc0b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This reports a worker's statement about unionization and a planned strike, which is labor/organizing information rather than a building defect."
+    },
+    {
+      "export_ordinal": 1825,
+      "message_id": "e0831dc7d55f7e882cc53af2e8556b783c12e2662cc9bdd4e4a93047239e2f80",
+      "raw_text_sha256": "ee18e7368cbc495cb7436e4703480466787146fb86e0e19126c79bf5b56008e5",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This sympathizes with workers dealing with elevator problems; it neither observes elevator state nor changes the recorded incident."
+    },
+    {
+      "export_ordinal": 1827,
+      "message_id": "2973e6871793a8662a3d4ffcaf14c8393833d0919123ec7395a82d748a8d4ebf",
+      "raw_text_sha256": "a3ce9041bec48601bdd80943e39ddc4da5de51b87d268f6d924a9cf8f0376b68",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The two-word rent-rebate question is legal/financial discussion and contains no condition report."
+    },
+    {
+      "export_ordinal": 1828,
+      "message_id": "927090a4ac43ed6f141b7b76e6dc2757d5956d5d5deb825947cef470036b21b6",
+      "raw_text_sha256": "c7cd3448aee4aeec8bef6672e333c6a17238715a1eaff5b35ecc6c1e85a6a5bb",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This asks a general DSNY-jurisdiction question about possible recycling obstruction; it does not directly report that a current recycling facility is inaccessible."
+    },
+    {
+      "export_ordinal": 1829,
+      "message_id": "4b21c69d9950fe404a5b47acc04419222fec9c2b837701bf1cf99c229c5ce0cb",
+      "raw_text_sha256": "3615888c63dc7d11e68bb5d4fb5af0ccb3350ada754fde4a9c9b24baeeeb4c35",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This asks about prior tenant votes on legal remedies; the subway aside is personal context, not a building incident."
+    },
+    {
+      "export_ordinal": 1830,
+      "message_id": "0edee61298f37d69455da156673d06a7f6926fa2dec826a90e01ee8ebd641342",
+      "raw_text_sha256": "26fbbb83435c652a8adcd71f3b3ce203d100be9fa7e7c5f128e043d57cf66f41",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The fragment asks the group to revisit an earlier legal/organizing item and contains no recoverable incident assertion of its own."
+    },
+    {
+      "export_ordinal": 1831,
+      "message_id": "7cab0fa19f7618c2b8b9f36680e76466f06d7f753381db4de7f4291a77a60333",
+      "raw_text_sha256": "3f23aff22ba10f93f46f44304e57bf11a038f4df384fdb037000c200f8565b16",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This points tenants with private apartment repairs back to an earlier resource; it does not state any particular unresolved repair."
+    },
+    {
+      "export_ordinal": 1833,
+      "message_id": "7fc5141a68e9e6ea79f807970de3efa5d9469c5552740576f9732bd0359ed728",
+      "raw_text_sha256": "53bcaf4b4797f30f7cf41344257fbd21ebe9c518a44366af7c6cc71499c89bd5",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This recounts worker union status and a historical strike; no present building-service interruption is reported."
+    },
+    {
+      "export_ordinal": 1834,
+      "message_id": "dce6c67652eb1540e6965a171cb029a02e32d91372b83a810b8ca5ceb8aef217",
+      "raw_text_sha256": "e973126347d9276b8543cd3c49f892775e5c79b309e1bd97104bfe3c4757f6eb",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Tenants taking turns at the door describes arrangements during an old strike, not a current access failure."
+    },
+    {
+      "export_ordinal": 1835,
+      "message_id": "6b8cdf061dbbfd1456421fde23f1c3ce7d527cad9451a9b0c789e858628a18ee",
+      "raw_text_sha256": "d0efdf76836dcc52607dc40deb8f68e2617182d6f62e0b02b2ea26b204ace958",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Support for a potential worker strike is opinion and not building-condition evidence."
+    },
+    {
+      "export_ordinal": 1836,
+      "message_id": "2e22d73f881fb15a9c7a43caaf4356e4987bd17cb75b9100eafa50a7afe238b4",
+      "raw_text_sha256": "1bf92e73feb3debe0a105901e7f4672679ad49389bc3a02568a12dc2823b3b23",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This predicts trash-room closure and outdoor disposal if a future strike occurs; it does not report that rooms are currently locked."
+    },
+    {
+      "export_ordinal": 1837,
+      "message_id": "c74fe749da83f514ad51a7ab3340538820d658a9db700a73126f9423c8de1048",
+      "raw_text_sha256": "19173395eab7d43a513638290fb4e1761f520094a1d7ccfe0b7820ab8412e6a3",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender hopes the prospective strike impact will not occur and mentions recurring elevators generally; this is hypothetical, not a current outage update."
+    },
+    {
+      "export_ordinal": 1838,
+      "message_id": "65b025d70b539ef596950182b429de8589873e7083e4cfb77ec9aa9aa106f457",
+      "raw_text_sha256": "1b0b9402aafe03010edee559daa01a9bdeeb0d1a7976b02688508eed314386b9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A general promise of mutual support and accountability adds no observable condition or service-state change."
+    },
+    {
+      "export_ordinal": 1839,
+      "message_id": "0045f757f9b330bd54daaf8fdee0a19d4c0a7dac96fdc2706a61b7e753a19a0d",
+      "raw_text_sha256": "9538484c24db90bbde4bdb3c6f166778f0ae0727b177c948e4b009822e6dd762",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This states the labor-vote and negotiation schedule, not a building incident or present service interruption."
+    },
+    {
+      "export_ordinal": 1840,
+      "message_id": "313d6b8a708b366b63c6307a925f077cb505ca840c556a6d79131c5ee142f96b",
+      "raw_text_sha256": "85a39ab345d672ff8ca9b9c6876f3adcacf45ee7c1e2dbd2408fd338bd55e07e",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The one-word agreement confirms the labor-discussion exchange only and contains no independent condition evidence."
+    },
+    {
+      "export_ordinal": 1841,
+      "message_id": "6864ff2ea96eeba93da0f13cfc01fe492d40895bfbc7c7705621abd0795adf86",
+      "raw_text_sha256": "1e64f202b5e43e06e8e46e7a35b18a2a1f22817f6aab00b6d43791c6c2f31383",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This asks whether documenting prospective strike/elevator impacts might help a legal pattern argument; it is strategy, not a new observed event."
+    },
+    {
+      "export_ordinal": 1842,
+      "message_id": "959f19d72e21277fcc28cd5b1bec1e3833351b9b5e5baf3d2495ff2f5af90a54",
+      "raw_text_sha256": "11e29a2efb106eb82fc369385ed095539e567551a0fc9380e02086c4f9e1308c",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The yes-vote update concerns a worker strike, not elevator, access, garbage, or another current building incident."
+    },
+    {
+      "export_ordinal": 1847,
+      "message_id": "8fcd442c248253f3a23b705555ff7f19499eae7565fa29b1acd73678c50362c5",
+      "raw_text_sha256": "931dcb2f61c6e11f9841f1e40fe0de3fce0429f424406b89f947f8bcd72f10b3",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The clockwork remark reacts to the directly recorded north-elevator partial-service failure and adds no distinct observation."
+    },
+    {
+      "export_ordinal": 1848,
+      "message_id": "df1ec823666354d08f23332e59d5fd580e5eca826538f81d7cd1ebe8f6b8ba4a",
+      "raw_text_sha256": "7b6705d2a6f2aeabb7c8a917a102c6a3a7d06d94b0227936774f3e6b016b2847",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_north",
+        "event_type": "outage",
+        "incident_id": "f61da978d458334946b1cfcae18013e9"
+      },
+      "audit_rationale": "The direct north-elevator failure report remains an issue despite surrounding commentary."
+    },
+    {
+      "export_ordinal": 1850,
+      "message_id": "332dac217af9bf078e6000439ad6d50e4e520fb0c86ad234c8181333d68b2c9d",
+      "raw_text_sha256": "2a4be55be90939b34776e42c1220328d0919ac813c0b6bc819b2db69e57e5b23",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a reaction to the already captured longstanding 14th-floor descent-service defect and supplies no new status evidence."
+    },
+    {
+      "export_ordinal": 1853,
+      "message_id": "a1ae9047f046a080eb76833ba3551d0e3f4e412c3ce920890aa4c4782fa44ab6",
+      "raw_text_sha256": "653f733d7d91158f3883a1ce5ca7465295eafb13b1467f059be4582100d96ccc",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is tenant-meeting attendance and rent-strike voting logistics, not a condition report."
+    },
+    {
+      "export_ordinal": 1854,
+      "message_id": "d29b3b1c10eb82ce0498f300e885a32f3f5234196d03333cf90b804747fa48fb",
+      "raw_text_sha256": "a17bfeb095fb3079a583d0aeeb67a56505cbe0fc9d899607791d45f7687aa1ef",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a social response to a meeting absence and contains no building-condition information."
+    },
+    {
+      "export_ordinal": 1855,
+      "message_id": "ebe4d294d95f8b6f6f7eab6414a9dfc72f3c338f4228281a6f21a9c692ca10d8",
+      "raw_text_sha256": "ffe3fb7df0ec3d6f7232273ae71cf89a187fc33a453b869336be156a7cf2d810",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This asks only for the tenant-meeting start time; the surrounding messages answer 6:30 and contain no building-condition report."
+    },
+    {
+      "export_ordinal": 1856,
+      "message_id": "4d66e49baafeaeff28ca87e25947813b3e47256190e1938275757cc527130a19",
+      "raw_text_sha256": "5c20ecacf9d4e9fb455fecdf1616a70ebcab96de7a3bd94be4c1c04bf41ed31c",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message supplies the meeting time in direct response to ordinal 1855, not an incident time or service status."
+    },
+    {
+      "export_ordinal": 1858,
+      "message_id": "6d9dc68eb81d34aa87c94542528002f86f3cae1b6d0d2357fc101f323645ebb1",
+      "raw_text_sha256": "76296116240b6cf08de75f70483a5956639766ad0e5f818a384c7c6fc5e846e5",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Seven stops off the Q train describes travel/location for the meeting thread; it does not report a 455 building defect."
+    },
+    {
+      "export_ordinal": 1859,
+      "message_id": "b206429f1300298f20c728e308c1b796648a5746eaf1ee77b8163ebfc465b921",
+      "raw_text_sha256": "c6e717a8c6cc7480d2fd956209fe81713274f601ada06918a0cbc17f93bfe494",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a legal-strategy question about rent strikes and rental-assistance programs, not evidence of a physical or service incident."
+    },
+    {
+      "export_ordinal": 1860,
+      "message_id": "dd89e3a5b7230ac24c4ecdbafffc14736f2e9f1bb7b2ff62e69ffb2b5e200e60",
+      "raw_text_sha256": "409eed0e4a25e24b185070946bcb99832ce9ea2e3690241428854830bbae1548",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "We are here confirms meeting attendance/location; the adjacent elevator stall is a separate message and must not be inherited."
+    },
+    {
+      "export_ordinal": 1863,
+      "message_id": "a560a9d9318102da06343be8b98eb1ec7c09d184efa435b4349bfc540bfec2ba",
+      "raw_text_sha256": "ba78f465e8a21cde81443433756db079e9dad46c1dc3a9c0653c93a102f8792a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender asks whether an already-discussed DOB inspection happened or is scheduled; the question itself supplies no verified condition or outcome."
+    },
+    {
+      "export_ordinal": 1864,
+      "message_id": "3054353405380d47073fc699bbbe72f750356f55476dbdeb9a35158b463fb8b2",
+      "raw_text_sha256": "d7676a2d3215d60f087c9d58da8180cf17012d4600760b4fd327f3037edd395c",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is explicitly hedged recollection about which DOB inspection occurred after a news story, not a new verified inspection or building incident."
+    },
+    {
+      "export_ordinal": 1865,
+      "message_id": "0882403ba0df83a8f0bc1fb014f641eacc29449a2692b3049496cc9b1b21e355",
+      "raw_text_sha256": "b05edd31a0bdd7c1783a2ba0d954eb75f38375ce80bcac02d33cc3e1ff8e3fac",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "It relays scheduling for future individual-unit inspections and does not describe an observed unit or common-area defect."
+    },
+    {
+      "export_ordinal": 1867,
+      "message_id": "142b2715a5fb2afd45c7f47d79a30718c21ba22c1086382aa938ab1e02068f97",
+      "raw_text_sha256": "435a4d5d8f30a9674d8cd014e7b2ffbd8020a589c96665f51dc9037b36467d34",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message seeks information and outreach concerning a 2022 lawsuit and residents at 514, a different building; it reports nothing new at 455."
+    },
+    {
+      "export_ordinal": 1868,
+      "message_id": "9e6d1974ca4f0c580327236e0091023da88d8ab93849c33072f8290b5b6a2c18",
+      "raw_text_sha256": "ae52fc6f414e7f8987db3a616458b84921020e2b3224387aed6f7abb0f5623f5",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a joking offer to visit the other building discussed at ordinal 1867, not a report about 455."
+    },
+    {
+      "export_ordinal": 1869,
+      "message_id": "4b52d18d69921023ab29bf590da0e873fac8d5f839a79e177bdec0c4bc542965",
+      "raw_text_sha256": "bd93278630d7398254db241f2bca28cfaf01c34aa1e15d728d31eea2de9853c7",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender offers to accompany the proposed outreach walk to 514; there is no condition, outage, or repair signal."
+    },
+    {
+      "export_ordinal": 1872,
+      "message_id": "45d4b5ac7584eb546c2f723d88192b88da0869a9b1b8c14d3f4ffc75f6e5c36a",
+      "raw_text_sha256": "6ebaab4f225aab1a5d0d46bbe22fe7b221b664f0761f798eae22e7c3bd715a2a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This comments on employment and tenancy relationships involving Weinreb and doormen; it does not establish a building-service issue."
+    },
+    {
+      "export_ordinal": 1873,
+      "message_id": "4c21b0b941dd878825c078707169790bc127434873a44e1f5c589d83d3750ba8",
+      "raw_text_sha256": "3b4cb364f3828cb0af97adda8db093e7d34eff6792ec62cebc04b3de05d1a930",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A recollection that a repair worker rented from the owner is background commentary, not a present repair request or defect report."
+    },
+    {
+      "export_ordinal": 1874,
+      "message_id": "7461c755150d0e884f1cd3bbaf5419dd75543155a0f0150172183226eef2d3e8",
+      "raw_text_sha256": "84bf00390e2b450524be4c3ed4ca197bc0081c8708d4ad1322d76f39b94629bd",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a conversational reaction to the worker/tenant discussion and contains no independent factual condition report."
+    },
+    {
+      "export_ordinal": 1875,
+      "message_id": "c162c2318840ff3e7ec9178f132f4eb6e2d1209b2576122a96a1f788d817f425",
+      "raw_text_sha256": "68dd524080b35da97abefe1da204c2ad1d1d26dc2d0e66e62ff0723e97b5812a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "I didn't is only a social reply to whether the group knew the prior fact; it cannot carry the neighboring claim as incident evidence."
+    },
+    {
+      "export_ordinal": 1876,
+      "message_id": "fead2d513580c50845cba4754310cc3ce281ce00a3182bd1c4774e7763272463",
+      "raw_text_sha256": "da8346881a9b434c233bde9b267caacdc4b9a5efd7d5f6473458bc1b92ccd518",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender shares outside reading about a lawsuit involving other properties; the link is reference material, not a current 455 fire-safety report."
+    },
+    {
+      "export_ordinal": 1877,
+      "message_id": "b435b0bc93237694f9586a957ee70b6772cb738b781507ab649cc84ed273a862",
+      "raw_text_sha256": "350433270123c1ddc88d6c140812e91c1d3cdeb738c040dc97137c7bf1187afa",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A document placeholder without extracted contents is not independent incident evidence."
+    },
+    {
+      "export_ordinal": 1878,
+      "message_id": "7c992d0d339888c5f239444785697bdec32713079e9f0be5bade181fe0be7cf0",
+      "raw_text_sha256": "c6eb879da5ae5200c42ee979486a4156bfeacb26b1e25dc971e3f8f2f9956cb1",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This expresses an opinion about the owners after the external article and does not add a specific 455 incident."
+    },
+    {
+      "export_ordinal": 1879,
+      "message_id": "9b22d078b36dca86f08e20c049d3fe09dd85feb72a3e3b63f7170494755e2851",
+      "raw_text_sha256": "6118e53584a0e04eb2e84133269496060815ec142f516c342f165771b6709d88",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The shocked question refers to deaths discussed in an external article and, as clarified next, not a current event at 455."
+    },
+    {
+      "export_ordinal": 1880,
+      "message_id": "c653df6c1a85896242911ee990859a0261b188de72c968922951f39f56e12d67",
+      "raw_text_sha256": "62e2e36624254e443f1680005e33bed188c352c8c932bdfd08662087b526310d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This explicitly says the reported event concerned an unrelated landlord building, so it is evidence against treating the thread as a 455 incident."
+    },
+    {
+      "export_ordinal": 1881,
+      "message_id": "b2a31c71f26bbb8147d9426bc91c1bb236af70df6525c428fe70b6488799ce66",
+      "raw_text_sha256": "25b2bc954171aa0aa7cf74f89c48c39254c1707ecdcac81f0c288eb1702de8eb",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message is an emotional reaction to the clarification about an unrelated property, with no independent issue content."
+    },
+    {
+      "export_ordinal": 1882,
+      "message_id": "3feaa4c0a02547e21c17c3d7240189f93db7d91e7f90bc0af259fc590f7f29df",
+      "raw_text_sha256": "19b3bd3c8553f84fc23e68ab90850950b26090bd217ca74575578036dacb85ca",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This gives a general analogy about the Ghost Ship fire and loft regulation in the Bay Area; it reports no observed hazard at 455."
+    },
+    {
+      "export_ordinal": 1883,
+      "message_id": "0d9f97ef60625f8dc8f021571f21908081d546592d9ee7b8b8c241988404a654",
+      "raw_text_sha256": "5aa47861b011a8db07130a8b7a6521848e0a3302657a6f763dae522087f7628a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender explicitly expresses uncertainty about whether outside material concerns the same lawsuit; it is not verified incident evidence."
+    },
+    {
+      "export_ordinal": 1884,
+      "message_id": "db2cf55dd128e9b8ac0ebe30a926f1ecd78067f01cf4a46c61fd04a728484d27",
+      "raw_text_sha256": "4396e8e5e43c163b15a94915139611c5faeb5de68e61360dd081274a18b3c65f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This comments on ownership of the landlord's office building and does not describe a 455 maintenance, safety, or access condition."
+    },
+    {
+      "export_ordinal": 1886,
+      "message_id": "72e406c19e8e573e0657472eb81b3d4ad67d3fd0a28a0cba339a9bf7407cddb1",
+      "raw_text_sha256": "f72ab0e03a8e38a76e1604e8fd4b269b517c2eff200ebe6b3a178e4a6b8926db",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The speculation concerns an unidentified building in the linked article, not an observed defect or status at 455."
+    },
+    {
+      "export_ordinal": 1887,
+      "message_id": "bcd636316c4b36e281fd8b358bcb0f879ba949746b4e7a3f5a0e62cdfbe4d98a",
+      "raw_text_sha256": "ab0dda690f84d2c3a9ba32a7765bdaf7499a619fdcb58672c8e6a88f099aa8bc",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A generic Bing news-search URL for 32BJ provides external labor-news context but no building-specific condition or confirmed action."
+    },
+    {
+      "export_ordinal": 1888,
+      "message_id": "6a14023a2855639b3d3fe85f001a94907f4ae79542559af3852e8c8710f1478d",
+      "raw_text_sha256": "19e9327be9e1361ef934a546611b7b63858ffdad40eee5660b901e10be26c2c0",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This reports distribution of notices about a possible labor strike, not that a strike, access restriction, or building-service failure actually occurred."
+    },
+    {
+      "export_ordinal": 1889,
+      "message_id": "c6c5eecb0bd81de4f0b571a2a95c5b96708ca255fe7bf06c80d4d46fddbddeda",
+      "raw_text_sha256": "df6d794ad28f682e2645a5d8a14dda9c235cb701b3b0ea283fad8b8266de2760",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The elevator reference is explicitly hypothetical: the sender asks what to do if it breaks and says they have not checked the notice."
+    },
+    {
+      "export_ordinal": 1890,
+      "message_id": "aeb5bea5482b30d49603b5e4830875e005c28c378121ab4bd8ccf621877b9295",
+      "raw_text_sha256": "27f65f114e9349e6a433e5c77adc3145b232335fac1b2cb8398b4f10c23a79a9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A deleted-message placeholder has no recoverable content and cannot be used as incident evidence or context inheritance."
+    },
+    {
+      "export_ordinal": 1891,
+      "message_id": "0fd2d64ccf5577bcde79b07ec0fb2d77092c8aec913ee5684864cbfe92470023",
+      "raw_text_sha256": "4c588b01dfe737195e64481f7b2f8cb0b02d2b2c07946f59d113013343d08c6a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is second-hand, incomplete description of an unread possible-strike notice; mentioning guards is not evidence that guards or an access problem existed."
+    },
+    {
+      "export_ordinal": 1892,
+      "message_id": "977fecc23d2dd255babfcf84ba6501ad363700668358b0ca88b0b109e646f8c3",
+      "raw_text_sha256": "49ca500b1a932e4942b33c48f6896c9970dc2cb8ce5bb726d8f7f9cb0641cc0a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This simply thanks the prior sender for notice of mail and promises to check; it adds no verified content."
+    },
+    {
+      "export_ordinal": 1893,
+      "message_id": "0dcd0843ee7c0f892bf799e37d4252df799391ed972fa26435cffb46e9cb5117",
+      "raw_text_sha256": "d029849f0f2aabc6df1d10eb6e075ebcb2f93b9f9ce9321b30fe54f219626cdd",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "No problem is a courtesy response with no semantic incident content."
+    },
+    {
+      "export_ordinal": 1894,
+      "message_id": "d74551881fa8a1a0e4aafddc3113354b062e5bf00df37ac3c5b152ecadf9830a",
+      "raw_text_sha256": "d0a2a96209f3cfd2f1ca3dc138f2bc86bd2941d63026693641e9742a72dc50fd",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender expresses hope, based on news, that a labor strike will not occur; this is neither confirmation nor a building-service report."
+    },
+    {
+      "export_ordinal": 1895,
+      "message_id": "686fc42947ea69b8abf6d1ec68ea5a6f24b29891ac674667b062a7e4e18b28c6",
+      "raw_text_sha256": "51b1df18e9ade24403c3be05473e668f3e8d83e80e9d3d0e6c573486512f3b5e",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is organizing commentary about using management's notice infrastructure as evidence; it reports no maintenance or access event."
+    },
+    {
+      "export_ordinal": 1896,
+      "message_id": "497d7112ee09814808a3c8b6b5117368b7000acde96c064c34eb1f3653345af9",
+      "raw_text_sha256": "85a39ab345d672ff8ca9b9c6876f3adcacf45ee7c1e2dbd2408fd338bd55e07e",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Yes only agrees with the organizing observation and supplies no standalone fact that can be safely inherited."
+    },
+    {
+      "export_ordinal": 1897,
+      "message_id": "eb4f752f47880d7fcd06ddfc2d6e49a805b06c335d9292615bf113784c40fb00",
+      "raw_text_sha256": "426136f21e2a9ca0985b33ef6a4005f300c472066390564c10722190aaeb6e12",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The omitted highlight-reel image has no textual condition report."
+    },
+    {
+      "export_ordinal": 1898,
+      "message_id": "86e0122d70d5692a569c416106e32fe9f6d19637394a43b367efde3bf19f7dd5",
+      "raw_text_sha256": "426136f21e2a9ca0985b33ef6a4005f300c472066390564c10722190aaeb6e12",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The duplicate omitted highlight-reel image has no textual condition report."
+    },
+    {
+      "export_ordinal": 1899,
+      "message_id": "84e882b9334bec6a6c019e35ca1fa92126ab30882b1254be638f3e8b878212b8",
+      "raw_text_sha256": "1498b3f538b698314f67c63bbc30b0a733452d6dfaaf72207e77af5c2e0a71df",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender concludes that an omitted document is generic and not building-specific, which weighs against treating it as a 455 event."
+    },
+    {
+      "export_ordinal": 1901,
+      "message_id": "347e5e837b8dfcc13f26a071a6e3799add40d6fe678a72f511de917cbfff4945",
+      "raw_text_sha256": "27f65f114e9349e6a433e5c77adc3145b232335fac1b2cb8398b4f10c23a79a9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The deleted-message placeholder is contentless and cannot establish or update any incident."
+    },
+    {
+      "export_ordinal": 1903,
+      "message_id": "b0e43357eb99cd5707ec22a3ad8cd6d481e314094d15fd8eee8dc9bf81948c2d",
+      "raw_text_sha256": "6003eee8ae9fc08e63f834d174f5820def12b4fd1a10195178a64b13bdc92a2f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a humorous observation about a person in a photo and has no building-condition meaning."
+    },
+    {
+      "export_ordinal": 1904,
+      "message_id": "769dda1d578610508c6800cffa0b52417ff6a5f7931838457dabbadfe400008d",
+      "raw_text_sha256": "101d3a5ba320f433e8ba9a16dc817398e09abe50ebd7b5c2fdf56031a9665135",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Yeah lol is only a reaction to the photo joke and carries no reportable condition."
+    },
+    {
+      "export_ordinal": 1906,
+      "message_id": "7124f06709b47fce609bc750ec3b582bc0c8f5538cc568c09f3b21fde0203f55",
+      "raw_text_sha256": "43fb20776bb20d67fc881d0d539394c562f3501e647d4eed0629e8c932f815b8",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The message celebrates group growth and encourages legal representation and outreach before a meeting; it is organizing logistics, not a defect report."
+    },
+    {
+      "export_ordinal": 1907,
+      "message_id": "4814c37cb2435d98fec700826526fe4cb0c892f1ebceec450659be6f9450ceac",
+      "raw_text_sha256": "7c34e929b93ea26015658d331a2654994b993eb944067ff46527d73779dce75a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This explains retainer and apartment-condition-form logistics for legal representation; it does not itself allege any particular apartment condition."
+    },
+    {
+      "export_ordinal": 1908,
+      "message_id": "4527a4b391208d4ac2b9e33f2ebef2cf41c85828b683be3d872db875069c18c8",
+      "raw_text_sha256": "ef35b0a06d055ef15668cd59241e4e0c9d4fbf20002f9c93d5e5a0a77278ef77",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender requests a dog-walker recommendation; this is a neighbor-services question unrelated to building maintenance."
+    },
+    {
+      "export_ordinal": 1909,
+      "message_id": "bf6b00193f8d55d8180701a1056268adc5428c5e3f92513a8ad721edd96fcb40",
+      "raw_text_sha256": "faab3bc92a72a4c08b25b4d5b4f97cf08b1c597e498a13786ea1b8cd1fa263e2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This clarifies whether the requested pet service is walking or sitting and contains no building issue."
+    },
+    {
+      "export_ordinal": 1912,
+      "message_id": "3a8b8de67e4afb5db85619c56edfae338f6fd7f24c25393a6074c3a7df052217",
+      "raw_text_sha256": "dff0d15b1c04d79463d7cf729c208d5681ad48e05717dbf774f96d034708477d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The elevator situation is a joking preference for a dog walker familiar with the building, not a new observation of current elevator state."
+    },
+    {
+      "export_ordinal": 1913,
+      "message_id": "dd58b2a11419082d325eb8d15944dd30efc8d5044a65a8d00cd32568d4695c42",
+      "raw_text_sha256": "d1336a6309b0d1361561b8bd248e6e3f5e47aa0cc106727f100ddbdd9347d7b5",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp membership system event recording that a participant was added, not user-authored incident evidence."
+    },
+    {
+      "export_ordinal": 1914,
+      "message_id": "0cb42a5f23c5d4aab9411d8cd2b34c8493eba6969a6a2e75be688abe361badcc",
+      "raw_text_sha256": "6ffb9fdf011068e681ddb3a4a4660b04fc0ae9df42df2820d9cb55cf2ea03bdd",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_north",
+        "event_type": "outage",
+        "incident_id": "eea1c2f67ecced7156cd74b081f6b136"
+      },
+      "audit_rationale": "The message directly reports the north elevator dead at the fifth floor."
+    },
+    {
+      "export_ordinal": 1917,
+      "message_id": "a6f828e0f6650e7ce164651beafdefb0e765b98a9aba96fd42979fc4d8c80c01",
+      "raw_text_sha256": "52eb2c88f4f2e59fb3c51e4c49e7e426abda705e045dafab8e50f26e602c7b9d",
+      "review_outcome": "deferred_missing_evidence",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The ambiguous 311 closure lacks a case number or reply anchor, so its elevator incident cannot be selected safely."
+    },
+    {
+      "export_ordinal": 1918,
+      "message_id": "74ed63fe8318ec299856fac1bb91c9fcd41ad30712dcc998e75489f466282a83",
+      "raw_text_sha256": "f165394db2c225b40387e02a21bbde4e967a02b38b5ab08a10e05855d440b040",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender states a future intention to call again; it neither confirms that a call occurred nor adds a condition or case identifier."
+    },
+    {
+      "export_ordinal": 1922,
+      "message_id": "ed91a537094a331a7440cd378cd49210115cb6af8d22f9b7087d9da97a709791",
+      "raw_text_sha256": "1cd601c5463a8204f6db15239e6a5935220565b9def553fe5cda02cd6195820f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This announces future sharing of association representation and rent-strike information; it is tenant-organization administration, not a building-condition update."
+    },
+    {
+      "export_ordinal": 1933,
+      "message_id": "f3bd56b7a76a79b8d7ae0e48b48e47850a697f91846bbf1f96bff2477f41d538",
+      "raw_text_sha256": "4f520e0757d190ad69c020a98fa6a11b5015fcafc47cefbf2f13407d1417273d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Yay reacts to Max promising to share an existing tracker; it does not inherit the surrounding historical elevator reports as evidence."
+    },
+    {
+      "export_ordinal": 1949,
+      "message_id": "2647bcf6cf7dc19dbe785093f012a8d682d240172ff3b57ec12fea1d64b6eeb5",
+      "raw_text_sha256": "b0182cfbc752a8794519904a9f9015258493c994519dfcd6b6c3c871ff6dd16b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The question concerns whether coordinating advocacy calls would help; it does not report a new outage, a completed call, or a new 311 case."
+    },
+    {
+      "export_ordinal": 1953,
+      "message_id": "33ed9f663734d2d55771579c3ed2cbfe7e82209490153cd8238991810bc345b6",
+      "raw_text_sha256": "406b4b54b32dcda345e847af447dc641573af46fbd68fbcde69d4fcd6bcd2077",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "For example qualifies a proposed call schedule in the advocacy-planning thread and has no standalone incident semantics."
+    },
+    {
+      "export_ordinal": 1956,
+      "message_id": "43cff66afa2b7f515a35eb18716f793b76a6d3dfd7ba1b928105fcd01d0ae6b6",
+      "raw_text_sha256": "ac12b6ee3aa81dd4e7464a271b1b27a2b5cca544f113ce4364de259feb4ad9a9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a general government contact URL shared after advocacy discussion; it neither documents a call nor identifies a building condition."
+    },
+    {
+      "export_ordinal": 1958,
+      "message_id": "093390d4ac1ca4ee91a20c18363a78fac6684edbc7abb4fa405b219a6068bad4",
+      "raw_text_sha256": "bedf5ee5671abb39e3609903fca587912fa5074dfa5a1badbacfed5f8fdc1045",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This explicitly reports an external Q-train service problem and work lateness; although an elevator incident precedes it, the stated problem is transit-only."
+    },
+    {
+      "export_ordinal": 1961,
+      "message_id": "d158f2747b275ef389e1bb1ca614cac6d91dad6e6e8d94ee52424b3e5775bc0d",
+      "raw_text_sha256": "dc7da8081024386f03ca006d1f28d1c482088e3b8da969e9658c998916d723cc",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_south",
+        "event_type": "outage",
+        "incident_id": "b79f168647c27801185d5ad779fba1fb"
+      },
+      "audit_rationale": "The retained media caption itself explicitly reports the south elevator out."
+    },
+    {
+      "export_ordinal": 1967,
+      "message_id": "935e1d7ab523043d5cfbbb86ae278b9c20ef699ad3cc285641deba1acff552d9",
+      "raw_text_sha256": "b871fdfdb7a22defd91b1c3830d282cbeaee846e11bd495fbc08b7cb1a91115b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The sender asks whether HPD's 7A program could be an option; this is a legal/remedial strategy question, not evidence that 7A action or a new condition exists."
+    },
+    {
+      "export_ordinal": 1968,
+      "message_id": "9793af080ea1f7acf7d4ff80fc722b8357c4c79d69963b2310f1536a7b349298",
+      "raw_text_sha256": "9a3b9f5309135f95b8a369acbaaa88f55c60cd63c931333eb6c8adb81b5c4e6a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This directs the 7A-program question to a future meeting and confirms no action, condition, or outcome."
+    },
+    {
+      "export_ordinal": 1972,
+      "message_id": "080bdbc459421d9096ae2196b022dea70935cf2672ebb027cd95f1079148e35b",
+      "raw_text_sha256": "7224d6af59065ef971e3cc40f9d9e04258057691172c5f02e9372db376e9a09b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp group-membership system event, not a tenant-authored condition report."
+    },
+    {
+      "export_ordinal": 1979,
+      "message_id": "67f1af47151fbf8e32760ae7e692dd1380f5a9498d6c1fd398249f3beada5f7d",
+      "raw_text_sha256": "ffcadc08f90d0ea12a45aeac8f9fb3959705e7b2da1616b1e9036eb52d45ead1",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Where is this requests location for omitted images and contains no condition description of its own; it cannot safely inherit unknown visual content."
+    },
+    {
+      "export_ordinal": 1983,
+      "message_id": "0ec697e055e0218c7b8dfba64304bcd83b932a610d01a502457c260f8ffa6e0a",
+      "raw_text_sha256": "a4c2ae3220812d38ffc522851333b3409826b8cc094fab76def8451b334a7dc6",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This welcomes a participant and provides instructions for obtaining legal-representation paperwork; it does not report a building condition."
+    },
+    {
+      "export_ordinal": 1984,
+      "message_id": "06c6e8de3c9db30bfe8b692163d86f4044628f805ccc6c74e6a66770bd5dac3a",
+      "raw_text_sha256": "c3debd2d7a3c05ffeb9cccc05ed5f008f42cde66701df76573a34e46a1cb7050",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is an announcement and explanation of the tracker itself, including its limitations and historical purpose; it does not assert a new elevator state at that timestamp."
+    },
+    {
+      "export_ordinal": 1985,
+      "message_id": "bd81f7102b104f3a953b2a1403d26406ea903d90059a8f5d7fcac3fd7ac543b5",
+      "raw_text_sha256": "f91d2511d5081276d0fd70c0d168452b50f1d38859ea1027d9a1984bc62960af",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is thanks for the newly shared elevator spreadsheet, not a building-condition report."
+    },
+    {
+      "export_ordinal": 1987,
+      "message_id": "0eb52207ac46029bd7ad729c72ee6ca0a7e272f4683586eead7b3207f8b98cfe",
+      "raw_text_sha256": "b48dde4657efd5d393743cb83680b60e5a5d661a17371970880317a3304116b4",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The isolated word has no resolvable condition meaning; the next message begins a separate leak and apartment-entry thread."
+    },
+    {
+      "export_ordinal": 1988,
+      "message_id": "0c0b708c9b4b5438ab088bd1396cf38d3129cae36b5d8e67cce396e9790b8f26",
+      "raw_text_sha256": "7f1d575ea5745190096011b2ac455fd789cf601409b55621b076bbdf41d72b2b",
+      "review_outcome": "deferred_missing_evidence",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "leaks_water_damage",
+        "asset": null,
+        "event_type": "new_issue",
+        "incident_id": "c7f787c91b8d0b53d458e73dafed75d1"
+      },
+      "audit_rationale": "One raw message combines an under-sink leak with alleged unauthorized apartment entry; an evidence-preserving split is required."
+    },
+    {
+      "export_ordinal": 2003,
+      "message_id": "96aa8437fb0396ba259da6ed4eb109dee07297f7e719c67710e12075cccf6b5e",
+      "raw_text_sha256": "48ae37c827cc69994a2ce070ea2d2eb95b0c5d6ee1d3cc27b8d7d5b34d9f7b8a",
+      "review_outcome": "deferred_missing_evidence",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "security_access",
+        "asset": null,
+        "event_type": "new_issue",
+        "incident_id": "f5eb1a7a7da24b38b857ad47a0572a2d"
+      },
+      "audit_rationale": "This security follow-up cannot be linked safely until the combined leak and entry message has a security child."
+    },
+    {
+      "export_ordinal": 2008,
+      "message_id": "2b15b2f16555937fd187b18ea7ca98f7fcd2e69e9f2b2101829fb2493d4a437b",
+      "raw_text_sha256": "08b041935798fbf6fd6ff51099ffedb140a475889986d14f5559ff8e7fc571dd",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This answers who is represented on a tenant legal-services roster and does not describe a building issue."
+    },
+    {
+      "export_ordinal": 2010,
+      "message_id": "9439f762e4f85495edc947b26a8ece7c0b4024ede8406c877e2866f0e0c29c04",
+      "raw_text_sha256": "d5bfd0717d86060c605e0c61050b0370ae40f9a62461cc04095d39457060e7f2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The unit number supplements the Communities Resist representation roster; it is not a condition report."
+    },
+    {
+      "export_ordinal": 2016,
+      "message_id": "0d61ccd007b9f70d5241f4d0239940c5903df78c7f996c1839b8f37ea85f8032",
+      "raw_text_sha256": "707937b3d912f8bc8d610bcf680dff203f73453b1be37c5f46b3c23abc95ad54",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This relays a general 311 phone lookup of existing landlord violations; it supplies no service-request number or new observed condition beyond the already recorded elevator outage."
+    },
+    {
+      "export_ordinal": 2019,
+      "message_id": "eb6fe8b5c397882cff96705d9da85d05ef31a50a95d8bbbe822cf60a652f831f",
+      "raw_text_sha256": "50897993cbdd410ad901cff7dcd44a3bd57a8bf6a859d96cc230a9e02dc692fd",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp pin system event and contains no condition evidence."
+    },
+    {
+      "export_ordinal": 2020,
+      "message_id": "faaea47ae67978c760a24bf80a41b0b6aef6139df4069a884414fb0b73ebbe9e",
+      "raw_text_sha256": "c64468b92e1691e5e404c3466806d8aa94b27e9c2b7911aa4822cfe2fe0f24fc",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This questions 311 duplicate-complaint handling by referring retrospectively to known failures; it is not an independent current outage observation."
+    },
+    {
+      "export_ordinal": 2022,
+      "message_id": "34cbc24020be5829cdbf64008ad68811eba79d40bf115f910d21b26de277186f",
+      "raw_text_sha256": "d54ab17165ca828011e5f8d9d368b1bffa107c57dd241eb09209d218fac10114",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "outage",
+        "incident_id": "02af6bf303a148ccf4aa7b4d27f79a06"
+      },
+      "audit_rationale": "The message is an unambiguous report that both elevators are out."
+    },
+    {
+      "export_ordinal": 2047,
+      "message_id": "37abd8dc2545c5751fceaea2a30c0bda342ca7b84b7fcdb5c800a6aeb85ae2ae",
+      "raw_text_sha256": "970791b0c0a7dde2934fa4034d37c1114b58f0183cdb0f68862aa48a102d9602",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is comparative organizing commentary about other tenant groups, not a new condition at 455."
+    },
+    {
+      "export_ordinal": 2053,
+      "message_id": "84783e461b4991e56d6356192b75146d858bb45713d01c3c9bbbd66765e0c6f8",
+      "raw_text_sha256": "85a39ab345d672ff8ca9b9c6876f3adcacf45ee7c1e2dbd2408fd338bd55e07e",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The bare affirmation follows an engineer and repair-problem discussion but does not identify what proposition it confirms strongly enough to add evidence."
+    },
+    {
+      "export_ordinal": 2065,
+      "message_id": "b3ffea67e6638f93b0d76d8e6a8e87d447d9b7c3450bb04ccf1240994ec3a0a4",
+      "raw_text_sha256": "8beda5f1ba7fb7e7100d71fbc94bea3fbdb4e65c07f66ad7b9f6de15d4fa8940",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is the final call in an offer to bring items upstairs during the outage, not a separate condition report."
+    },
+    {
+      "export_ordinal": 2078,
+      "message_id": "56b5abf4e9913aeca42bddd141cb118381ce6ba02b9e2abb2df079f2ac92ee8b",
+      "raw_text_sha256": "d648c0787cb11105bd1a9eca12235df55edf7243d529145e428a3bbd0fe92800",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This suggests the DOB NOW portal in response to a records-access question; it reports no building condition or verified filing result."
+    },
+    {
+      "export_ordinal": 2085,
+      "message_id": "2a2056c281db8771813ee28325b5c2a6116ea9b503b568ab034de7b9d1dfc9f8",
+      "raw_text_sha256": "2a8f8aa8390ea8070b10bcc1a5bb1db0b2e65de25e6a16d2b2af1ea1a54c50de",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This thanks another tenant for checking DOB records and adds no factual status."
+    },
+    {
+      "export_ordinal": 2089,
+      "message_id": "1523ca298c9012930208a9bc81cdd4ba222f86cf26136b4b6953935b677d9910",
+      "raw_text_sha256": "f18143f929b2f1d8d0e282551d68eada2e3ea8bc55d772c197fec8d3170a59a2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Acknowledging receipt of an unspecified update does not state a building condition."
+    },
+    {
+      "export_ordinal": 2090,
+      "message_id": "67df30965ecd8e10337092db3ad85808d90fbc321a74ac2754b805902341e766",
+      "raw_text_sha256": "bd57f3b934e2ccaafa024220729dc6940788443dd570878dfc255ffc0e18f97b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is approval of a promised update and has no condition content."
+    },
+    {
+      "export_ordinal": 2091,
+      "message_id": "b78bcfd882c170d9f732dfa18a2799be6fdef5d618f062440fe8decd5e86c73a",
+      "raw_text_sha256": "083fb06b41926327487c231f3176b76629705631e07eafc3a3283509f200e0d2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp group-membership event, not a tenant issue."
+    },
+    {
+      "export_ordinal": 2097,
+      "message_id": "8171bfe14e22303c21f1122f218e27a682648a0d9f941ea87cc3b134b9dfa745",
+      "raw_text_sha256": "fc0b4c66fb64d1c295e969fa4c3342a589352fea14baafe3b71f55e8158e00f8",
+      "review_outcome": "deferred_missing_evidence",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "security_access",
+        "asset": null,
+        "event_type": "new_issue",
+        "incident_id": "94f5fa4d29c462498268f2633e161c69"
+      },
+      "audit_rationale": "Management's entry response cannot be linked safely until the combined leak and entry message has a security child."
+    },
+    {
+      "export_ordinal": 2103,
+      "message_id": "4febecad4483afc61c4ce4143dd8991fbebf84bf4e190cca20072bba96f99e44",
+      "raw_text_sha256": "a6a2729cbf6bcadce577a31f7f76201d5ce63c57d6c53318000d67714bb354ef",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This thanks someone for outreach advice and adds no condition evidence."
+    },
+    {
+      "export_ordinal": 2111,
+      "message_id": "2e9fa902f0ccb2b16cb6a0ba3d96b4e7d43bbe2669aacdd8f051d22085df9d78",
+      "raw_text_sha256": "bb9667fe86846593a5ae8dedf251de143ef065701d784b63c8745a2432d8d5f9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_south",
+        "event_type": "still_out",
+        "incident_id": "a563e5594f103b491a0b657bf81dbde1"
+      },
+      "audit_rationale": "The update explicitly says the south elevator remains out while the north is functioning."
+    },
+    {
+      "export_ordinal": 2112,
+      "message_id": "ce16b1d4f1fbc8dd3793ccb0cb6cc520574256873efd92875218d96f1cc89c76",
+      "raw_text_sha256": "a1e517ea03146c7bc47b48a2575890e0298c53a42b6e7881f45c5d7a816c0df2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "still_out",
+        "incident_id": "a563e5594f103b491a0b657bf81dbde1"
+      },
+      "audit_rationale": "Zero elevators in service is a direct continuation of the active total outage."
+    },
+    {
+      "export_ordinal": 2113,
+      "message_id": "c902bc27dc3ff2eeb08f1b303a7171106dcb1298af35f28155e9c57e348c555b",
+      "raw_text_sha256": "fcecb5d2192b5be8bafa7158c447a82721a11d71e06481a617780a72be27c5ae",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The PDF attachment placeholder alone does not provide extractable incident evidence."
+    },
+    {
+      "export_ordinal": 2116,
+      "message_id": "912e47b7bebe21b2dd7cbcfe7be2d351e4fff3ff88895ae83c5bdc7970236bd4",
+      "raw_text_sha256": "cec63ee225de38d90ad2dcc3f828d57c9ee0bb7e37244c2d87109b5e67f9ca74",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "outage",
+        "incident_id": "a563e5594f103b491a0b657bf81dbde1"
+      },
+      "audit_rationale": "Within the active outage, the message directly documents the no-elevator emergency and tenant impact."
+    },
+    {
+      "export_ordinal": 2119,
+      "message_id": "554968afe1fb1af9b2a45b8721916ec68cbd80807fcdc0070038faf76e638e46",
+      "raw_text_sha256": "c30b1f7da74f571c540c911cb655c2cbbbfc29a0d03ef965c81e8282036413e3",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_both",
+        "event_type": "restore",
+        "incident_id": "a563e5594f103b491a0b657bf81dbde1"
+      },
+      "audit_rationale": "The message directly reports both elevators working, restoring the active outage."
+    },
+    {
+      "export_ordinal": 2120,
+      "message_id": "a9fb11ca047f3876baf4bbaaa5e0531af22c1fe117e7cfd4b5d011211afce96b",
+      "raw_text_sha256": "f7c7d25a8eb0ba403b093ed45991a8abdf6bac4da6c4d2527387cc57b7416dc3",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a joking organizing suggestion about a rent strike, not a factual condition report."
+    },
+    {
+      "export_ordinal": 2121,
+      "message_id": "3b12d0b87aab05676e6cbc2e55637693ccf398f52a1453a5a7f4534772836879",
+      "raw_text_sha256": "32e48995f98ce3b76f2d3f5e2d2acddfeff6650b7b18628cfa739bfef4a03312",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The agreement is with the organizing suggestion, not an elevator status observation."
+    },
+    {
+      "export_ordinal": 2124,
+      "message_id": "d839de37b871882eefba48e1890a1b90f1b6fd4553ac733d2be2be078f4fb2a0",
+      "raw_text_sha256": "639c9994633a13a55350815aef8d10d62e88cd716c95335041a8628aec5fdc31",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This confirms receipt of management's elevator-replacement letter, not the truth of its schedule or a current condition."
+    },
+    {
+      "export_ordinal": 2125,
+      "message_id": "117dfa4188f4fc92ace627852453fc84cffa1e1fbf32c551b929bcc26bb27081",
+      "raw_text_sha256": "95651281757714736eaa352f728d918093c6c73105debd4c1dcea1046a6d4e2a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This merely corrects the management name in the letter discussion."
+    },
+    {
+      "export_ordinal": 2126,
+      "message_id": "a15fc1813f225f769253951517aef60ea92a1b663e095c5d05d039861460f3b7",
+      "raw_text_sha256": "c939327ca16dcf97ca32521d8b834bf1de16573d21deda3bb2a337cf403787a6",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a conversational acknowledgement during the letter-sharing exchange."
+    },
+    {
+      "export_ordinal": 2127,
+      "message_id": "555e9f6c14970e0f09d14e3f7609412e350eb0d4f6b548c6ec2e0f2744e502e5",
+      "raw_text_sha256": "85a39ab345d672ff8ca9b9c6876f3adcacf45ee7c1e2dbd2408fd338bd55e07e",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "In context this confirms receipt or ability to share an email, not an elevator condition."
+    },
+    {
+      "export_ordinal": 2128,
+      "message_id": "7d0c367c8f7fcabcb67b0ea2e68ca9c064fa29e72c3d02e5297de1de117506eb",
+      "raw_text_sha256": "9946e2f7a88af1c1eaaf2ccb45c3f6d73498a64e48d489c45dd8bec4ceb4cf99",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This requests the management letter attachment and is not a condition report."
+    },
+    {
+      "export_ordinal": 2131,
+      "message_id": "b988ca6867d548d2d0787e4bbacf142a57210125aaf381b2980cd96ef1592743",
+      "raw_text_sha256": "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is approval after someone offered to share the letter attachment."
+    },
+    {
+      "export_ordinal": 2132,
+      "message_id": "f4bf4856d09c525d73bd77bdc62227c9832fbc81799c9fdeba139a8581a7eea1",
+      "raw_text_sha256": "fcecb5d2192b5be8bafa7158c447a82721a11d71e06481a617780a72be27c5ae",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The repeated PDF attachment placeholder alone is not an independent incident report."
+    },
+    {
+      "export_ordinal": 2138,
+      "message_id": "7664092fcd949c0a3c1a0ca095eb4414e05e88ea8ffc4d2e26d0e5f9c7fc5928",
+      "raw_text_sha256": "f1d8bfe137076c4d4a7e1497550a26088994befe9305a5b73bdd0b52d3918785",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The emoji reaction responds to light social commentary and supplies no issue evidence."
+    },
+    {
+      "export_ordinal": 2143,
+      "message_id": "42474207c01a94862c73f9bf03f072b2e880faab6932be32205b9797235819e3",
+      "raw_text_sha256": "ec5acd5e21ac22d556a4783140a064054939e9c8b9217b0fe94f3496024a84d3",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is only a reaction to the preceding unreviewed images and does not independently establish their contents or location."
+    },
+    {
+      "export_ordinal": 2144,
+      "message_id": "5237c66186e6ca89db087a55d32e156a303274203892bdc7e6170ba24e045e51",
+      "raw_text_sha256": "533ad318c8dadb65722171271b582e7b295f978aa6b49cfddec2e77d596aaed0",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The emoji is a reaction to unavailable media and contributes no independently classifiable evidence."
+    },
+    {
+      "export_ordinal": 2145,
+      "message_id": "16e67f73d8ef508744d63dc4c27b4bca1b88e58f6fad376da2821773345e2ec0",
+      "raw_text_sha256": "27f65f114e9349e6a433e5c77adc3145b232335fac1b2cb8398b4f10c23a79a9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A deleted-message marker carries no recoverable condition evidence."
+    },
+    {
+      "export_ordinal": 2147,
+      "message_id": "64063aa74d3a9c506ff6983b0c6f160f18aee9a2fb5c6fe12dc549786852029f",
+      "raw_text_sha256": "aa9244948a51dd644a424d416cc90cc2162c9812e81bcce53f6a94c75ce218a0",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This reports receipt of the management email and does not verify its claims or a current condition."
+    },
+    {
+      "export_ordinal": 2150,
+      "message_id": "50195dbad047a5af33bc2de59044e1080ff7cbc025dd56f947e778c1a6e1cb4a",
+      "raw_text_sha256": "ad41dbb3897af38815ab4df578c8310b3e9e58760b2d06fff80cf5d200d20b15",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_north",
+        "event_type": "outage",
+        "incident_id": "427eb71418836178f4ff4702d4691f4b"
+      },
+      "audit_rationale": "The message directly reports the north elevator unavailable."
+    },
+    {
+      "export_ordinal": 2151,
+      "message_id": "4915bafd0311b69786b3d5f659291d54066bd0f6c3cf92cb86cb71c75d9cc7b5",
+      "raw_text_sha256": "f666f9f1d3249764bd52a9fde30b7aa1465aad68af43ea9f19f3d22cee00b57f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": "elevator_south",
+        "event_type": "restore",
+        "incident_id": "daf1c54c24f0e8d57ccba36435de60b1"
+      },
+      "audit_rationale": "In context, the message confirms the south car is no longer making the malfunctioning every-floor stops."
+    },
+    {
+      "export_ordinal": 2152,
+      "message_id": "27141a7c6d116df8bc58a20f708e58335cef5b9904ef62afc9d52fe9187a9c20",
+      "raw_text_sha256": "8de01fcce726c956d7ff0e9533548d627f8b0f2aff4417d32cb25dc0662b1d33",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This proposes a tenant-run public-record watchdog; it is workflow planning, not a filing result or building condition."
+    },
+    {
+      "export_ordinal": 2155,
+      "message_id": "820a2fe40c4a9e7fcac3c5f703d7bded6db736fe0f515a4ddfd82ef0f17140cc",
+      "raw_text_sha256": "5bc4bc2fca6748193cbd630c47a5d1155def7292aaefa6cc86ca8f187febdec9",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This continues planning how volunteers might monitor future records and contains no actual status result."
+    },
+    {
+      "export_ordinal": 2161,
+      "message_id": "a6c2be170cb234d91d5a74401dd6c71a829db76fa2fddb44b6e9dadd3b4ab16e",
+      "raw_text_sha256": "a8ce68d8d0ea22af5dfc63a034a5dad2b6150fab028256ec68f350ca5af79d0b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp encryption/security-code system event, not a building issue."
+    },
+    {
+      "export_ordinal": 2162,
+      "message_id": "ef327b4746ea076cb458fc634bdd16fb4cb55fbcca16b4b4c337ff1712ead0ba",
+      "raw_text_sha256": "91a8d05d20cc9a00073291cf6c80074fae5680a82da250bb7c6a5e0fd05958a2",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "Council-member attendance and press-planning discussion is organizing logistics, not an issue report."
+    },
+    {
+      "export_ordinal": 2167,
+      "message_id": "bf8214680cba22334bd3e9805ad0867e493efacfb462a85ca5115d8a5f1b8a55",
+      "raw_text_sha256": "4445804986dd9cd06e74a9cf15d8fda173915b8167a96de3e6683ec055e81213",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This expresses skepticism about management's future replacement promise and organizing strategy; it does not report a new observed condition or official milestone."
+    },
+    {
+      "export_ordinal": 2169,
+      "message_id": "5c3a6674844ecfa8962b8077e8e6a3649715e84f9b76b03eb365a099675dbe7a",
+      "raw_text_sha256": "d9305f3f298e1fb258a636d5a063c46735f8886d8992853c4ca05daf6d839e8b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "A plan to distribute flyers is organizing logistics, not a building condition."
+    },
+    {
+      "export_ordinal": 2170,
+      "message_id": "7e0722833104250ce46250a16a7f96db798118021249d832286159c0ede92702",
+      "raw_text_sha256": "d9305f3f298e1fb258a636d5a063c46735f8886d8992853c4ca05daf6d839e8b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The duplicate flyering plan is organizing logistics, not a building condition."
+    },
+    {
+      "export_ordinal": 2172,
+      "message_id": "ce3397e3f06b9bcce46b3d55482ba924864e047474ccefd3a9850754887fd471",
+      "raw_text_sha256": "92dffe2d6dc6f19154c93130110c9ff5e5e615f8f780ca1229e6cdafccf8a7b0",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This describes outreach habits and sharing management's letter with a council office, not a new issue or verified project milestone."
+    },
+    {
+      "export_ordinal": 2177,
+      "message_id": "cb6c78b7413c8f589f3f5adb7498aaa2e8da7ae305812ad9c7162231bac3847d",
+      "raw_text_sha256": "79e34cd4148095502eb78f72f5e2201cc2b29bed5dc74837ccdcfe59d3e425ac",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This identifies the preceding text as an email sent to officials and contains no independent condition evidence."
+    },
+    {
+      "export_ordinal": 2179,
+      "message_id": "1fdeaacc5ae17d42a3069e7d559d1a4069a173e21571b2bf5c7935a3223cf601",
+      "raw_text_sha256": "edde3d3027ddab400c4ecd734c6edf0861b8080b5fe7d59643ced2280fa1ebd4",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is encouragement celebrating tenant organizing and not a building-condition update."
+    },
+    {
+      "export_ordinal": 2181,
+      "message_id": "bbebf23c7bd42bd7156d02b6c4a43ba932f028ae5ad652390cd0d453988e6887",
+      "raw_text_sha256": "39d5e5cbd83833a58d2193e0cac04288f2154b8f237c4457e4219ca5fc45fed0",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This approves a joking elevator-naming idea and has no condition content."
+    },
+    {
+      "export_ordinal": 2185,
+      "message_id": "bfe983e71164ab497c885318306cd9eb25d5ae70b546b4dba21cb9338d8947c9",
+      "raw_text_sha256": "43a27d09011351c1b4bf604f3f52eb78e8a3581dde5187b4363858b7390a5e4a",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This extends a compliment from the doorman to the porter and reports no problem."
+    },
+    {
+      "export_ordinal": 2186,
+      "message_id": "c118366bef21e229920aa84f48826f740fdfa12553faef3c906c3f270eb5b8bb",
+      "raw_text_sha256": "f41fa63d4a09ee335a8cef81ec0f3fb46e91427af72f4b8673e8ce5ab1df3bfe",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp group-membership event, not an issue."
+    },
+    {
+      "export_ordinal": 2188,
+      "message_id": "f1626ee8e22bb02911e82a3efd3942f2905e88b715190625f84b001c17003a9b",
+      "raw_text_sha256": "daa22e294c14ae4a3598bf555aff58af9bd4a7d16b601d6cd53f73a614c425bb",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a negative observation from the 14th floor in response to smoke reported on the 12th; it neither corroborates the affected floor nor establishes a new issue."
+    },
+    {
+      "export_ordinal": 2192,
+      "message_id": "073350b00c89f9d7312422500b45dfaeeae9dbf6350b9fbec902cefeb351a25d",
+      "raw_text_sha256": "33b1510958884845641f26ff999292bcc9388d37b6beb796e7c12c4fc064dc09",
+      "review_outcome": "deferred_missing_evidence",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The generic reassurance may answer either a smoke-clear update or social thanks; a reply target is required."
+    },
+    {
+      "export_ordinal": 2197,
+      "message_id": "3f4281dc510eba003c0fe4417caaf6b0e727ef07878a09e5672127f3638fdd2e",
+      "raw_text_sha256": "21a319a4fd8cf253310b82c13b880c6d31ec23248a2d1ed8a50b7c12f35474a4",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is only an emotional reaction to the preceding elevator outage and adds no observation or impact detail."
+    },
+    {
+      "export_ordinal": 2199,
+      "message_id": "a3017fb9eca2fc4f529d8a4f3d52747b1024963d7394e8a7842784dab0d5d950",
+      "raw_text_sha256": "16584052fd337f09553dfe2ed98e35a2de86043f25e61a3acb5d1e63a949e844",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The acknowledgement arrives hours after the explicit two-elevator restoration and contains no independently resolvable status."
+    },
+    {
+      "export_ordinal": 2226,
+      "message_id": "0c5b97943b1543eb8e80319e0223ff389f65304c009519e452009b34399d1da8",
+      "raw_text_sha256": "5731d5f6a2a211194055ba955595ebe5a95a9c557f2bd6770519452e30803b02",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This answers an administrative question about forwarding HPD follow-up notices and does not report a condition."
+    },
+    {
+      "export_ordinal": 2227,
+      "message_id": "ed49ad87e068e553722ec401bec325fbcc698f267ae980d8fa971f15917d97c3",
+      "raw_text_sha256": "57bc8c587a734eebd020e1ab4de1dce91f7f0a4d95d9c67ae59832a3b6d45ee7",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is an external Rent Guidelines Board registration link offered to interested tenants, not a 455 condition or record result."
+    },
+    {
+      "export_ordinal": 2233,
+      "message_id": "a8a522bbf6dbdb5c6cb6dff9cff9eb875b394a1e00d563960ed45d6b68a68f82",
+      "raw_text_sha256": "ab0cd0f3040130071993d8347be2f74705f25f990b0cbe4a4f774dc786c264ae",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This reacts to cancellation of a council-member meeting appearance and is not a building issue."
+    },
+    {
+      "export_ordinal": 2237,
+      "message_id": "be443ce4720bb2f7e0f9de27e2355f66e8fae6d060a6c065af1d3c2a8f5040d6",
+      "raw_text_sha256": "8d60c02b1d50d25f9f935861bfa88e33b3e7cb4a7ee94ead17894ec52ce5c878",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This endorses re-inviting the council member and has no condition content."
+    },
+    {
+      "export_ordinal": 2239,
+      "message_id": "198239eb01cd5f9e80166051e6b2524de5cd0950417ec1e7051b570b57e0c9da",
+      "raw_text_sha256": "e0ee7626996e99bfb529496930eb9dc5b1dabf840eafa52881d16c05de4e5e44",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The emoji expresses disappointment about meeting logistics and is not issue evidence."
+    },
+    {
+      "export_ordinal": 2242,
+      "message_id": "4694a09ace5619517ba0832a4d71cfa16df52be47513de9566a7204b06bb8de2",
+      "raw_text_sha256": "1b4675568af1594db4e846861be79eba6f3c9e83e17163af6731099239d742f0",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This apologizes for a tenant-association coordination decision and summarizes outreach; it contains no new observed condition or verified milestone."
+    },
+    {
+      "export_ordinal": 2243,
+      "message_id": "3251d2875e18fbc94d376a0faf793e5a0a419da85dcbb05c6be72a061b21964b",
+      "raw_text_sha256": "7182c6ed7cdc911da44906db68c3ef849522075823e4b2b5fe82f971cf56dc3f",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": true,
+        "category": "elevator",
+        "asset": null,
+        "event_type": "outage",
+        "incident_id": "8b699efc452545dd246bc01c6cb8073e"
+      },
+      "audit_rationale": "One lift down is a direct outage report; the specific car correctly remains unspecified."
+    },
+    {
+      "export_ordinal": 2247,
+      "message_id": "944ef678f33ee694ab64fa68aee7691997b00c01e65d59c3a11cba1e9d999a93",
+      "raw_text_sha256": "bb06e1347db5f9cad0475bf8ee12c45ba644850868dc9390343f0b662bb18e0b",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a greeting immediately before a meeting reminder and carries no condition evidence."
+    },
+    {
+      "export_ordinal": 2249,
+      "message_id": "e34fd86beed0dd1e6529f9beead668b26ef89ffef165515f80fd3345b6253da3",
+      "raw_text_sha256": "d69b1ae4ca5810e1a4b6720147c51acea8b61360e636fdddce45fae1dc5e1188",
+      "review_outcome": "deferred_missing_evidence",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "The common-area fire-alarm concern requires private evidence certification before publication."
+    },
+    {
+      "export_ordinal": 2256,
+      "message_id": "a892e67884e89a4ea60d0a6cb05a58311984990bb775aae76d82be9883ce9ee1",
+      "raw_text_sha256": "800b5075ee412da6883779a59215965d403535d0d75f413e6d9978330263e21d",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This shares a city-planning survey for the wider neighborhood and is unrelated to a 455 building condition."
+    },
+    {
+      "export_ordinal": 2257,
+      "message_id": "33a43961d7c3ea9a1fd6bfe4869d526bb15dcbd18fc6cc8d398cf8274ca55df6",
+      "raw_text_sha256": "0552d1c64cbf538e01d726d9dcec946b81851e3c99020b41aaabc2e820080405",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is a WhatsApp encryption/security-code system event, not a building issue."
+    },
+    {
+      "export_ordinal": 2271,
+      "message_id": "2d7988a27a75957d8c841f76f1b961ed74330b2e8433e9cff5a60f77f33cfac1",
+      "raw_text_sha256": "93d38494a2c6fdf5e73ef8a7d491f2b537bc0a50c779918ed71123ba86a7f756",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This completes a planned-scaffolding logistics account from the preceding message; it expresses uncertainty about future terrace obstruction but does not itself report a realized building condition."
+    },
+    {
+      "export_ordinal": 2274,
+      "message_id": "8df25a915dc9496678f02c57ecc235c6df5e8bd4e29361ec4078d8d1d025e73b",
+      "raw_text_sha256": "aadbca6f4df474f01ba8f7ffbd117fcca8c786a0789d9cf6067308891a924092",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This is tenant-to-tenant rent-abatement advice after the scaffolding account, not new condition evidence."
+    },
+    {
+      "export_ordinal": 2275,
+      "message_id": "b206da36842f71151363f7f881adbcc87c5a7130eff62cc2ada701d8e461ddb1",
+      "raw_text_sha256": "0c82df595f0f7fee7acae9a7578da7c08d6d9f21908bd3af9a3d0c93edd241e4",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This directs a tenant to contact an organizer or lawyer and does not add a condition fact."
+    },
+    {
+      "export_ordinal": 2293,
+      "message_id": "51b40f62a85486ce794835ec958f21de626115e4ec80f9440ae0671234cc61ad",
+      "raw_text_sha256": "c73cacd6bd9767f4abd5337700fab5e291737439ea6646ddb6a3ece5d1c821ca",
+      "review_outcome": "unchanged_correct",
+      "expected_decision": {
+        "is_issue": false,
+        "category": null,
+        "asset": null,
+        "event_type": null,
+        "incident_id": null
+      },
+      "audit_rationale": "This repeats the precise clock time already carried by the immediately preceding outage messages' export timestamps and adds no condition or status evidence."
+    }
+  ]
+}
