@@ -677,7 +677,10 @@ def test_public_update_includes_concrete_laundry_machine_card_failure():
         sender_hash="hash-laundry",
         ts_iso="2026-08-20T00:04:00Z",
         ts_epoch=1787184240,
-        text="Don't use washer number 15 - it won't read my Hercules card",
+        text=(
+            "Don't use washer number 15 - it won't read my Hercules card. "
+            "There is already detergent in the machine."
+        ),
         attachments=None,
         source="whatsapp_web",
     )
@@ -743,6 +746,7 @@ def test_public_update_uses_dedicated_laundry_category_and_restore():
         incident_id="laundry-restore",
         category="laundry",
         title="Laundry machines repaired",
+        summary="Washer #15 failed to dispense detergent before repair.",
         proof_refs="laundry-restore-message",
     )
     raw = RawMessage(

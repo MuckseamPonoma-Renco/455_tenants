@@ -225,7 +225,7 @@ PUBLIC_LAUNDRY_DETERGENT_FAILURE_RE = re.compile(
     r"(?:stole|kept|swallowed|ate|took)\s+(?:(?:my|the|our)\s+)?detergent|"
     r"(?:didn['’]?t|doesn['’]?t|won['’]?t|failed\s+to|not)\s+dispens(?:e|ed|ing)"
     r"(?:\s+(?:(?:my|the|our)\s+)?detergent)?|"
-    r"detergent\s+dispenser\s+(?:failed|broken|not\s+working))\b",
+    r"detergent\s+dispenser\s+(?:failed|broken|not\s+working|problem|issue|failure))\b",
     re.IGNORECASE,
 )
 PUBLIC_LAUNDRY_RECURRENCE_RE = re.compile(
@@ -2696,7 +2696,7 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
         incident_text = f"{incident.title or ''} {incident.summary or ''}"
         detergent_failure = bool(
             PUBLIC_LAUNDRY_DETERGENT_FAILURE_RE.search(context_text)
-            or re.search(r"\bdetergent\b", incident_text, re.IGNORECASE)
+            or PUBLIC_LAUNDRY_DETERGENT_FAILURE_RE.search(incident_text)
         )
         recurrence = bool(PUBLIC_LAUNDRY_RECURRENCE_RE.search(text))
         asset_match = re.fullmatch(r"(washer|dryer)_(\d{1,3})", _clean_text(incident.asset), re.IGNORECASE)
@@ -2706,13 +2706,13 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
             machine_label = f"{asset_match.group(1).title()} #{asset_match.group(2)}"
         else:
             machine_label = "Laundry machine"
+        suffix = f" #{machine.group(1)}" if machine else ""
+        if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
+            return f"Laundry machine{suffix} repaired"
         if detergent_failure and recurrence:
             return f"{machine_label} detergent problem recurred"
         if detergent_failure:
             return f"{machine_label} detergent dispenser issue"
-        suffix = f" #{machine.group(1)}" if machine else ""
-        if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
-            return f"Laundry machine{suffix} repaired"
         return f"Laundry machine{suffix} issue"
     if incident.category == "fire_safety":
         if PUBLIC_FIRE_HOSE_PROGRESS_RE.search(text):
@@ -2884,7 +2884,7 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
         incident_text = f"{incident.title or ''} {incident.summary or ''}"
         detergent_failure = bool(
             PUBLIC_LAUNDRY_DETERGENT_FAILURE_RE.search(context_text)
-            or re.search(r"\bdetergent\b", incident_text, re.IGNORECASE)
+            or PUBLIC_LAUNDRY_DETERGENT_FAILURE_RE.search(incident_text)
         )
         recurrence = bool(PUBLIC_LAUNDRY_RECURRENCE_RE.search(text))
         asset_match = re.fullmatch(r"(washer|dryer)_(\d{1,3})", _clean_text(incident.asset), re.IGNORECASE)
@@ -2894,15 +2894,15 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
             machine_label = f"{asset_match.group(1).title()} #{asset_match.group(2)}"
         else:
             machine_label = "A laundry machine"
+        if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
+            if machine:
+                return f"Laundry machine #{machine.group(1)} was reported repaired."
+            return "Laundry machines were reported repaired."
         if detergent_failure and recurrence:
             timing = " after it was reported fixed on Thursday" if re.search(r"\bThursday\b", text, re.IGNORECASE) else " after an earlier reported fix"
             return f"{machine_label} detergent-dispenser problem was reported again{timing}."
         if detergent_failure:
             return f"{machine_label} was reported failing to dispense detergent."
-        if PUBLIC_LAUNDRY_RESTORE_RE.search(context_text):
-            if machine:
-                return f"Laundry machine #{machine.group(1)} was reported repaired."
-            return "Laundry machines were reported repaired."
         if machine:
             return f"Laundry machine #{machine.group(1)} was reported unusable because of a card or door-connection failure."
         return "A laundry machine problem was reported."
