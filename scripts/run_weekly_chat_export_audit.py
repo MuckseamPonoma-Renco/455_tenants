@@ -75,6 +75,17 @@ def sync_sheets_after_success() -> None:
             os.environ["DISABLE_SHEETS_SYNC"] = previous
 
 
+def verify_public_sheet_readback() -> dict[str, object]:
+    """Read the live tenant log back and compare it with DB-backed rendering."""
+    from scripts.audit_public_tenant_log import run_audit as run_public_audit
+
+    try:
+        days = max(1, int(os.environ.get("PUBLIC_TENANT_LOG_AUDIT_DAYS", "365")))
+    except ValueError:
+        days = 365
+    return run_public_audit(days=days, resync=False, retries=3, retry_sleep=2.0, limit=20)
+
+
 def retry_incomplete_llm_reviews(export_path: Path, *, since: str, llm_mode: str) -> dict[str, object]:
     since_epoch = parse_ts_to_epoch(since)
     if since_epoch is None:
@@ -207,6 +218,15 @@ def main() -> None:
     summary["llm_review_retry"] = retry
     summary["cross_source_reconciliation"] = reconciliation
     review_complete = bool(summary.get("llm_review_complete"))
+    data_complete = not int(summary.get("missing_db_messages") or 0) and not int(
+        summary.get("missing_decisions") or 0
+    )
+    if not data_complete:
+        summary["ok"] = False
+        summary["error"] = (
+            f"data audit incomplete: {summary.get('missing_db_messages', 0)} messages missing from DB, "
+            f"{summary.get('missing_decisions', 0)} decisions missing"
+        )
     if require_llm_review and not review_complete:
         summary["ok"] = False
         summary["error"] = (
@@ -214,22 +234,43 @@ def main() -> None:
             f"{summary.get('llm_review_failed', 0)} failed"
         )
     sheet_sync_complete = not args.sync_sheets_after_success
-    if args.sync_sheets_after_success and review_complete:
+    sheet_readback_verified: bool | None = None
+    sheet_readback_audit: dict[str, object] | None = None
+    if args.sync_sheets_after_success and review_complete and data_complete:
         try:
             sync_sheets_after_success()
             sheet_sync_complete = True
         except Exception as exc:
             summary["ok"] = False
             summary["error"] = f"post-audit sheet sync failed: {str(exc)[:300]}"
+        if sheet_sync_complete:
+            try:
+                sheet_readback_audit = verify_public_sheet_readback()
+                sheet_readback_verified = bool(sheet_readback_audit.get("ok"))
+                if not sheet_readback_verified:
+                    summary["ok"] = False
+                    summary["error"] = "post-sync public sheet readback did not match the audited source and renderer"
+            except Exception as exc:
+                sheet_readback_verified = False
+                summary["ok"] = False
+                summary["error"] = f"post-sync public sheet readback failed: {str(exc)[:300]}"
     summary["sheet_sync_requested"] = bool(args.sync_sheets_after_success)
     summary["sheet_sync_complete"] = bool(sheet_sync_complete)
+    summary["sheet_readback_requested"] = bool(args.sync_sheets_after_success)
+    summary["sheet_readback_verified"] = sheet_readback_verified
+    if sheet_readback_audit is not None:
+        summary["sheet_readback_audit"] = sheet_readback_audit
     summary_path = out_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     if require_llm_review and not review_complete and not args.allow_incomplete_llm_review:
         raise SystemExit(2)
+    if not data_complete:
+        raise SystemExit(4)
     if args.sync_sheets_after_success and not sheet_sync_complete:
         raise SystemExit(3)
+    if args.sync_sheets_after_success and not sheet_readback_verified:
+        raise SystemExit(5)
 
 
 if __name__ == "__main__":

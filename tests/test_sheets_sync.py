@@ -64,6 +64,45 @@ class _FakeService:
         return _FakeSpreadsheets(self.calls)
 
 
+class _GridAwareService(_FakeService):
+    def __init__(self, tabs: list[tuple[str, int]], *, row_count: int = 1000, column_count: int = 26):
+        super().__init__()
+        self._tabs = tabs
+        self._row_count = row_count
+        self._column_count = column_count
+
+    def spreadsheets(self):
+        calls = self.calls
+        tabs = self._tabs
+        row_count = self._row_count
+        column_count = self._column_count
+
+        class _GridAwareSpreadsheets(_FakeSpreadsheets):
+            def get(self, **kwargs):
+                return _FakeRequest(
+                    calls,
+                    "get",
+                    kwargs,
+                    response={
+                        "sheets": [
+                            {
+                                "properties": {
+                                    "title": title,
+                                    "sheetId": sheet_gid,
+                                    "gridProperties": {
+                                        "rowCount": row_count,
+                                        "columnCount": column_count,
+                                    },
+                                }
+                            }
+                            for title, sheet_gid in tabs
+                        ]
+                    },
+                )
+
+        return _GridAwareSpreadsheets(calls)
+
+
 class _SingleSheetService(_FakeService):
     def spreadsheets(self):
         calls = self.calls
@@ -99,6 +138,28 @@ class _LegacyPublicTabService(_FakeService):
                 )
 
         return _LegacyPublicTabSpreadsheets(calls)
+
+
+class _StaleQaTabService(_FakeService):
+    def spreadsheets(self):
+        calls = self.calls
+
+        class _StaleQaTabSpreadsheets(_FakeSpreadsheets):
+            def get(self, **kwargs):
+                return _FakeRequest(
+                    calls,
+                    "get",
+                    kwargs,
+                    response={
+                        "sheets": [
+                            {"properties": {"title": "Tenant Log", "sheetId": 7}},
+                            {"properties": {"title": "QA Draft 2026-05-05", "sheetId": 88}},
+                            {"properties": {"title": "WeeklyDigest", "sheetId": 12}},
+                        ]
+                    },
+                )
+
+        return _StaleQaTabSpreadsheets(calls)
 
 
 def test_service_uses_bounded_authorized_http(monkeypatch, tmp_path):
@@ -137,17 +198,112 @@ def test_service_uses_bounded_authorized_http(monkeypatch, tmp_path):
     assert calls["cache_discovery"] is False
 
 
-def test_replace_tab_values_writes_first_then_clears_stale_cells():
+def test_replace_tab_values_falls_back_when_grid_metadata_is_incomplete():
     service = _FakeService()
 
     _replace_tab_values(service, "sheet-123", "Incidents", [["incident_id"], ["inc-1"]])
 
-    assert [kind for kind, _kwargs in service.calls] == ["update", "clear", "clear"]
-    assert service.calls[0][1]["spreadsheetId"] == "sheet-123"
-    assert service.calls[0][1]["range"] == "Incidents!A1"
-    assert service.calls[0][1]["body"] == {"values": [["incident_id"], ["inc-1"]]}
-    assert service.calls[1][1]["range"] == "Incidents!A3:ZZ"
-    assert service.calls[2][1]["range"] == "Incidents!B1:ZZ2"
+    assert [kind for kind, _kwargs in service.calls] == ["get", "update", "clear", "clear"]
+    assert service.calls[1][1]["spreadsheetId"] == "sheet-123"
+    assert service.calls[1][1]["range"] == "Incidents!A1"
+    assert service.calls[1][1]["body"] == {"values": [["incident_id"], ["inc-1"]]}
+    assert service.calls[2][1]["range"] == "Incidents!A3:ZZ"
+    assert service.calls[3][1]["range"] == "Incidents!B1:ZZ2"
+
+
+def test_replace_tab_values_batches_values_formulas_and_stale_clears_without_touching_formatting():
+    service = _GridAwareService([("Tenant Log", 0)], row_count=50, column_count=26)
+    formula = '=HYPERLINK("https://example.com","Evidence")'
+
+    _replace_tab_values(
+        service,
+        "sheet-123",
+        "Tenant Log",
+        [["label", "link", "count", "verified"], ["row", formula, 3, True]],
+        value_input_option="USER_ENTERED",
+    )
+
+    assert [kind for kind, _kwargs in service.calls] == ["get", "batchUpdate"]
+    body = service.calls[1][1]["body"]
+    assert len(body["requests"]) == 3
+    update = body["requests"][0]["updateCells"]
+    assert update["range"] == {
+        "sheetId": 0,
+        "startRowIndex": 0,
+        "endRowIndex": 2,
+        "startColumnIndex": 0,
+        "endColumnIndex": 4,
+    }
+    assert update["fields"] == "userEnteredValue"
+    assert update["rows"][1]["values"] == [
+        {"userEnteredValue": {"stringValue": "row"}},
+        {"userEnteredValue": {"formulaValue": formula}},
+        {"userEnteredValue": {"numberValue": 3}},
+        {"userEnteredValue": {"boolValue": True}},
+    ]
+    assert body["requests"][1] == {
+        "updateCells": {
+            "range": {
+                "sheetId": 0,
+                "startRowIndex": 2,
+                "endRowIndex": 50,
+                "startColumnIndex": 0,
+                "endColumnIndex": 26,
+            },
+            "fields": "userEnteredValue",
+        }
+    }
+    assert body["requests"][2] == {
+        "updateCells": {
+            "range": {
+                "sheetId": 0,
+                "startRowIndex": 0,
+                "endRowIndex": 2,
+                "startColumnIndex": 4,
+                "endColumnIndex": 26,
+            },
+            "fields": "userEnteredValue",
+        }
+    }
+
+
+def test_replace_tab_values_expands_small_grid_inside_same_write_request():
+    service = _GridAwareService([("PublicRecords", 11)], row_count=2, column_count=2)
+
+    _replace_tab_values(
+        service,
+        "sheet-123",
+        "PublicRecords",
+        [["a", "b", "c"], [1, 2, 3], [4, 5, 6]],
+    )
+
+    assert [kind for kind, _kwargs in service.calls] == ["get", "batchUpdate"]
+    requests = service.calls[1][1]["body"]["requests"]
+    assert requests[:2] == [
+        {"appendDimension": {"sheetId": 11, "dimension": "ROWS", "length": 1}},
+        {"appendDimension": {"sheetId": 11, "dimension": "COLUMNS", "length": 1}},
+    ]
+    assert requests[2]["updateCells"]["fields"] == "userEnteredValue"
+    assert len(requests) == 3
+
+
+def test_watchdog_and_tenant_log_replacements_use_seven_writes_instead_of_twenty_one():
+    tab_names = [
+        "ElevatorWatch",
+        "ProjectStatus",
+        "PublicRecords",
+        "WatchdogChecks",
+        "ActionQueue",
+        "WeeklyDigest",
+        "Tenant Log",
+    ]
+    service = _GridAwareService([(title, index) for index, title in enumerate(tab_names)])
+
+    for title in tab_names:
+        _replace_tab_values(service, "sheet-123", title, [["header"], [title]])
+
+    assert sum(kind == "batchUpdate" for kind, _kwargs in service.calls) == 7
+    assert not any(kind in {"update", "clear"} for kind, _kwargs in service.calls)
 
 
 def test_ensure_tab_exists_can_reuse_single_default_sheet():
@@ -172,6 +328,24 @@ def test_clear_legacy_public_update_tabs_clears_stale_internal_public_tab(monkey
     clear_call = next(kwargs for kind, kwargs in service.calls if kind == "clear")
     assert clear_call["spreadsheetId"] == "internal-sheet-123"
     assert clear_call["range"] == "'PublicUpdates'!A:ZZ"
+
+
+def test_hide_stale_public_qa_tabs_preserves_tab_but_hides_it():
+    service = _StaleQaTabService()
+
+    sheets_sync._hide_stale_public_qa_tabs(service, "public-sheet", active_tab="Tenant Log")
+
+    body = next(kwargs["body"] for kind, kwargs in service.calls if kind == "batchUpdate")
+    assert body == {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": 88, "hidden": True},
+                    "fields": "hidden",
+                }
+            }
+        ]
+    }
 
 
 def test_public_status_summary_uses_last_evidence_when_last_report_missing():
@@ -503,7 +677,10 @@ def test_public_update_includes_concrete_laundry_machine_card_failure():
         sender_hash="hash-laundry",
         ts_iso="2026-08-20T00:04:00Z",
         ts_epoch=1787184240,
-        text="Don't use washer number 15 - it won't read my Hercules card",
+        text=(
+            "Don't use washing machine 15 - it won't read my Hercules card. "
+            "There is already detergent in the machine."
+        ),
         attachments=None,
         source="whatsapp_web",
     )
@@ -512,6 +689,224 @@ def test_public_update_includes_concrete_laundry_machine_card_failure():
     assert sheets_sync._public_event_issue_label(incident, raw) == "Laundry machine/card issue"
     assert sheets_sync._public_event_summary(incident, raw) == (
         "Washer #15 was reported unable to read a laundry card."
+    )
+
+
+def test_public_update_includes_washer_detergent_dispenser_failure_and_recurrence():
+    incident = Incident(
+        incident_id="laundry-detergent-failure",
+        category="laundry",
+        asset="washer_15",
+        title="Washer #15 detergent dispenser problem",
+        summary="Washer #15 failed to dispense detergent.",
+        proof_refs="detergent-message,detergent-recurrence",
+    )
+    initial = RawMessage(
+        message_id="detergent-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-detergent",
+        ts_iso="2026-09-05T17:31:00Z",
+        ts_epoch=1788629460,
+        text="Washer #15 stole my detergent ! I can call Hercules today",
+        source="whatsapp_web",
+    )
+    recurrence = RawMessage(
+        message_id="detergent-recurrence",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-detergent-recurrence",
+        ts_iso="2026-09-05T19:30:00Z",
+        ts_epoch=1788636600,
+        text="That's the one I reported! Please tell them it happened again and that it was reported as fixed on Thursday.",
+        source="whatsapp_web",
+    )
+    recurrence_decision = MessageDecision(
+        message_id=recurrence.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="laundry",
+        event_type="still_out",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, initial) is True
+    assert sheets_sync._public_event_issue_label(incident, initial) == "Washer #15 detergent dispenser issue"
+    assert sheets_sync._public_event_summary(incident, initial) == (
+        "Washer #15 was reported failing to dispense detergent."
+    )
+    assert sheets_sync._public_should_include_update(incident, recurrence, recurrence_decision) is True
+    assert sheets_sync._public_event_issue_label(incident, recurrence) == "Washer #15 detergent problem recurred"
+    assert sheets_sync._public_event_summary(incident, recurrence) == (
+        "Washer #15 detergent-dispenser problem was reported again after it was reported fixed on Thursday."
+    )
+
+
+def test_public_update_uses_dedicated_laundry_category_and_restore():
+    incident = Incident(
+        incident_id="laundry-restore",
+        category="laundry",
+        title="Laundry machines repaired",
+        summary="Washer #15 failed to dispense detergent before repair.",
+        proof_refs="laundry-restore-message",
+    )
+    raw = RawMessage(
+        message_id="laundry-restore-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-laundry-restore",
+        ts_iso="2026-09-03T16:00:00Z",
+        ts_epoch=1788451200,
+        text="Washing machines 14 and 15 were repaired",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_category_label(incident, raw) == "Laundry"
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Laundry machine repaired"
+    assert sheets_sync._public_event_summary(incident, raw) == "Laundry machines were reported repaired."
+
+
+def test_public_update_uses_fire_safety_context_for_replacement_progress():
+    incident = Incident(
+        incident_id="fire-hose-progress",
+        category="fire_safety",
+        title="Fire-hose replacement",
+        proof_refs="fire-hose-progress-message",
+    )
+    raw = RawMessage(
+        message_id="fire-hose-progress-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-fire-progress",
+        ts_iso="2026-09-03T14:00:00Z",
+        ts_epoch=1788444000,
+        text="Yay, looks like replaced or in process",
+        attachments='{"message_context":{"reply_text":"The fire hoses are missing"}}',
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_category_label(incident, raw) == "Fire safety"
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Fire-hose replacement in progress"
+    assert sheets_sync._public_event_summary(incident, raw) == (
+        "Replacement of the building's fire hoses was reported in progress."
+    )
+
+
+def test_public_update_uses_reviewed_fire_decision_when_live_capture_has_no_reply_metadata():
+    incident = Incident(
+        incident_id="fire-hose-live-context",
+        category="fire_safety",
+        title="Fire-hose replacement",
+    )
+    progress = RawMessage(
+        message_id="fire-hose-live-progress",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-fire-progress-live",
+        ts_iso="2026-09-03T15:37:00Z",
+        ts_epoch=1788449820,
+        text="Yay looks like replaced/in process of being replaced while I was out",
+        source="whatsapp_web",
+    )
+    progress_decision = MessageDecision(
+        message_id=progress.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="fire_safety",
+        event_type="status_update",
+    )
+    corroboration = RawMessage(
+        message_id="fire-hose-live-corroboration",
+        chat_name="455 Tenants",
+        sender="Tenant Two",
+        sender_hash="hash-fire-corroboration-live",
+        ts_iso="2026-09-03T14:36:00Z",
+        ts_epoch=1788446160,
+        text="I was wondering the same thing!",
+        source="whatsapp_web",
+    )
+    corroboration_decision = MessageDecision(
+        message_id=corroboration.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="fire_safety",
+        event_type="status_update",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, progress, progress_decision) is True
+    assert sheets_sync._public_event_issue_label(incident, progress) == "Fire-hose replacement in progress"
+    assert sheets_sync._public_event_summary(incident, progress) == (
+        "Replacement of the building's fire hoses was reported in progress."
+    )
+    assert sheets_sync._public_should_include_update(incident, corroboration, corroboration_decision) is True
+    assert sheets_sync._public_event_issue_label(incident, corroboration) == "Fire-hose concern corroborated"
+    assert sheets_sync._public_event_summary(incident, corroboration) == (
+        "A second tenant corroborated the missing building fire hoses."
+    )
+
+
+def test_public_update_explains_limited_functional_fire_stair():
+    incident = Incident(
+        incident_id="limited-fire-stair",
+        category="security_access",
+        title="Security / access / safety issue",
+        proof_refs="limited-fire-stair-message",
+    )
+    raw = RawMessage(
+        message_id="limited-fire-stair-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-limited-fire-stair",
+        ts_iso="2026-07-23T13:30:00Z",
+        ts_epoch=1784813400,
+        text="1 lift, 1 functional fire stair.",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_category_label(incident, raw) == "Security / access"
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Limited fire-stair access"
+    assert sheets_sync._public_event_summary(incident, raw) == "Only one fire stair was reported functional."
+
+
+def test_report_form_message_is_public_even_with_whatsapp_chat_allowlist():
+    raw = RawMessage(
+        message_id="report-form-message",
+        chat_name="455 Report Form",
+        sender="Resident report",
+        sender_hash="hash-form",
+        ts_iso="2026-09-04T14:00:00Z",
+        ts_epoch=1788530400,
+        text="North elevator is not responding",
+        source="report_form",
+    )
+
+    assert sheets_sync._raw_message_is_public(raw, {"455 tenants"}) is True
+
+
+def test_public_slow_elevator_summary_does_not_call_it_an_outage():
+    incident = Incident(
+        incident_id="slow-north",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator slow",
+        proof_refs="slow-north-message",
+    )
+    raw = RawMessage(
+        message_id="slow-north-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="hash-slow",
+        ts_iso="2026-09-01T14:00:00Z",
+        ts_epoch=1788271200,
+        text="North lift is super slow descending",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_summary(incident, raw) == (
+        "North elevator was reported running unusually slowly."
     )
 
 
@@ -773,6 +1168,137 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
     assert sheets_sync._public_should_include_update(south_incident, south_raw) is True
     assert sheets_sync._public_event_issue_label(south_incident, south_raw) == "South elevator working normally"
     assert "without floor-by-floor service" in sheets_sync._public_event_summary(south_incident, south_raw)
+
+
+def test_public_elevator_status_prefers_current_message_over_quoted_reply():
+    incident = Incident(
+        incident_id="quoted-restore",
+        category="elevator",
+        asset="elevator_both",
+        title="Both elevators currently working",
+    )
+    raw = RawMessage(
+        message_id="quoted-restore-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="quoted-restore-sender",
+        text="Both currently working",
+        attachments=build_attachment_manifest(
+            items=[],
+            message_context={"reply_text": "South lift not working, and north lift rattling."},
+            source="whatsapp_web",
+        ),
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_event_issue_label(incident, raw) == "Both elevators working"
+    assert sheets_sync._public_event_summary(incident, raw) == "Both elevators were reported working."
+
+
+def test_public_elevator_status_does_not_treat_reduced_or_negated_service_as_restore():
+    both = Incident(
+        incident_id="reduced-service",
+        category="elevator",
+        asset="elevator_both",
+        title="Elevator service reduced",
+    )
+    one_working = RawMessage(
+        message_id="one-working",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="one-working-sender",
+        text="1 working. Building staff called the mechanic",
+        source="whatsapp_web",
+    )
+    south = Incident(
+        incident_id="south-not-in-service",
+        category="elevator",
+        asset="elevator_south",
+        title="South lift out of service",
+    )
+    not_in_service = RawMessage(
+        message_id="south-not-in-service-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="south-not-in-service-sender",
+        text="SOUTH LIFT IS NOT IN SERVICE!!!!",
+        source="whatsapp_export",
+    )
+
+    assert sheets_sync._public_event_issue_label(both, one_working) == "Elevator service reduced"
+    assert sheets_sync._public_event_summary(both, one_working) == (
+        "Elevator service was reported reduced to one working elevator; a mechanic was called."
+    )
+    assert sheets_sync._public_event_issue_label(south, not_in_service) == "South elevator"
+    assert sheets_sync._public_event_summary(south, not_in_service) == "South elevator was reported out of service."
+
+
+def test_public_elevator_terse_negation_uses_reply_only_for_asset_context():
+    incident = Incident(
+        incident_id="north-no-longer-working",
+        category="elevator",
+        asset="elevator_north",
+        title="North elevator no longer working",
+    )
+    raw = RawMessage(
+        message_id="north-no-longer-working-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="north-no-longer-working-sender",
+        text="No longer :(",
+        attachments=build_attachment_manifest(
+            items=[],
+            message_context={"reply_text": "North lift working!!!"},
+            source="whatsapp_web",
+        ),
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw) is True
+    assert sheets_sync._public_event_issue_label(incident, raw) == "North elevator"
+    assert sheets_sync._public_event_summary(incident, raw) == "North elevator was reported as out."
+
+
+def test_public_non_elevator_summaries_are_neutral_and_privacy_safe():
+    puddle = Incident(
+        incident_id="common-area-puddle",
+        category="leaks_water_damage",
+        title="Puddle",
+    )
+    medical_context = RawMessage(
+        message_id="common-area-puddle-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="common-area-puddle-sender",
+        text=(
+            "That puddle made me gag. I had to walk down many flights to chemo, surgery and "
+            "radiation for breast cancer."
+        ),
+        source="whatsapp_export",
+    )
+    handrail = Incident(
+        incident_id="common-area-handrail",
+        category="other",
+        title="Handrail broken",
+    )
+    handrail_raw = RawMessage(
+        message_id="common-area-handrail-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="common-area-handrail-sender",
+        text="The stair A, 10th flr handrail is kaputt AGAIN. Reported to Jack.",
+        source="whatsapp_web",
+    )
+
+    assert sheets_sync._public_event_summary(puddle, medical_context) == (
+        "A puddle or standing water was reported in a common area."
+    )
+    assert "cancer" not in sheets_sync._public_event_summary(puddle, medical_context).casefold()
+    assert sheets_sync._public_should_include_update(handrail, handrail_raw) is True
+    assert sheets_sync._public_event_issue_label(handrail, handrail_raw) == "Common-area handrail issue"
+    assert sheets_sync._public_event_summary(handrail, handrail_raw) == (
+        "A common-area handrail was reported broken or unsafe."
+    )
 
 
 def test_public_detail_text_falls_back_when_title_redaction_would_be_empty():
@@ -1256,8 +1782,9 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert ',IMAGE("https://tenant.example/media/whatsapp/msg-public/0?v=' in public_issue_row[4]
     assert public_issue_row[4].endswith('",4,110,240))')
     assert public_issue_row[5].startswith("https://tenant.example/media/whatsapp/msg-public/0?v=")
-    old_issue_row = next(row for row in incident_rows if len(row) >= 7 and row[1] == "Lobby door did not close")
+    old_issue_row = next(row for row in incident_rows if len(row) >= 7 and row[1] == "Building access issue")
     assert old_issue_row[2] == "Security / access"
+    assert old_issue_row[6] == "A building access or security condition was reported."
 
     case_watch_row = next(idx for idx, row in enumerate(values) if row[0] == "311 case watch")
     assert values[case_watch_row + 1] == ["Case", "NYC status", "Complaint", "Related issue", "Submitted", "NYC lookup", "Notes", "", "", ""]
@@ -1467,6 +1994,41 @@ def test_sync_public_updates_collapses_same_minute_status_rows(client, monkeypat
     assert rows[0][3] == "311-27374123 (In Progress)"
     assert "South elevator was reported as out." in rows[0][6]
     assert "Elevator mechanic was reported on site." in rows[0][6]
+
+
+def test_same_minute_merge_keeps_working_update_when_other_row_has_311_case():
+    rows = [
+        [
+            "2026-05-05 10:13 AM",
+            "South elevator",
+            "Elevator",
+            "311-27372033 (In Progress)",
+            "",
+            "",
+            "South elevator was reported as still out.",
+            "",
+            "",
+        ],
+        [
+            "2026-05-05 10:13 AM",
+            "North elevator working",
+            "Elevator",
+            "",
+            "",
+            "",
+            "North elevator was reported working.",
+            "",
+            "",
+        ],
+    ]
+
+    merged = sheets_sync._public_merge_same_time_group(rows)
+
+    assert merged[1] == "South elevator / North elevator working"
+    assert merged[3] == "311-27372033 (In Progress)"
+    assert merged[6] == (
+        "South elevator was reported as still out. North elevator was reported working."
+    )
 
 
 def test_sync_public_updates_uses_decision_messages_beyond_capped_proof_refs(client, monkeypatch):
@@ -2017,6 +2579,40 @@ def test_public_sync_excludes_sensitive_interpersonal_security_reports():
     assert sheets_sync._public_should_include_update(incident, sensitive, decision) is False
     assert sheets_sync._public_should_include_update(incident, building_access, decision) is False
     assert sheets_sync._public_should_include_update(normal_access_incident, building_access, decision) is True
+
+
+def test_public_media_does_not_bypass_external_reference_guardrail(monkeypatch):
+    incident = Incident(
+        incident_id="external-listing",
+        category="elevator",
+        asset="elevator_both",
+        title="Elevator outage",
+    )
+    raw = RawMessage(
+        message_id="external-listing-message",
+        chat_name="455 Tenants",
+        sender="Tenant",
+        sender_hash="external-listing-sender",
+        text="How the building is presented on StreetEasy, noting no elevator at all",
+        attachments='{"items":[{"kind":"image","status":"downloaded","public_url":"https://example.test/listing.png"}]}',
+        source="whatsapp_export",
+    )
+    decision = MessageDecision(
+        message_id=raw.message_id,
+        incident_id=incident.incident_id,
+        is_issue=True,
+        category="elevator",
+        event_type="outage",
+        needs_review=True,
+    )
+
+    monkeypatch.setattr(
+        sheets_sync,
+        "public_attachment_entries",
+        lambda *_args: [{"kind": "image", "public_url": "https://example.test/listing.png"}],
+    )
+
+    assert sheets_sync._public_should_include_update(incident, raw, decision) is False
 
 
 def test_sync_public_updates_does_not_link_message_screenshots(client, monkeypatch, tmp_path):

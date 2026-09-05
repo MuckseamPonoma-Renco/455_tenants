@@ -15,9 +15,10 @@ load_local_env_file(ROOT / ".env")
 
 from packages.whatsapp.export import parse_export_path
 from packages.db import get_session, RawMessage
-from packages.audit import compute_message_id, sender_hash
+from packages.audit import sender_hash
 from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate, find_recent_duplicate
 from packages.timeutil import parse_ts_to_epoch
+from packages.whatsapp.identity import iter_physical_message_identities
 from packages.queue import enqueue_full_resync, enqueue_process_message
 
 
@@ -42,27 +43,30 @@ def main() -> None:
     seen_mids: set[str] = set()
     mids_to_queue: list[str] = []
     with get_session() as s:
-        for m in parsed:
+        for identity in iter_physical_message_identities(parsed):
+            m = identity.message
             ts_epoch = parse_ts_to_epoch(m.ts_iso)
-            mid = compute_message_id(m.chat_name, m.sender, m.ts_iso or '', m.text)
+            mid = identity.message_id
             if mid in seen_mids or s.get(RawMessage, mid):
                 deduped += 1
                 continue
-            duplicate = find_recent_duplicate(
-                s,
-                chat_name=m.chat_name,
-                sender=m.sender,
-                text=m.text,
-                ts_epoch=ts_epoch,
-                require_chat_match=False,
-            )
-            if duplicate is None:
-                duplicate = find_recent_cross_source_duplicate(
+            duplicate = None
+            if identity.occurrence == 1:
+                duplicate = find_recent_duplicate(
                     s,
+                    chat_name=m.chat_name,
+                    sender=m.sender,
                     text=m.text,
                     ts_epoch=ts_epoch,
-                    sources=LIVE_CAPTURE_SOURCES,
+                    require_chat_match=False,
                 )
+                if duplicate is None:
+                    duplicate = find_recent_cross_source_duplicate(
+                        s,
+                        text=m.text,
+                        ts_epoch=ts_epoch,
+                        sources=LIVE_CAPTURE_SOURCES,
+                    )
             if duplicate:
                 deduped += 1
                 continue

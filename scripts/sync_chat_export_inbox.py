@@ -50,6 +50,12 @@ class ModelReviewIncompleteError(RuntimeError):
         super().__init__(str(summary.get("error") or "required model review is incomplete"))
 
 
+class AuditPipelineError(RuntimeError):
+    def __init__(self, summary: dict[str, Any], detail: str):
+        self.summary = summary
+        super().__init__(detail)
+
+
 def _split_source_dirs(value: str | None) -> list[Path]:
     if not value:
         return []
@@ -322,7 +328,10 @@ def run_import_and_audit(export_path: Path, *, since: str) -> dict[str, Any]:
         if summary is not None and summary.get("llm_review_complete") is False:
             raise ModelReviewIncompleteError(summary)
         detail = completed.stdout[-2000:].strip()
-        raise RuntimeError(f"weekly chat export import/audit failed ({completed.returncode}): {detail}")
+        message = f"weekly chat export import/audit failed ({completed.returncode}): {detail}"
+        if summary is not None:
+            raise AuditPipelineError(summary, message)
+        raise RuntimeError(message)
     if summary is None:
         raise RuntimeError(f"weekly chat export audit did not create a readable summary: {summary_path}")
     if int(summary.get("parsed_messages") or 0) <= 0:

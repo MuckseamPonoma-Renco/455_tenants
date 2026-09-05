@@ -27,7 +27,7 @@ FLOOR_SERVICE_NORMAL = re.compile(
 )
 
 OUT = re.compile(
-    r"(out\s+of\s+service|out\s+of\s+order|not\s+working|broken|stuck|"
+    r"(out\s+of\s+service|out\s+of\s+order|not\s+in\s+service|not\s+working|broken|stuck|"
     r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
     r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
@@ -118,11 +118,39 @@ PERSONAL_SAFETY_REPORT = re.compile(
     r"walk(?:ed|ing)?\s+(?:up\s+)?(?:from\s+)?behind\b[^.!?\n]{0,100}\b(?:squeez(?:ed|ing)|touch(?:ed|ing)))\b",
     re.I,
 )
-LAUNDRY = re.compile(r"\b(?:laundry|washer|washers|dryer|dryers)\b", re.I)
+LAUNDRY = re.compile(
+    r"\b(?:laundry|washer|washers|dryer|dryers|washing\s+machines?)\b",
+    re.I,
+)
 LAUNDRY_PROBLEM = re.compile(
     r"\b(?:not\s+working|doesn['’]?t\s+work|error|can['’]?t\s+connect|cannot\s+connect|"
     r"no\s+(?:wi-?fi|internet|service)|app\s+(?:is\s+)?not\s+working|card\s+(?:is\s+)?(?:giving|showing)|"
-    r"(?:won['’]?t|doesn['’]?t|can['’]?t|cannot)\s+(?:read|recognize|accept))\b",
+    r"(?:won['’]?t|doesn['’]?t|isn['’]?t|can['’]?t|cannot)\s+(?:read(?:ing)?|recognize|accept)|"
+    r"door\s+(?:isn['’]?t|not)\s+connect(?:ing)?|door\s+(?:isn['’]?t|not)\s+register(?:ing)?|"
+    r"(?:stol(?:e|en)|ate|swallowed|kept)\b[^.!?\n]{0,60}\bdetergent|"
+    r"detergent\b[^.!?\n]{0,60}\b(?:stol(?:e|en)|not\s+dispens(?:e|ed|ing)))\b",
+    re.I,
+)
+LAUNDRY_NUMBERED_MACHINE = re.compile(
+    r"\b(?P<kind>washer|dryer)(?:\s+(?:number|no\.?))?\s*#?\s*(?P<number>\d{1,3})\b",
+    re.I,
+)
+LAUNDRY_RESTORE = re.compile(
+    r"\b(?:fixed|repaired|restored|working\s+(?:again|now)|back\s+in\s+service)\b",
+    re.I,
+)
+FIRE_HOSE = re.compile(r"\b(?:fire\s*hoses?|firehouses?)\b", re.I)
+FIRE_HOSE_MISSING = re.compile(
+    r"\b(?:lack\s+of|missing|removed|not\s+(?:there|present|installed)|no)\b",
+    re.I,
+)
+FIRE_HOSE_PROGRESS = re.compile(
+    r"\b(?:replac(?:e|ed|ement|ing)|install(?:ed|ing|ation)?|put\s+back|restor(?:e|ed|ing))\b",
+    re.I,
+)
+ELEVATOR_PERFORMANCE = re.compile(
+    r"\b(?:elevator|lift)\b[^.!?\n]{0,80}\b(?:super\s+slow|very\s+slow|moving\s+slow(?:ly)?|running\s+slow(?:ly)?)\b"
+    r"|\b(?:super\s+slow|very\s+slow|moving\s+slow(?:ly)?|running\s+slow(?:ly)?)\b[^.!?\n]{0,80}\b(?:elevator|lift)\b",
     re.I,
 )
 ELECTRICAL = re.compile(r"\b(?:electrical|wiring|wire|wires|outlet|outlets|receptacle|oven)\b", re.I)
@@ -142,7 +170,7 @@ FRONT_DESK_PHONE_WORKS = re.compile(
     re.I,
 )
 
-ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+working|stuck|shutdown|shut\s*off)"
+ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+in\s+service|not\s+working|stuck|shutdown|shut\s*off)"
 ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
 
 
@@ -202,6 +230,19 @@ def explicit_elevator_asset(text: str):
     return _asset(text or "")
 
 
+def explicit_laundry_asset(text: str) -> str | None:
+    """Return one explicitly named laundry machine, never a guessed asset."""
+
+    matches = {
+        (match.group("kind").casefold(), int(match.group("number")))
+        for match in LAUNDRY_NUMBERED_MACHINE.finditer(text or "")
+    }
+    if len(matches) != 1:
+        return None
+    kind, number = next(iter(matches))
+    return f"{kind}_{number}"
+
+
 def _has_elevator_reference(text: str) -> bool:
     return bool(ELEVATOR.search(text) or ELEVATOR_SIDE_REFERENCE.search(text))
 
@@ -221,6 +262,10 @@ def text_explicitly_supports_category(text: str, category: str | None) -> bool:
         return bool(PESTS.search(t))
     if cat == "security_access":
         return bool(SEC.search(t))
+    if cat == "laundry":
+        return bool(LAUNDRY.search(t))
+    if cat == "fire_safety":
+        return bool(FIRE_HOSE.search(t))
     return False
 
 
@@ -291,15 +336,72 @@ def classify_rules(text: str) -> dict:
             "preserve_event_type": True,
         }
 
+    if FIRE_HOSE.search(t) and FIRE_HOSE_MISSING.search(t):
+        return {
+            "is_issue": True,
+            "category": "fire_safety",
+            "asset": "stairwell_fire_hoses",
+            "event_type": "still_out" if re.search(r"\b(?:again|still)\b", t, re.I) else "new_issue",
+            "severity": 4,
+            "title": "Stairwell fire hoses missing",
+            "summary": "Tenant reports stairwell fire hoses missing or removed.",
+            "kind": "issue",
+            "preserve_issue": True,
+            "preserve_event_type": True,
+        }
+
+    if FIRE_HOSE.search(t) and FIRE_HOSE_PROGRESS.search(t):
+        cautious_progress = bool(re.search(r"\b(?:looks?\s+like|in\s+process|perhaps|maybe|may|might)\b", t, re.I))
+        return {
+            "is_issue": True,
+            "category": "fire_safety",
+            "asset": "stairwell_fire_hoses",
+            "event_type": "status_update" if cautious_progress else "restore",
+            "severity": 3,
+            "title": "Stairwell fire-hose replacement update",
+            "summary": "Tenant reports progress replacing the stairwell fire hoses.",
+            "kind": "issue" if cautious_progress else "restore",
+            "preserve_issue": True,
+            "preserve_event_type": True,
+        }
+
+    if LAUNDRY.search(t) and LAUNDRY_RESTORE.search(t):
+        return {
+            "is_issue": True,
+            "category": "laundry",
+            "asset": explicit_laundry_asset(t),
+            "event_type": "restore",
+            "severity": 2,
+            "title": "Laundry machines repaired",
+            "summary": "Tenant reports laundry machines repaired and working again.",
+            "kind": "restore",
+            "preserve_issue": True,
+            "preserve_event_type": True,
+        }
+
     if LAUNDRY.search(t) and LAUNDRY_PROBLEM.search(t):
         return {
             "is_issue": True,
-            "category": "other",
-            "asset": None,
+            "category": "laundry",
+            "asset": explicit_laundry_asset(t),
             "event_type": "new_issue",
             "severity": 3,
             "title": "Laundry facility issue",
             "summary": "Tenant reports a laundry room, machine, card, or connectivity problem.",
+            "kind": "issue",
+            "preserve_issue": True,
+            "preserve_event_type": True,
+        }
+
+    if ELEVATOR_PERFORMANCE.search(t):
+        return {
+            "is_issue": True,
+            "category": "elevator",
+            "asset": _asset(t),
+            "event_type": "status_update",
+            "severity": 3,
+            "title": "Elevator operating unusually slowly",
+            "summary": "Tenant reports an elevator operating unusually slowly.",
             "kind": "issue",
             "preserve_issue": True,
             "preserve_event_type": True,

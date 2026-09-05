@@ -9,9 +9,9 @@ from packages.db import FilingJob, Incident, IncidentWitness, MessageDecision, R
 from packages.tasker_capture import (
     CROSS_SOURCE_DUPLICATE_SOURCES,
     LIVE_CAPTURE_SOURCES,
-    cross_source_duplicate_min_text_chars,
     cross_source_duplicate_window_seconds,
     cross_source_text_signature,
+    is_cross_source_duplicate_candidate,
 )
 from packages.whatsapp.attachments import merge_attachment_manifests
 
@@ -70,7 +70,6 @@ class _ReconciliationIndex:
 def find_exact_cross_source_duplicate_pairs(session) -> list[CrossSourceDuplicatePair]:
     """Pair each archive/live alias once by exact normalized text and time."""
     window = cross_source_duplicate_window_seconds()
-    min_chars = cross_source_duplicate_min_text_chars()
     if window <= 0:
         return []
 
@@ -84,7 +83,7 @@ def find_exact_cross_source_duplicate_pairs(session) -> list[CrossSourceDuplicat
     live: dict[str, list[RawMessage]] = {}
     for row in rows:
         signature = cross_source_text_signature(row.text)
-        if len(signature) < min_chars:
+        if not is_cross_source_duplicate_candidate(row.text):
             continue
         target = archives if row.source in CROSS_SOURCE_DUPLICATE_SOURCES else live
         target.setdefault(signature, []).append(row)
@@ -213,16 +212,12 @@ def _preview_row(index: _ReconciliationIndex, pair: CrossSourceDuplicatePair, *,
 
 
 def _is_issue_identity_pair(index: _ReconciliationIndex, pair: CrossSourceDuplicatePair) -> bool:
-    """Return whether a duplicate has already changed incident/public state."""
+    """Return whether either alias has already changed incident/public state."""
     archive_decision = index.decisions_by_message_id.get(pair.archive_message_id)
     live_decision = index.decisions_by_message_id.get(pair.live_message_id)
-    return bool(
-        archive_decision
-        and live_decision
-        and archive_decision.is_issue
-        and live_decision.is_issue
-        and archive_decision.incident_id
-        and live_decision.incident_id
+    return any(
+        decision and decision.is_issue and decision.incident_id
+        for decision in (archive_decision, live_decision)
     )
 
 

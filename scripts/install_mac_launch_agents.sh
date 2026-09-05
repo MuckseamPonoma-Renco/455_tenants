@@ -59,6 +59,7 @@ if [[ ! -f "$RUNTIME_ROOT/.env" ]]; then
   echo "Refusing to copy .env from the working tree. Provision the runtime config once, then rerun this installer." >&2
   exit 1
 fi
+chmod 600 "$RUNTIME_ROOT/.env"
 
 stage_runtime_copy() {
   rsync -a --delete \

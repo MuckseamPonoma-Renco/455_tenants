@@ -14,6 +14,7 @@ from packages.incident.rules import (
     HISTORICAL_ELEVATOR_REFERENCE,
     classify_rules,
     explicit_elevator_asset,
+    explicit_laundry_asset,
     text_explicitly_supports_category,
 )
 from packages.llm.classifier import llm_classify_message, llm_review_decision
@@ -36,7 +37,16 @@ RECENT_INCIDENT_CONTEXT_DAYS = int(os.environ.get("RECENT_INCIDENT_CONTEXT_DAYS"
 RECENT_INCIDENT_CONTEXT_LIMIT = int(os.environ.get("RECENT_INCIDENT_CONTEXT_LIMIT", "16"))
 LLM_MODE = os.environ.get("LLM_MODE", "uncertain").lower().strip()
 BUILDING_TZ = ZoneInfo(os.environ.get("BUILDING_TIMEZONE", "America/New_York"))
-VALID_CATEGORIES = {"elevator", "heat_hot_water", "leaks_water_damage", "pests", "security_access", "other"}
+VALID_CATEGORIES = {
+    "elevator",
+    "heat_hot_water",
+    "leaks_water_damage",
+    "pests",
+    "security_access",
+    "fire_safety",
+    "laundry",
+    "other",
+}
 NONISSUE_GUARDRAIL_CONFIDENCE = int(os.environ.get("NONISSUE_GUARDRAIL_CONFIDENCE", "85"))
 AUTHORITATIVE_RULE_EVENT_TYPES = {"outage", "still_out", "restore"}
 SOURCE_PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)")
@@ -151,6 +161,7 @@ CONTEXTUAL_RESTORE_CAUTION_RE = re.compile(
 )
 CONTEXTUAL_NON_ELEVATOR_TOPIC_RE = re.compile(
     r"\b(?:wi-?fi|internet|laundry|washer|dryer|laundry\s+app|laundry\s+card|"
+    r"washing\s+machine|fire\s*hose|firehouse|standpipe|sprinkler|"
     r"electrical|wiring|outlet|outlets|oven)\b",
     re.IGNORECASE,
 )
@@ -161,6 +172,22 @@ CONTEXTUAL_HYPOTHETICAL_RE = re.compile(
 )
 CONTEXTUAL_CONFIRMATION_RE = re.compile(
     r"\b(?:same\s+(?:thing\s+)?happened\s+to\s+me|same\s+here)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_TOPIC_CONFIRMATION_RE = re.compile(
+    r"\b(?:i\s+was\s+wondering\s+the\s+same\s+thing|same\s+here|me\s+too)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_REPLACEMENT_PROGRESS_RE = re.compile(
+    r"\b(?:looks?\s+like\s+)?(?:replaced|replacement|in\s+(?:the\s+)?process\s+of\s+being\s+replaced)\b",
+    re.IGNORECASE,
+)
+CONTEXTUAL_ELEVATOR_DIRECTION_RE = re.compile(
+    r"^\s*same\s+going\s+(?:up|down)\W*$",
+    re.IGNORECASE,
+)
+CONTEXTUAL_LIMITED_FIRE_EGRESS_RE = re.compile(
+    r"\b(?:one|1)\s+(?:functional|working|usable|accessible)\s+fire[\s-]+stair(?:well)?s?\b",
     re.IGNORECASE,
 )
 REVIEWED_NONISSUE_CONTEXT_RE = re.compile(
@@ -278,6 +305,14 @@ def _recent_related_context(session, rm: RawMessage) -> list[dict]:
         "lock",
         "intercom",
         "security",
+        "fire hose",
+        "firehose",
+        "standpipe",
+        "sprinkler",
+        "laundry",
+        "washer",
+        "washing machine",
+        "dryer",
         "mold",
         "boiler",
     ]
@@ -574,6 +609,10 @@ def _update_incident(
     inc.report_count = int(inc.report_count or 0) + 1
     inc.confidence = max(int(inc.confidence or 0), confidence)
     _maybe_promote_elevator_incident_identity(inc, title=title, asset=asset, event_type=event_type)
+    if inc.category == "laundry" and not inc.asset and explicit_laundry_asset(rm.text or "") == asset:
+        # A terse follow-up may have opened a generic laundry incident first.
+        # Promote it only when this message explicitly names one machine.
+        inc.asset = asset
     if summary and summary not in (inc.summary or ""):
         inc.summary = (inc.summary + " | " + summary)[:2000]
     _upsert_witness(session, inc.incident_id, rm.sender_hash)
@@ -622,10 +661,18 @@ def _normalized_llm_choice(llm: dict | None) -> dict | None:
     return out
 
 
-def _normalize_elevator_asset_from_text(text: str, choice: dict | None) -> dict | None:
+def _normalize_explicit_asset_from_text(text: str, choice: dict | None) -> dict | None:
     if not isinstance(choice, dict):
         return choice
-    if choice.get("category") != "elevator":
+    category = choice.get("category")
+    if category == "laundry":
+        explicit_asset = explicit_laundry_asset(text or "")
+        if not explicit_asset:
+            return choice
+        normalized = dict(choice)
+        normalized["asset"] = explicit_asset
+        return normalized
+    if category != "elevator":
         return choice
     explicit_asset = explicit_elevator_asset(text or "")
     normalized = dict(choice)
@@ -816,6 +863,106 @@ def _llm_reviews_every_meaningful_message() -> bool:
     return (LLM_MODE or "uncertain").lower().strip() in {"all", "supervised"}
 
 
+def _latest_issue_context(
+    session,
+    rm: RawMessage,
+    *,
+    max_age_seconds: int,
+    categories: set[str] | None = None,
+) -> tuple[MessageDecision, Incident | None] | None:
+    if rm.ts_epoch is None or not rm.chat_name:
+        return None
+    query = (
+        session.query(MessageDecision, RawMessage, Incident)
+        .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
+        .outerjoin(Incident, Incident.incident_id == MessageDecision.incident_id)
+        .filter(
+            RawMessage.message_id != rm.message_id,
+            RawMessage.chat_name == rm.chat_name,
+            RawMessage.ts_epoch.isnot(None),
+            RawMessage.ts_epoch <= int(rm.ts_epoch),
+            RawMessage.ts_epoch >= int(rm.ts_epoch) - int(max_age_seconds),
+            MessageDecision.is_issue.is_(True),
+        )
+    )
+    if categories:
+        query = query.filter(MessageDecision.category.in_(sorted(categories)))
+    row = query.order_by(RawMessage.ts_epoch.desc(), RawMessage.message_id.desc()).first()
+    if not row:
+        return None
+    decision, _raw, incident = row
+    return decision, incident
+
+
+def _contextual_topic_followup_choice(session, rm: RawMessage) -> dict | None:
+    """Resolve short follow-ups from the nearest issue, without elevator bleed."""
+    text = (rm.text or "").strip()
+    if not text:
+        return None
+
+    categories: set[str] | None = None
+    max_age_seconds = 15 * 60
+    title = "Building issue corroborated"
+    summary = "Tenant corroborates the immediately preceding building issue."
+    severity = 2
+
+    if CONTEXTUAL_ELEVATOR_DIRECTION_RE.search(text):
+        categories = {"elevator"}
+        title = "Elevator direction performance update"
+        summary = "Tenant reports the same elevator performance problem in the other direction."
+        severity = 3
+    elif CONTEXTUAL_LIMITED_FIRE_EGRESS_RE.search(text):
+        categories = {"security_access"}
+        title = "Limited functional fire-stair access"
+        summary = "Tenant reports only one fire stair was functional."
+        severity = 4
+    elif CONTEXTUAL_REPLACEMENT_PROGRESS_RE.search(text):
+        categories = {"fire_safety"}
+        max_age_seconds = 4 * 3600
+        title = "Stairwell fire-hose replacement update"
+        summary = "Tenant reports apparent progress replacing the stairwell fire hoses."
+        severity = 3
+    elif not CONTEXTUAL_TOPIC_CONFIRMATION_RE.search(text):
+        return None
+
+    previous = _latest_issue_context(
+        session,
+        rm,
+        max_age_seconds=max_age_seconds,
+        categories=categories,
+    )
+    if previous is None:
+        return None
+    decision, incident = previous
+    if incident is None or incident.status == "closed":
+        return None
+    category = str(decision.category or "other")
+    asset = incident.asset
+    if category == "fire_safety":
+        asset = "stairwell_fire_hoses"
+        if CONTEXTUAL_TOPIC_CONFIRMATION_RE.search(text):
+            title = "Missing stairwell fire hoses corroborated"
+            summary = "A second tenant corroborates the missing stairwell fire-hose concern."
+            severity = 4
+    return {
+        "is_issue": True,
+        "signal_type": "report",
+        "category": category,
+        "asset": asset,
+        "event_type": "status_update",
+        "severity": severity,
+        "confidence": 88,
+        "title": title,
+        "summary": summary,
+        "refers_to_open_incident": True,
+        "close_incident": False,
+        "needs_review": False,
+        "preserve_issue": True,
+        "preserve_event_type": True,
+        "target_incident_id": incident.incident_id,
+    }
+
+
 def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -> dict | None:
     if rm.ts_epoch is None or not rm.chat_name:
         return None
@@ -972,6 +1119,8 @@ def _lock_authoritative_rule_state(rule_choice: dict | None, choice: dict | None
         )
         locked["event_type"] = rule_event_type
         locked["close_incident"] = rule_closes_incident
+    if rule_choice.get("target_incident_id"):
+        locked["target_incident_id"] = rule_choice.get("target_incident_id")
     if changed:
         # Preserve the rule's state, but surface the disagreement for the
         # private roster instead of silently trusting the model's override.
@@ -1203,9 +1352,15 @@ def _forced_nonreport_choice(rules: dict, llm_choice: dict | None) -> tuple[dict
 
 def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | None, str]:
     rules = classify_rules(rm.text)
+    forced_nonreport, forced_source = _forced_nonreport_choice(rules, None)
+    if forced_nonreport is not None:
+        # Deterministic reference/advisory guards are authoritative.  Return
+        # before open-incident context or model review can turn quoted,
+        # historical, or external material into a current building event.
+        return forced_nonreport, rules, None, forced_source or "guardrail_nonreport"
     rule_choice = _rule_choice(rules)
     reviewed_nonissue = bool(not rule_choice and REVIEWED_NONISSUE_CONTEXT_RE.search(rm.text or ""))
-    context_choice = _contextual_elevator_followup_choice(session, rm, rules)
+    context_choice = _contextual_topic_followup_choice(session, rm) or _contextual_elevator_followup_choice(session, rm, rules)
     if context_choice and (
         not rule_choice
         or (rule_choice.get("category") == "heat_hot_water" and context_choice.get("category") == "elevator")
@@ -1236,12 +1391,12 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             recent_related=recent_related,
             recent_chat=recent_chat,
         )
-    llm_choice = _normalize_elevator_asset_from_text(rm.text or "", _normalized_llm_choice(llm))
+    llm_choice = _normalize_explicit_asset_from_text(rm.text or "", _normalized_llm_choice(llm))
     forced_nonreport, forced_source = _forced_nonreport_choice(rules, llm_choice)
     if forced_nonreport is not None:
         return forced_nonreport, rules, llm_choice, forced_source or "guardrail_nonreport"
     if _should_request_review(rule_choice, llm_choice, llm is not None):
-        review_choice = _normalize_elevator_asset_from_text(
+        review_choice = _normalize_explicit_asset_from_text(
             rm.text or "",
             _normalized_llm_choice(
             llm_review_decision(
@@ -1280,7 +1435,7 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             return review_choice, rules, llm_choice, "review_rule_state" if rule_state_locked else "review"
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
-    chosen = _normalize_choice(chosen)
+    chosen = _normalize_explicit_asset_from_text(rm.text or "", _normalize_choice(chosen))
     guarded_choice, guarded_source = _unsupported_other_issue_guardrail(rm.text or "", rule_choice, chosen)
     if guarded_choice is not None:
         return guarded_choice, rules, llm_choice, guarded_source or "guardrail_unsupported_other"
@@ -1468,6 +1623,11 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
                     incident = _create_incident(session, cat, asset, rm, title, summary, severity, "open", max(confidence, 80), needs_review)
         else:
             best = existing_incident if existing_incident and existing_incident.category == cat else None
+            target_incident_id = str(chosen.get("target_incident_id") or "").strip()
+            if best is None and target_incident_id:
+                targeted = session.get(Incident, target_incident_id)
+                if targeted is not None and targeted.category == cat and targeted.status != "closed":
+                    best = targeted
             if best is None:
                 rows = session.query(Incident).filter(Incident.category == cat, Incident.status != "closed").order_by(Incident.last_ts_epoch.desc().nullslast()).all()
                 for candidate in rows:
@@ -1479,10 +1639,15 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
                         best = candidate
                         break
                     delta = int(rm.ts_epoch) - int(candidate.last_ts_epoch)
-                    if 0 <= delta <= OTHER_WINDOW_SECONDS:
+                    merge_window_seconds = (
+                        ELEVATOR_CONTINUATION_MAX_SECONDS
+                        if cat in {"fire_safety", "laundry"} and event_type in {"restore", "still_out", "status_update"}
+                        else OTHER_WINDOW_SECONDS
+                    )
+                    if 0 <= delta <= merge_window_seconds:
                         best = candidate
                         break
-                    if delta > OTHER_WINDOW_SECONDS:
+                    if delta > merge_window_seconds:
                         break
             if close_incident:
                 if best:

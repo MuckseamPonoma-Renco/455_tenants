@@ -1,7 +1,19 @@
 import os
 from datetime import datetime, timezone
 
-from packages.db import AccessNeedPrivate, FilingJob, Incident, PublicRecordWatch, ServiceRequestCase, WatchdogAction, get_session
+import pytest
+
+from packages.db import (
+    AccessNeedPrivate,
+    FilingJob,
+    Incident,
+    MessageDecision,
+    PublicRecordWatch,
+    RawMessage,
+    ServiceRequestCase,
+    WatchdogAction,
+    get_session,
+)
 from packages.project_watch.rules import ensure_action, evaluate_project_rules
 from packages.public_records import sync as public_record_sync
 from packages.public_records.elevator_scope import describes_elevator_replacement_scope
@@ -254,6 +266,269 @@ def test_public_record_sync_continues_after_partial_source_failure(client, monke
         assert result["source_errors"] == 0
         action = session.query(WatchdogAction).filter_by(action_type="public_record_source_error").one()
         assert action.status == "completed"
+
+
+def test_hpd_registration_contacts_are_fetched_from_building_registration_id(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        public_record_sync,
+        "_query_specs",
+        lambda: [("hpd_building", {"bin": "3126839"})],
+    )
+
+    def fake_fetch(source, params, limit=500):
+        calls.append((source.key, params, limit))
+        if source.key == "hpd_building":
+            return [{"buildingid": "348579", "registrationid": "373786", "bin": "3126839"}]
+        if source.key == "hpd_registration_contacts":
+            return [
+                {
+                    "registrationcontactid": "12345",
+                    "registrationid": "373786",
+                    "type": "CorporateOwner",
+                    "corporationname": "455 OCEAN ASSOCIATES LLC",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(public_record_sync, "fetch_rows", fake_fetch)
+
+    rows = public_record_sync.fetch_public_record_rows()
+
+    assert ("hpd_registration_contacts", {"registrationid": "373786"}, 500) in calls
+    assert [source_key for source_key, _row, _url in rows] == [
+        "hpd_building",
+        "hpd_registration_contacts",
+    ]
+
+
+def test_verified_hpd_corporate_owner_is_exposed_without_person_names(client, monkeypatch):
+    with get_session() as session:
+        upsert_public_record(
+            session,
+            "hpd_building",
+            {
+                "buildingid": "348579",
+                "registrationid": "373786",
+                "bin": "3126839",
+                "block": "5390",
+                "lot": "74",
+                "housenumber": "455",
+                "streetname": "OCEAN PARKWAY",
+                "recordstatus": "Active",
+            },
+        )
+        upsert_public_record(
+            session,
+            "hpd_registration_contacts",
+            {
+                "registrationcontactid": "12345",
+                "registrationid": "373786",
+                "type": "CorporateOwner",
+                "corporationname": "455 OCEAN ASSOCIATES LLC",
+            },
+        )
+        upsert_public_record(
+            session,
+            "hpd_registration_contacts",
+            {
+                "registrationcontactid": "12346",
+                "registrationid": "373786",
+                "type": "HeadOfficer",
+                "firstname": "Private",
+                "lastname": "Person",
+            },
+        )
+        apply_machine_verification(session)
+        owners = public_record_sync.registered_owner_organizations(session)
+        session.commit()
+
+    assert len(owners) == 1
+    assert owners[0]["organization"] == "455 OCEAN ASSOCIATES LLC"
+    assert owners[0]["role"] == "Corporate Owner"
+    assert owners[0]["registration_id"] == "373786"
+    assert owners[0]["verified_by"] == "auto:official_open_data"
+
+    fake = _FakeService()
+    monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-123")
+    monkeypatch.setattr(sheets_sync, "_service", lambda: fake)
+    sheets_sync.sync_project_status_to_sheets()
+    body_text = str([kwargs.get("body") for kind, kwargs in fake.calls if kind == "update"])
+    assert "455 OCEAN ASSOCIATES LLC" in body_text
+    assert "Private Person" not in body_text
+
+
+def test_successful_contact_refresh_retires_replaced_owner_under_same_registration(client, monkeypatch):
+    building = {
+        "buildingid": "348579",
+        "registrationid": "373786",
+        "bin": "3126839",
+        "block": "5390",
+        "lot": "74",
+        "housenumber": "455",
+        "streetname": "OCEAN PARKWAY",
+        "recordstatus": "Active",
+    }
+    old_contact = {
+        "registrationcontactid": "old-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "FORMER OWNER LLC",
+    }
+    new_contact = {
+        "registrationcontactid": "new-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "CURRENT OWNER LLC",
+    }
+    with get_session() as session:
+        upsert_public_record(session, "hpd_building", building)
+        former, _ = upsert_public_record(session, "hpd_registration_contacts", old_contact)
+        apply_machine_verification(session)
+        assert former.visible_public is True
+        session.commit()
+
+    monkeypatch.setattr(
+        public_record_sync,
+        "fetch_public_record_rows",
+        lambda: [
+            ("hpd_building", building, "https://example.test/hpd-building"),
+            ("hpd_registration_contacts", new_contact, "https://example.test/hpd-contacts"),
+        ],
+    )
+    monkeypatch.setattr(public_record_sync, "LAST_FETCH_ERRORS", [])
+    monkeypatch.setattr(public_record_sync, "LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS", {"373786"})
+    monkeypatch.setattr(
+        public_record_sync,
+        "LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION",
+        {"373786": {"new-contact"}},
+    )
+
+    with get_session() as session:
+        result = sync_public_records(session, baseline=False)
+        owners = public_record_sync.registered_owner_organizations(session)
+        former = session.query(PublicRecordWatch).filter_by(record_key="old-contact").one()
+        current = session.query(PublicRecordWatch).filter_by(record_key="new-contact").one()
+        former_visible_public = former.visible_public
+        former_verification_status = former.machine_verification_status
+        current_visible_public = current.visible_public
+        session.commit()
+
+    assert result["registration_contacts_retired"] == 1
+    assert former_visible_public is False
+    assert former_verification_status == "retired_from_current_registration"
+    assert current_visible_public is True
+    assert [owner["organization"] for owner in owners] == ["CURRENT OWNER LLC"]
+
+
+def test_repeated_contact_refresh_does_not_re_retire_or_re_action_hidden_contact(client, monkeypatch):
+    building = {
+        "buildingid": "348579",
+        "registrationid": "373786",
+        "bin": "3126839",
+        "block": "5390",
+        "lot": "74",
+        "housenumber": "455",
+        "streetname": "OCEAN PARKWAY",
+        "recordstatus": "Active",
+    }
+    former_contact = {
+        "registrationcontactid": "former-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "FORMER OWNER LLC",
+    }
+    current_contact = {
+        "registrationcontactid": "current-contact",
+        "registrationid": "373786",
+        "type": "CorporateOwner",
+        "corporationname": "CURRENT OWNER LLC",
+    }
+    with get_session() as session:
+        upsert_public_record(session, "hpd_building", building)
+        upsert_public_record(session, "hpd_registration_contacts", former_contact)
+        session.commit()
+
+    monkeypatch.setattr(
+        public_record_sync,
+        "fetch_public_record_rows",
+        lambda: [
+            ("hpd_building", building, "https://example.test/hpd-building"),
+            ("hpd_registration_contacts", current_contact, "https://example.test/hpd-contacts"),
+        ],
+    )
+    monkeypatch.setattr(public_record_sync, "LAST_FETCH_ERRORS", [])
+    monkeypatch.setattr(public_record_sync, "LAST_SUCCESSFUL_CONTACT_REGISTRATION_IDS", {"373786"})
+    monkeypatch.setattr(
+        public_record_sync,
+        "LAST_SEEN_CONTACT_KEYS_BY_REGISTRATION",
+        {"373786": {"current-contact"}},
+    )
+
+    with get_session() as session:
+        first = sync_public_records(session, baseline=False)
+        former = session.query(PublicRecordWatch).filter_by(record_key="former-contact").one()
+        first_changed_at = former.last_changed_at
+        session.flush()
+        first_action_ids = [
+            action.id
+            for action in session.query(WatchdogAction)
+            .filter_by(source_record_id=former.id, action_type="changed_public_record")
+            .all()
+        ]
+        session.commit()
+
+    with get_session() as session:
+        second = sync_public_records(session, baseline=False)
+        former = session.query(PublicRecordWatch).filter_by(record_key="former-contact").one()
+        session.commit()
+
+        assert first["registration_contacts_retired"] == 1
+        assert second["registration_contacts_retired"] == 0
+        assert former.status == "not_in_current_hpd_export"
+        assert former.visible_public is False
+        assert former.last_changed_at == first_changed_at
+        assert [
+            action.id
+            for action in session.query(WatchdogAction)
+            .filter_by(source_record_id=former.id, action_type="changed_public_record")
+            .all()
+        ] == first_action_ids
+
+
+def test_retired_hpd_contact_does_not_corroborate_current_building_record(client):
+    with get_session() as session:
+        building, _ = upsert_public_record(
+            session,
+            "hpd_building",
+            {
+                "buildingid": "348579",
+                "registrationid": "373786",
+                "bin": "3126839",
+                "recordstatus": "Active",
+            },
+        )
+        retired, _ = upsert_public_record(
+            session,
+            "hpd_registration_contacts",
+            {
+                "registrationcontactid": "retired-contact",
+                "registrationid": "373786",
+                "type": "CorporateOwner",
+                "corporationname": "FORMER OWNER LLC",
+            },
+        )
+        retired.status = "not_in_current_hpd_export"
+        retired.visible_public = False
+        retired.needs_human_verification = True
+        retired.machine_verification_status = "retired_from_current_registration"
+
+        apply_machine_verification(session)
+        session.commit()
+
+        assert building.machine_verification_status == "official_building_match"
+        assert building.corroborating_records_json is None
+        assert retired.machine_verification_status == "retired_from_current_registration"
 
 
 def test_replacement_watchdog_generates_weekly_digest_automatically(client, monkeypatch):
@@ -573,6 +848,7 @@ def test_public_service_view_uses_latest_incident_not_any_stale_both_outage(clie
                 start_ts_epoch=200,
                 last_ts_epoch=200,
                 title="North elevator still out",
+                updated_at="2026-09-05T16:15:27Z",
             ),
         ])
         session.commit()
@@ -583,6 +859,10 @@ def test_public_service_view_uses_latest_incident_not_any_stale_both_outage(clie
     answer = public_view["Actual elevator service reported by tenants"]["answer"]
     assert "north elevator" in answer
     assert "both-elevators outage" not in answer
+    assert (
+        public_view["Actual elevator service reported by tenants"]["last_checked_at"]
+        == "2026-09-05T16:15:27Z"
+    )
 
 
 def test_tenant_queue_shows_management_request_when_no_current_replacement_filing(client, monkeypatch):
@@ -715,6 +995,208 @@ def test_existing_311_case_suppresses_tenant_visible_elevator_action(client):
 
         action = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
         assert action.status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("message_suffix", "message_text"),
+    [
+        ("slow", "The north elevator is super slow going down, but it is running."),
+        ("irregular", "The north elevator is bouncing and opening slowly, but it is running."),
+    ],
+)
+def test_running_elevator_issue_replaces_false_outage_with_degraded_service_action(
+    client,
+    message_suffix,
+    message_text,
+):
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    incident_id = f"{message_suffix}-running-elevator"
+    message_id = f"{message_suffix}-running-elevator-message"
+    followup_message_id = f"{message_suffix}-running-elevator-followup"
+    with get_session() as session:
+        session.add(Incident(
+            incident_id=incident_id,
+            category="elevator",
+            asset="elevator_north",
+            severity=3,
+            status="open",
+            start_ts_epoch=now_epoch - (30 * 3600),
+            last_ts_epoch=now_epoch + 1,
+            title="North elevator operating unusually slowly",
+            summary="Tenant reports the elevator is slow but running.",
+        ))
+        session.add(RawMessage(
+            message_id=message_id,
+            sender_hash="tenant",
+            ts_iso=datetime.fromtimestamp(now_epoch, tz=timezone.utc).isoformat(),
+            ts_epoch=now_epoch,
+            text=message_text,
+            source="test",
+        ))
+        session.add(MessageDecision(
+            message_id=message_id,
+            incident_id=incident_id,
+            event_type="outage",
+            category="elevator",
+            is_issue=True,
+        ))
+        session.add(RawMessage(
+            message_id=followup_message_id,
+            sender_hash="tenant-two",
+            ts_iso=datetime.fromtimestamp(now_epoch + 1, tz=timezone.utc).isoformat(),
+            ts_epoch=now_epoch + 1,
+            text="Same going up",
+            source="test",
+        ))
+        session.add(MessageDecision(
+            message_id=followup_message_id,
+            incident_id=incident_id,
+            event_type="status_update",
+            category="elevator",
+            is_issue=True,
+        ))
+        session.add(WatchdogAction(
+            action_type="active_phase_one_elevator_down",
+            severity="yellow",
+            title="False outage action",
+            status="open",
+            owner_role="operator",
+            related_incident_id=incident_id,
+            created_at="2026-09-05T08:00:00Z",
+            updated_at="2026-09-05T08:00:00Z",
+        ))
+
+        evaluate_project_rules(session)
+        session.commit()
+
+        outage = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
+        degraded = session.query(WatchdogAction).filter_by(action_type="active_elevator_degraded_service").one()
+        assert outage.status == "completed"
+        assert degraded.status == "open"
+        assert degraded.severity == "watch"
+        assert "without presenting it as an elevator outage" in degraded.detail
+
+
+def test_latest_still_out_message_keeps_outage_action_and_closes_degraded_action(client):
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    with get_session() as session:
+        session.add(Incident(
+            incident_id="latest-still-out-elevator",
+            category="elevator",
+            asset="elevator_south",
+            severity=4,
+            status="open",
+            start_ts_epoch=now_epoch - (30 * 3600),
+            last_ts_epoch=now_epoch,
+            title="South elevator still out",
+        ))
+        session.add_all([
+            RawMessage(
+                message_id="older-irregular-elevator-message",
+                sender_hash="tenant",
+                ts_epoch=now_epoch - 60,
+                text="The south elevator is bouncing but running.",
+                source="test",
+            ),
+            RawMessage(
+                message_id="latest-still-out-elevator-message",
+                sender_hash="tenant",
+                ts_epoch=now_epoch,
+                text="The south elevator is still out.",
+                source="test",
+            ),
+            MessageDecision(
+                message_id="older-irregular-elevator-message",
+                incident_id="latest-still-out-elevator",
+                event_type="status_update",
+                category="elevator",
+                is_issue=True,
+            ),
+            MessageDecision(
+                message_id="latest-still-out-elevator-message",
+                incident_id="latest-still-out-elevator",
+                event_type="still_out",
+                category="elevator",
+                is_issue=True,
+            ),
+            WatchdogAction(
+                action_type="active_elevator_degraded_service",
+                severity="watch",
+                title="Old degraded-service action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="latest-still-out-elevator",
+                created_at="2026-09-05T08:00:00Z",
+                updated_at="2026-09-05T08:00:00Z",
+            ),
+        ])
+
+        evaluate_project_rules(session)
+        session.commit()
+
+        degraded = session.query(WatchdogAction).filter_by(action_type="active_elevator_degraded_service").one()
+        outage = session.query(WatchdogAction).filter_by(action_type="active_phase_one_elevator_down").one()
+        assert degraded.status == "completed"
+        assert outage.status == "open"
+
+
+def test_latest_working_update_completes_stale_elevator_actions(client):
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    with get_session() as session:
+        session.add(Incident(
+            incident_id="working-elevator-left-open",
+            category="elevator",
+            asset="elevator_both",
+            severity=2,
+            status="open",
+            start_ts_epoch=now_epoch - (30 * 3600),
+            last_ts_epoch=now_epoch,
+            title="Elevators working now",
+        ))
+        session.add(RawMessage(
+            message_id="working-elevator-message",
+            sender_hash="tenant",
+            ts_epoch=now_epoch,
+            text="Both elevators are working now.",
+            source="test",
+        ))
+        session.add(MessageDecision(
+            message_id="working-elevator-message",
+            incident_id="working-elevator-left-open",
+            event_type="status_update",
+            category="elevator",
+            is_issue=True,
+        ))
+        session.add_all([
+            WatchdogAction(
+                action_type="both_elevators_down",
+                severity="critical",
+                title="Stale outage action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="working-elevator-left-open",
+                created_at="2026-09-05T08:00:00Z",
+                updated_at="2026-09-05T08:00:00Z",
+            ),
+            WatchdogAction(
+                action_type="active_elevator_degraded_service",
+                severity="watch",
+                title="Stale degraded-service action",
+                status="open",
+                owner_role="operator",
+                related_incident_id="working-elevator-left-open",
+                created_at="2026-09-05T08:00:00Z",
+                updated_at="2026-09-05T08:00:00Z",
+            ),
+        ])
+
+        evaluate_project_rules(session)
+        session.commit()
+
+        incident_actions = session.query(WatchdogAction).filter_by(
+            related_incident_id="working-elevator-left-open"
+        ).all()
+        assert {action.status for action in incident_actions} == {"completed"}
 
 
 def test_awaiting_approval_311_draft_suppresses_duplicate_watchdog_action(client):

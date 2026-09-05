@@ -17,6 +17,7 @@ def test_runtime_staging_preserves_runtime_configuration_and_state():
     for name in ("install_mac_launch_agents.sh", "install_chat_export_sync_launch_agent.sh"):
         script = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert 'Missing runtime configuration: $RUNTIME_ROOT/.env' in script
+        assert 'chmod 600 "$RUNTIME_ROOT/.env"' in script
         for expected in expected_excludes:
             assert expected in script
 

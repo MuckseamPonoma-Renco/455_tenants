@@ -182,18 +182,37 @@ for line in Path('.env').read_text(encoding='utf-8').splitlines():
     os.environ.setdefault(key.strip(), value.strip())
 from packages.db import get_session
 from packages.public_records.sync import sync_replacement_watchdog
+from packages.sheets.sync import sync_replacement_watchdog_to_sheets
 with get_session() as session:
     result = sync_replacement_watchdog(session)
     session.commit()
+sync_replacement_watchdog_to_sheets()
+result["sheets_synced"] = True
 print(__import__('json').dumps(result, sort_keys=True))
 """
     return _command_check(
         "replacement_watchdog",
         [str(OPERATION_PYTHON), "-c", code],
         runner=runner,
-        timeout_seconds=90,
-        success_detail="Elevator replacement watchdog fetched official records and applied rules without source errors.",
+        timeout_seconds=120,
+        success_detail="Elevator replacement watchdog fetched official records, applied rules, and refreshed its public tabs.",
         failure_detail="Elevator replacement watchdog did not complete cleanly.",
+    )
+
+
+def check_public_watchdog_tabs(runner: Runner) -> dict[str, Any]:
+    return _command_check(
+        "public_watchdog_tabs",
+        [
+            str(OPERATION_PYTHON),
+            str(OPERATION_ROOT / "scripts" / "audit_public_watchdog_tabs.py"),
+            "--limit",
+            "20",
+        ],
+        runner=runner,
+        timeout_seconds=60,
+        success_detail="Published watchdog tabs match the freshly synchronized official-record source.",
+        failure_detail="Published watchdog tabs do not match the freshly synchronized official-record source.",
     )
 
 
@@ -308,6 +327,7 @@ def build_report(args: argparse.Namespace, *, runner: Runner = run_command) -> d
         checks.append(check_public_tenant_log(runner))
     if args.include_watchdog_sync:
         checks.append(check_replacement_watchdog(runner))
+        checks.append(check_public_watchdog_tabs(runner))
 
     hard_failures = [row for row in checks if row["ok"] is not True and row["status"] != "warn"]
     return {

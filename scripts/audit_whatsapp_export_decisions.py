@@ -18,11 +18,11 @@ from packages.local_env import load_local_env_file
 
 load_local_env_file(ROOT / ".env")
 
-from packages.audit import compute_message_id  # noqa: E402
 from packages.db import MessageDecision, RawMessage, get_session  # noqa: E402
 from packages.incident.rules import classify_rules  # noqa: E402
 from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate, find_recent_duplicate  # noqa: E402
 from packages.timeutil import parse_ts_to_epoch  # noqa: E402
+from packages.whatsapp.identity import iter_physical_message_identities  # noqa: E402
 from packages.whatsapp.parser import is_media_placeholder_text  # noqa: E402
 from packages.whatsapp.export import parse_export_path  # noqa: E402
 
@@ -31,6 +31,9 @@ EXPORT_EXTENSIONS = {".zip", ".txt"}
 
 CSV_FIELDS = [
     "export_ordinal",
+    "export_message_id",
+    "base_message_id",
+    "physical_occurrence",
     "export_file",
     "export_chat_name",
     "ts_iso",
@@ -68,6 +71,9 @@ CSV_FIELDS = [
 @dataclass(frozen=True)
 class ExportMessage:
     export_ordinal: int
+    message_id: str
+    base_message_id: str
+    physical_occurrence: int
     export_file: str
     chat_name: str
     sender: str
@@ -82,10 +88,15 @@ def iter_export_messages(export_path: Path, *, default_chat_name: str = "Tenants
     export = parse_export_path(export_path, default_chat_name=default_chat_name)
     fallback_file = Path(export_path).name
     chat_files = export.chat_files or [fallback_file]
-    for ordinal, item in enumerate(export.messages, start=1):
+    identities = iter_physical_message_identities(export.messages)
+    for ordinal, identity in enumerate(identities, start=1):
+        item = identity.message
         messages.append(
             ExportMessage(
                 export_ordinal=ordinal,
+                message_id=identity.message_id,
+                base_message_id=identity.base_message_id,
+                physical_occurrence=identity.occurrence,
                 export_file=chat_files[0] if len(chat_files) == 1 else item.chat_name,
                 chat_name=item.chat_name,
                 sender=item.sender,
@@ -216,15 +227,19 @@ def _decision_signature(decision: MessageDecision | None) -> tuple[object, ...]:
 
 
 def _match_export_message(session, message: ExportMessage) -> tuple[RawMessage | None, str, RawMessage | None]:
-    message_id = compute_message_id(message.chat_name, message.sender, message.ts_iso or "", message.text)
-    exact = session.get(RawMessage, message_id)
+    exact = session.get(RawMessage, message.message_id)
+    # Later same-ID occurrences are separate physical records. Requiring their
+    # suffixed ID prevents a semantic/near match from masking cardinality loss.
+    if message.physical_occurrence > 1:
+        return (exact, "exact", None) if exact is not None else (None, "", None)
+
     cross_source = find_recent_cross_source_duplicate(
         session,
         text=message.text,
         ts_epoch=message.ts_epoch,
         sources=LIVE_CAPTURE_SOURCES,
     )
-    if cross_source is not None and cross_source.message_id != message_id:
+    if cross_source is not None and cross_source.message_id != message.message_id:
         if exact is None or exact.source in {"zip_import", "export"}:
             return cross_source, "cross_source", exact
     if exact is not None:
@@ -267,6 +282,9 @@ def _row_from_message(
     reasons = sorted(set(reasons))
     row = {
         "export_ordinal": message.export_ordinal,
+        "export_message_id": message.message_id,
+        "base_message_id": message.base_message_id,
+        "physical_occurrence": message.physical_occurrence,
         "export_file": message.export_file,
         "export_chat_name": message.chat_name,
         "ts_iso": message.ts_iso or "",
@@ -308,6 +326,9 @@ def _write_summary(path: Path, *, summary: dict[str, Any], outputs: dict[str, Pa
         f"- Since: `{summary['since']}`",
         f"- Parsed messages: {summary['parsed_messages']}",
         f"- Audited messages: {summary['audited_messages']}",
+        f"- Unique physical message IDs: {summary['unique_physical_message_ids']}",
+        f"- Colliding base message IDs: {summary['colliding_base_message_ids']}",
+        f"- Later physical occurrences: {summary['collision_followup_occurrences']}",
         f"- Matched messages: {summary['matched_messages']}",
         f"- Missing from DB: {summary['missing_db_messages']}",
         f"- Missing decisions: {summary['missing_decisions']}",
@@ -383,12 +404,21 @@ def run_audit(
     llm_review_missing = counters["llm_review:missing"]
     llm_review_failed = counters["llm_review:failed"]
     llm_review_not_applicable = counters["llm_review:not_applicable"]
+    data_complete = counters["missing_db_messages"] == 0 and counters["missing_decisions"] == 0
+    llm_review_complete = llm_review_missing == 0 and llm_review_failed == 0
+    colliding_base_message_ids = len({
+        message.base_message_id for message in audited if message.physical_occurrence > 1
+    })
+    collision_followup_occurrences = sum(message.physical_occurrence > 1 for message in audited)
     summary: dict[str, Any] = {
-        "ok": True,
+        "ok": data_complete and (llm_review_complete or not require_llm_review),
         "export_path": str(export_path),
         "since": since,
         "parsed_messages": len(messages),
         "audited_messages": len(audited),
+        "unique_physical_message_ids": len({message.message_id for message in audited}),
+        "colliding_base_message_ids": colliding_base_message_ids,
+        "collision_followup_occurrences": collision_followup_occurrences,
         "matched_messages": counters["matched_messages"],
         "missing_db_messages": counters["missing_db_messages"],
         "missing_decisions": counters["missing_decisions"],
@@ -397,7 +427,7 @@ def run_audit(
         "llm_review_missing": llm_review_missing,
         "llm_review_failed": llm_review_failed,
         "llm_review_not_applicable": llm_review_not_applicable,
-        "llm_review_complete": llm_review_missing == 0 and llm_review_failed == 0,
+        "llm_review_complete": llm_review_complete,
         "review_roster_rows": len(review_rows),
         "reason_counts": {key.removeprefix("reason:"): value for key, value in counters.items() if key.startswith("reason:")},
         "out_dir": str(out_dir),
@@ -439,6 +469,7 @@ def main() -> None:
         require_llm_review=args.require_llm_review,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
+    raise SystemExit(0 if summary["ok"] else 1)
 
 
 if __name__ == "__main__":

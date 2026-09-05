@@ -30,13 +30,14 @@ class VerificationError(RuntimeError):
     pass
 
 
-def _format_template(value: str, *, device_1: str) -> str:
+def _format_template(value: str, *, device_1: str, registration_id: str = "") -> str:
     return value.format(
         bbl=building_bbl_compact(),
         bin=building_bin(),
         borough=building_borough(),
         borough_upper=building_borough().upper(),
         device_1=device_1,
+        registrationid=registration_id,
     )
 
 
@@ -145,6 +146,7 @@ def verify_sources(*, output_path: Path, timeout: float = 30.0) -> list[dict]:
     results: list[dict] = []
     device_1 = DEFAULT_DEVICES[0]
     elevator_job_filing_numbers: set[str] = set()
+    hpd_registration_ids: set[str] = set()
     errors: list[str] = []
 
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
@@ -160,9 +162,18 @@ def verify_sources(*, output_path: Path, timeout: float = 30.0) -> list[dict]:
                 templates = list(source.query_templates)
                 if source.key == "dob_now_elevator_device_details" and elevator_job_filing_numbers:
                     templates.insert(0, {"job_filing_number": sorted(elevator_job_filing_numbers)[0]})
+                if source.key == "hpd_registration_contacts" and not hpd_registration_ids:
+                    raise VerificationError("no HPD registration ID was returned by the building crosswalk")
 
                 for index, template in enumerate(templates, start=1):
-                    params = {field: _format_template(value, device_1=device_1) for field, value in template.items()}
+                    params = {
+                        field: _format_template(
+                            value,
+                            device_1=device_1,
+                            registration_id=sorted(hpd_registration_ids)[0] if hpd_registration_ids else "",
+                        )
+                        for field, value in template.items()
+                    }
                     row_count = _count(client, source.dataset_id, params)
                     rows = _sample(client, source.dataset_id, params)
                     returned_columns = sorted({key for row in rows for key in row.keys()})
@@ -182,6 +193,11 @@ def verify_sources(*, output_path: Path, timeout: float = 30.0) -> list[dict]:
                             job = str(row.get("job_filing_number") or "").strip()
                             if job:
                                 elevator_job_filing_numbers.add(job)
+                    if source.key == "hpd_building":
+                        for row in rows:
+                            registration_id = str(row.get("registrationid") or "").strip()
+                            if registration_id:
+                                hpd_registration_ids.add(registration_id)
 
                 results.append(
                     {

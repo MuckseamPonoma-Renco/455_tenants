@@ -19,7 +19,7 @@ from packages.local_env import load_local_env_file
 
 load_local_env_file(ROOT / ".env")
 
-from packages.audit import append_audit_event, compute_message_id, sender_hash
+from packages.audit import append_audit_event, sender_hash
 from packages.db import Incident, MessageDecision, RawMessage, get_session
 from packages.incident.extractor import classify_and_upsert_incident
 from packages.sheets.sync import (
@@ -40,7 +40,8 @@ from packages.whatsapp.attachments import (
     strip_reply_context_from_text,
 )
 from packages.whatsapp.media import DEFAULT_MEDIA_DIR, STAGED_RUNTIME_ROOT, media_root
-from packages.whatsapp.parser import ParsedMessage, is_media_placeholder_text, parse_export_text
+from packages.whatsapp.identity import iter_physical_message_identities
+from packages.whatsapp.parser import ParsedMessage, is_media_placeholder_text, omitted_media_kind, parse_export_text
 
 ATTACHED_SPLIT_RE = re.compile(r"\s*,\s*")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?!\d)")
@@ -51,11 +52,14 @@ ISSUE_RE = re.compile(
     r"\b(elevator|elevators|lift|lifts|stair|stairs|handrail|broken|kaputt|stuck|dead|out|not working|no longer|leak|mold|heat|hot water)\b",
     re.IGNORECASE,
 )
+GENERIC_MEDIA_TEXTS = {"Photo attached", "Video attached", "Audio attached", "File attached"}
 
 
 @dataclass
 class MediaMessage:
     index: int
+    message_id: str
+    physical_occurrence: int
     parsed: ParsedMessage
     ts_epoch: int | None
     ts_iso: str | None
@@ -110,6 +114,270 @@ def _generic_media_text(names: list[str]) -> str:
     if "audio" in kinds:
         return "Audio attached"
     return "File attached"
+
+
+def _message_id_occurrence(message_id: str) -> int:
+    match = re.search(r"~([2-9][0-9]*)$", message_id or "")
+    return int(match.group(1)) if match else 1
+
+
+def _compatible_placeholder_kinds_for_filenames(filenames: list[str] | set[str]) -> set[str]:
+    compatible: set[str] = set()
+    for name in filenames:
+        kind = _kind_for_filename(name)
+        if kind == "image":
+            compatible.update({"image", "sticker"})
+        elif kind == "video":
+            compatible.update({"video", "gif"})
+        elif kind == "audio":
+            compatible.add("audio")
+        elif kind == "document":
+            compatible.update({"document", "file"})
+        # WhatsApp can export a GIF as either a .gif image or an MP4 whose
+        # filename contains GIF.  The text-only peer says ``gif omitted`` in
+        # both cases, so extension-only image classification is insufficient.
+        if Path(name).suffix.casefold() == ".gif" or "GIF" in Path(name).name.upper():
+            compatible.add("gif")
+    return compatible
+
+
+def _compatible_placeholder_kinds(message: MediaMessage) -> set[str]:
+    return _compatible_placeholder_kinds_for_filenames(message.attachment_names)
+
+
+def _exact_placeholder_targets(session, message: MediaMessage) -> list[RawMessage]:
+    """Find the text-only aliases for one media-rich export occurrence.
+
+    WhatsApp replaces attachment filenames with ``image omitted`` (and similar)
+    in text-only exports.  That changes the message hash, so matching solely by
+    ID or caption creates a second synthetic ``export_media`` row.  Exact
+    sender/time, placeholder kind, and physical occurrence form the stable
+    bridge between the two export formats.
+    """
+
+    if message.ts_epoch is None:
+        return []
+    expected_occurrence = int(message.physical_occurrence or 1)
+    compatible_kinds = _compatible_placeholder_kinds(message)
+    rows = (
+        session.query(RawMessage)
+        .filter(
+            RawMessage.ts_epoch == int(message.ts_epoch),
+            RawMessage.sender_hash == sender_hash(_clean(message.parsed.sender)),
+            RawMessage.source != "export_media",
+        )
+        .order_by(RawMessage.message_id)
+        .all()
+    )
+    return [
+        row
+        for row in rows
+        if _message_id_occurrence(row.message_id) == expected_occurrence
+        and omitted_media_kind(row.text) in compatible_kinds
+    ]
+
+
+def _incident_proof_message_ids(session) -> set[str]:
+    return {
+        ref.strip()
+        for (proof_refs,) in session.query(Incident.proof_refs).all()
+        for ref in (proof_refs or "").split(",")
+        if ref.strip()
+    }
+
+
+def _reconcilable_media_alias(
+    session,
+    row: RawMessage,
+    *,
+    protected_message_ids: set[str] | None = None,
+) -> bool:
+    if row.source != "export_media":
+        return False
+    filenames = _export_filenames(row.attachments)
+    generic_text_matches = bool(
+        row.text in GENERIC_MEDIA_TEXTS
+        and row.text == _generic_media_text(sorted(filenames))
+    )
+    canonical_placeholder_matches = bool(
+        is_media_placeholder_text(row.text)
+        and omitted_media_kind(row.text)
+        in _compatible_placeholder_kinds_for_filenames(filenames)
+    )
+    if not filenames or not (generic_text_matches or canonical_placeholder_matches):
+        return False
+    protected = protected_message_ids if protected_message_ids is not None else _incident_proof_message_ids(session)
+    if row.message_id in protected:
+        return False
+    decision = session.get(MessageDecision, row.message_id)
+    if decision is None:
+        return False
+    try:
+        rules = json.loads(decision.rules_json or "{}")
+        final = json.loads(decision.final_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return bool(
+        decision.chosen_source == "media_attachment"
+        and not decision.is_issue
+        and not decision.incident_id
+        and decision.category is None
+        and decision.event_type == "non_issue"
+        and not decision.needs_review
+        and not decision.auto_file_candidate
+        and isinstance(rules, dict)
+        and rules.get("kind") == "media_attachment"
+        and isinstance(final, dict)
+        and final.get("is_issue") is False
+        and final.get("event_type") == "non_issue"
+    )
+
+
+def _export_filenames(raw: str | None) -> set[str]:
+    names: set[str] = set()
+    for item in parse_attachment_manifest(raw).get("items", []):
+        if not isinstance(item, dict):
+            continue
+        value = item.get("export_filename") or item.get("filename")
+        if value:
+            names.add(Path(str(value)).name)
+    return names
+
+
+def _media_aliases_by_export_filename(session) -> dict[str, list[RawMessage]]:
+    aliases: dict[str, list[RawMessage]] = {}
+    for row in session.query(RawMessage).filter(RawMessage.source == "export_media").all():
+        if row.text not in GENERIC_MEDIA_TEXTS and not is_media_placeholder_text(row.text):
+            continue
+        for filename in _export_filenames(row.attachments):
+            aliases.setdefault(filename, []).append(row)
+    return aliases
+
+
+def _alias_matches_media_message(alias: RawMessage, message: MediaMessage) -> bool:
+    if message.ts_epoch is None or alias.ts_epoch != int(message.ts_epoch):
+        return False
+    if alias.sender_hash != sender_hash(_clean(message.parsed.sender)):
+        return False
+    if _message_id_occurrence(alias.message_id) != int(message.physical_occurrence or 1):
+        return False
+    message_filenames = {Path(name).name for name in message.attachment_names}
+    return bool(message_filenames & _export_filenames(alias.attachments))
+
+
+def _placeholder_targets_are_coherent(targets: list[RawMessage]) -> bool:
+    """Allow duplicate import-format rows, but not cross-chat/kind ambiguity."""
+
+    identities = {
+        (_clean(row.chat_name).casefold(), omitted_media_kind(row.text))
+        for row in targets
+    }
+    return len(identities) == 1
+
+
+def _prefer_exact_placeholder_identity(
+    session,
+    message: MediaMessage,
+    targets: list[RawMessage],
+) -> list[RawMessage]:
+    """Resolve historical chat-label aliases only when the exact ID is valid.
+
+    Restored collision rows use the current ``455 Tenants`` chat label while
+    older imports may have an otherwise identical ``Tenants WhatsApp`` row.
+    The immutable exact physical ID is authoritative, but only after it has
+    independently passed the timestamp, sender, occurrence, and media-kind
+    filters in ``_exact_placeholder_targets``.  Same-chat/kind peers can share
+    the manifest; cross-identity rows remain outside the selected group.
+    """
+
+    exact = session.get(RawMessage, message.message_id)
+    if exact is None or not any(row.message_id == exact.message_id for row in targets):
+        return targets
+    identity = (_clean(exact.chat_name).casefold(), omitted_media_kind(exact.text))
+    return [
+        row
+        for row in targets
+        if (_clean(row.chat_name).casefold(), omitted_media_kind(row.text)) == identity
+    ]
+
+
+def _merge_placeholder_media(
+    session,
+    message: MediaMessage,
+    *,
+    stats: dict[str, int],
+    aliases_by_export_filename: dict[str, list[RawMessage]],
+    accounted_alias_ids: set[str],
+    protected_message_ids: set[str] | None = None,
+) -> bool:
+    targets = _exact_placeholder_targets(session, message)
+    if not targets:
+        return False
+    targets = _prefer_exact_placeholder_identity(session, message, targets)
+    if not _placeholder_targets_are_coherent(targets):
+        stats["ambiguous_placeholder_media_messages"] += 1
+        return True
+    stats["matched_placeholder_media_messages"] += 1
+
+    aliases = {
+        alias.message_id: alias
+        for filename in message.attachment_names
+        for alias in aliases_by_export_filename.get(Path(filename).name, [])
+    }
+    exact_alias = session.get(RawMessage, message.message_id)
+    if exact_alias is not None:
+        aliases.setdefault(exact_alias.message_id, exact_alias)
+
+    all_targets_have_decisions = all(
+        session.get(MessageDecision, target.message_id) is not None for target in targets
+    )
+    reconcilable_aliases: list[RawMessage] = []
+    for alias_id, alias in aliases.items():
+        if alias in targets or alias_id in accounted_alias_ids:
+            continue
+        # Basenames are not globally unique across exports.  A filename match
+        # only identifies an alias after sender, timestamp, and occurrence also
+        # agree with this physical media message.
+        if not _alias_matches_media_message(alias, message):
+            continue
+        accounted_alias_ids.add(alias_id)
+        if all_targets_have_decisions and _reconcilable_media_alias(
+            session,
+            alias,
+            protected_message_ids=protected_message_ids,
+        ):
+            reconcilable_aliases.append(alias)
+            stats["reconciled_media_alias_rows"] += 1
+            stats["retained_media_alias_rows"] += 1
+        elif alias.source == "export_media":
+            stats["blocked_media_alias_rows"] += 1
+
+    # A collision suffix (``~2``, ``~3``, ...) is a physical-occurrence key,
+    # not a disposable alias marker.  Keep every correlated export_media row:
+    # the stable archive audit intentionally requires those exact IDs to prove
+    # cardinality.  We still merge every known manifest into the text-only
+    # target so its evidence is complete.
+    incoming_manifest = message.manifest
+    for alias in reconcilable_aliases:
+        incoming_manifest = merge_attachment_manifests(incoming_manifest, alias.attachments)
+    for target in targets:
+        merged = merge_attachment_manifests(target.attachments, incoming_manifest)
+        if merged != target.attachments:
+            target.attachments = merged
+            stats["merged_existing"] += 1
+
+    # Normalize attachment-only aliases back to the parser text from which
+    # their immutable IDs were computed.  Besides making the stored row
+    # truthful, this lets DecisionLog's existing placeholder filter suppress
+    # the redundant presentation row while its nonissue decision keeps it out
+    # of incidents, filing jobs, and public issue views.
+    canonical_text = _clean(message.parsed.text)
+    if is_media_placeholder_text(canonical_text):
+        for alias in reconcilable_aliases:
+            if alias.text != canonical_text:
+                alias.text = canonical_text
+                stats["normalized_media_alias_rows"] += 1
+    return True
 
 
 def _extract_media_files(zf: zipfile.ZipFile, zip_path: Path, chat_name: str, message: ParsedMessage, names: list[str]) -> str | None:
@@ -239,6 +507,11 @@ def _neighbor_text(parsed_messages: list[ParsedMessage], message: MediaMessage) 
 
 
 def _find_existing_target(session, parsed_messages: list[ParsedMessage], message: MediaMessage) -> RawMessage | None:
+    exact = session.get(RawMessage, message.message_id)
+    if exact is not None:
+        return exact
+    if message.physical_occurrence > 1:
+        return None
     match = _best_text_match(session, message)
     if match is not None:
         return match
@@ -253,7 +526,7 @@ def _upsert_unmatched_media(session, message: MediaMessage) -> tuple[RawMessage,
     sender = _clean(message.parsed.sender)
     chat_name = _clean(message.parsed.chat_name)
     ts = message.ts_iso or message.parsed.ts_iso or ""
-    mid = compute_message_id(chat_name, sender, ts, message.text_for_storage)
+    mid = message.message_id
     existing = session.get(RawMessage, mid)
     if existing:
         existing.attachments = merge_attachment_manifests(existing.attachments, message.manifest)
@@ -325,7 +598,9 @@ def import_media_zip(zip_path: Path, *, chat_name: str, repair_reply_context: bo
         parsed = parse_export_text(zf.read(txt_name).decode("utf-8", errors="replace"), chat_name=chat_name)
 
         media_messages: list[MediaMessage] = []
-        for idx, message in enumerate(parsed):
+        identities = list(iter_physical_message_identities(parsed))
+        for idx, identity in enumerate(identities):
+            message = identity.message
             attachment_names = _attachment_names(message.attachments, names)
             if not attachment_names:
                 continue
@@ -333,6 +608,8 @@ def import_media_zip(zip_path: Path, *, chat_name: str, repair_reply_context: bo
             media_messages.append(
                 MediaMessage(
                     index=idx,
+                    message_id=identity.message_id,
+                    physical_occurrence=identity.occurrence,
                     parsed=message,
                     ts_epoch=ts_epoch,
                     ts_iso=epoch_to_iso(ts_epoch) or message.ts_iso,
@@ -349,14 +626,33 @@ def import_media_zip(zip_path: Path, *, chat_name: str, repair_reply_context: bo
         "inserted_media_rows": 0,
         "processed_inserted_rows": 0,
         "reply_rows_repaired": 0,
+        "matched_placeholder_media_messages": 0,
+        "ambiguous_placeholder_media_messages": 0,
+        "reconciled_media_alias_rows": 0,
+        "retained_media_alias_rows": 0,
+        "normalized_media_alias_rows": 0,
+        "blocked_media_alias_rows": 0,
     }
     inserted_to_process: list[str] = []
     with get_session() as session:
         if repair_reply_context:
             stats["reply_rows_repaired"] = _repair_reply_context_rows(session)
 
+        aliases_by_export_filename = _media_aliases_by_export_filename(session)
+        accounted_alias_ids: set[str] = set()
+        protected_message_ids = _incident_proof_message_ids(session)
+
         for message in media_messages:
             if not message.manifest:
+                continue
+            if _merge_placeholder_media(
+                session,
+                message,
+                stats=stats,
+                aliases_by_export_filename=aliases_by_export_filename,
+                accounted_alias_ids=accounted_alias_ids,
+                protected_message_ids=protected_message_ids,
+            ):
                 continue
             target = _find_existing_target(session, parsed, message)
             if target is not None:

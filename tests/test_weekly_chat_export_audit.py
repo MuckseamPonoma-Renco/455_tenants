@@ -77,6 +77,20 @@ def test_post_audit_sheet_sync_forces_enabled_then_restores_environment(monkeypa
     assert __import__("os").environ["DISABLE_SHEETS_SYNC"] == "1"
 
 
+def test_public_sheet_readback_uses_full_audit_window(monkeypatch):
+    calls = []
+    monkeypatch.setenv("PUBLIC_TENANT_LOG_AUDIT_DAYS", "365")
+    monkeypatch.setattr(
+        "scripts.audit_public_tenant_log.run_audit",
+        lambda **kwargs: calls.append(kwargs) or {"ok": True},
+    )
+
+    assert weekly_audit.verify_public_sheet_readback() == {"ok": True}
+    assert calls == [
+        {"days": 365, "resync": False, "retries": 3, "retry_sleep": 2.0, "limit": 20}
+    ]
+
+
 def test_retry_incomplete_reviews_reprocesses_only_unreviewed_messages(client, tmp_path, monkeypatch):
     export_path = tmp_path / "WhatsApp Chat - 455 Tenants.txt"
     export_path.write_text(

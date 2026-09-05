@@ -341,7 +341,7 @@ def test_all_mode_reviews_contextual_followups(client, monkeypatch):
     assert llm_calls == ['Still broken.']
 
 
-def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path):
+def test_export_ingest_preserves_identical_physical_messages_and_is_idempotent(client, tmp_path):
     chat_text = '''[2/15/26, 8:56:59 AM] Karen KWA: North lift dead
 [2/15/26, 8:56:59 AM] Karen KWA: North lift dead
 '''
@@ -351,9 +351,22 @@ def test_export_ingest_dedupes_identical_messages_in_same_file(client, tmp_path)
         response = client.post('/ingest/export', headers=auth_headers(), files={'file': ('dupe_chat.txt', f, 'text/plain')})
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload['inserted'] == 1
+    assert payload['parsed'] == 2
+    assert payload['inserted'] == 2
+    assert payload['deduped'] == 0
     with get_session() as session:
+        message_ids = sorted(row.message_id for row in session.query(RawMessage).all())
+        assert len(message_ids) == 2
+        assert any(message_id.endswith('~2') for message_id in message_ids)
         assert session.query(Incident).count() == 1
+
+    with export_path.open('rb') as f:
+        repeated = client.post('/ingest/export', headers=auth_headers(), files={'file': ('dupe_chat.txt', f, 'text/plain')})
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()['inserted'] == 0
+    assert repeated.json()['deduped'] == 2
+    with get_session() as session:
+        assert session.query(RawMessage).count() == 2
 
 
 def test_export_ingest_imports_all_chat_txt_files_in_zip(client, tmp_path):
@@ -416,6 +429,39 @@ def test_export_ingest_dedupes_matching_tasker_message_even_when_chat_name_diffe
     assert len(raws) == 1
     assert len(decisions) == 1
     assert raws[0].source == 'tasker'
+
+
+def test_export_collision_preserves_later_occurrence_after_cross_source_match(client, tmp_path):
+    captured = client.post('/ingest/tasker', headers=auth_headers(), json={
+        'chat_name': '455 Tenants',
+        'text': 'North lift dead',
+        'sender': 'Karen KWA',
+        'ts_epoch': parse_ts_to_epoch('2/15/26 8:56:59 AM'),
+    })
+    assert captured.status_code == 200, captured.text
+
+    export_path = tmp_path / 'WhatsApp Chat - 455 Tenants.txt'
+    export_path.write_text(
+        '[2/15/26, 8:56:59 AM] Karen KWA: North lift dead\n'
+        '[2/15/26, 8:56:59 AM] Karen KWA: North lift dead\n',
+        encoding='utf-8',
+    )
+    with export_path.open('rb') as f:
+        response = client.post(
+            '/ingest/export',
+            headers=auth_headers(),
+            files={'file': (export_path.name, f, 'text/plain')},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['parsed'] == 2
+    assert response.json()['inserted'] == 1
+    assert response.json()['deduped'] == 1
+    with get_session() as session:
+        raws = session.query(RawMessage).order_by(RawMessage.source).all()
+    assert len(raws) == 2
+    assert {row.source for row in raws} == {'tasker', 'export'}
+    assert next(row for row in raws if row.source == 'export').message_id.endswith('~2')
 
 
 def test_tasker_batch_schedules_single_resync_after_bulk_processing(client, monkeypatch):
@@ -518,7 +564,7 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
         "I bought a laundry card instead and it is giving me an error on every machine?"
     )
     assert laundry["is_issue"] is True
-    assert laundry["category"] == "other"
+    assert laundry["category"] == "laundry"
     assert laundry["title"] == "Laundry facility issue"
     assert laundry["preserve_issue"] is True
     assert laundry["preserve_event_type"] is True
@@ -527,8 +573,20 @@ def test_audited_laundry_electrical_and_entry_reports_have_stable_rules():
         "Don't try to use washer number 15 - it won't read my Hercules card"
     )
     assert unreadable_card["is_issue"] is True
-    assert unreadable_card["category"] == "other"
+    assert unreadable_card["category"] == "laundry"
     assert unreadable_card["title"] == "Laundry facility issue"
+    assert unreadable_card["asset"] == "washer_15"
+
+    detergent_failure = classify_rules("Washer #15 stole my detergent!")
+    assert detergent_failure["is_issue"] is True
+    assert detergent_failure["category"] == "laundry"
+    assert detergent_failure["event_type"] == "new_issue"
+    assert detergent_failure["asset"] == "washer_15"
+
+    multiple_machines = classify_rules("They came out and fixed washers 14 and 15.")
+    assert multiple_machines["is_issue"] is True
+    assert multiple_machines["category"] == "laundry"
+    assert multiple_machines["asset"] is None
 
     electrical = classify_rules(
         "A few of mine are painted over and the oven is wired to an outlet in the living room."
@@ -603,6 +661,33 @@ def test_external_news_and_general_advice_cannot_become_building_incidents(clien
     )
     assert direct_report['is_issue'] is True
     assert direct_report['category'] == 'elevator'
+
+
+def test_legacy_reference_material_is_deterministically_nonreporting():
+    examples = {
+        'fwiw, how the building is presented on streeteasy (noting no elevator at all)': 'external_reference',
+        'I have been waiting on the Delancey platform for 20 minutes': 'external_reference',
+        'relatable story in gothamist today: https://gothamist.com/news/broken-elevator-story': 'external_reference',
+        'https://brooklyn.news12.com/ongoing-leak-leaves-mail-wet-inside-kensington-building': 'external_reference',
+        '"The code HHW for NYC elevator inspections stands for an immediately hazardous violation."': 'general_reference',
+        'Pre-thermostat installation it was arctic.': 'historical_reference',
+        'I have never had an issue with the heat; it is as warm as usual.': 'counterexample',
+        'They usually use gel, not spray. They also have glue traps if you need them.': 'general_advisory',
+    }
+
+    for text, reason in examples.items():
+        choice = classify_rules(text)
+        assert choice['is_issue'] is False, text
+        assert choice['nonreport_reason'] == reason, text
+
+
+def test_not_in_service_is_an_elevator_outage_not_a_restore():
+    choice = classify_rules('SOUTH LIFT IS NOT IN SERVICE!!!!')
+
+    assert choice['is_issue'] is True
+    assert choice['category'] == 'elevator'
+    assert choice['asset'] == 'elevator_south'
+    assert choice['kind'] == 'outage'
 
 
 def test_nonissue_reclassification_retires_orphan_draft_and_watchdog(client, monkeypatch):
@@ -910,7 +995,7 @@ def test_non_elevator_problem_is_not_reframed_by_recent_elevator_context(client,
         decision = session.get(MessageDecision, laundry.json()['message_id'])
         assert decision is not None
         assert decision.is_issue is True
-        assert decision.category == 'other'
+        assert decision.category == 'laundry'
         assert decision.event_type == 'new_issue'
 
 

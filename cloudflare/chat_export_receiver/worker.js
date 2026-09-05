@@ -2,6 +2,28 @@ const DEFAULT_MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
 const DEFAULT_PRESIGN_TTL_SECONDS = 15 * 60;
 const PENDING_PREFIX = "pending/";
 const RECEIPT_PREFIX = "receipts/";
+const LATEST_RECEIPT_KEY = "state/latest-pipeline-receipt.json";
+const PIPELINE_RECEIPT_VERSION = 1;
+const PIPELINE_STAGE_NAMES = [
+  "upload",
+  "discovery",
+  "download",
+  "processing",
+  "audit",
+  "sheet_sync",
+  "sheet_readback",
+  "acknowledgement",
+];
+const PIPELINE_STAGE_STATES = new Set([
+  "complete",
+  "pending",
+  "running",
+  "not_started",
+  "not_reported",
+  "not_requested",
+  "blocked_model_review",
+  "error",
+]);
 const encoder = new TextEncoder();
 
 class HttpError extends Error {
@@ -264,12 +286,134 @@ function compactAudit(payload) {
     "llm_review_missing",
     "llm_review_failed",
     "review_roster_rows",
+    "unique_physical_message_ids",
+    "colliding_base_message_ids",
+    "collision_followup_occurrences",
   ];
   return Object.fromEntries(
     allowed
       .map((key) => [key, Number(audit[key])])
       .filter(([, value]) => Number.isSafeInteger(value) && value >= 0),
   );
+}
+
+function safeTimestamp(value) {
+  if (typeof value !== "string" || !value.trim() || !Number.isFinite(Date.parse(value))) {
+    return null;
+  }
+  return new Date(value).toISOString();
+}
+
+function timestampFromPendingKey(value) {
+  if (typeof value !== "string") return null;
+  const match = /^pending\/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z-[a-f0-9]{32}-/i.exec(value);
+  if (!match) return null;
+  const timestamp = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}.${match[7]}Z`;
+  const normalized = safeTimestamp(timestamp);
+  return normalized === timestamp ? normalized : null;
+}
+
+function effectiveExportTimestamp(receipt) {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) return null;
+  const acknowledgedAt = safeTimestamp(receipt.acknowledged_at);
+  const keyedAt = timestampFromPendingKey(receipt.key);
+  const uploadedAt = safeTimestamp(receipt.uploaded_at);
+  // The upload timestamp came from R2 through the trusted pull client, but it
+  // still arrives in the acknowledgement body. Reject impossible ordering so
+  // a malformed retry cannot advance or regress the global latest pointer.
+  if (
+    uploadedAt
+    && (!keyedAt || Date.parse(uploadedAt) >= Date.parse(keyedAt))
+    && (!acknowledgedAt || Date.parse(uploadedAt) <= Date.parse(acknowledgedAt))
+  ) {
+    return uploadedAt;
+  }
+  if (keyedAt && (!acknowledgedAt || Date.parse(keyedAt) <= Date.parse(acknowledgedAt))) {
+    return keyedAt;
+  }
+  const discoveredAt = safeTimestamp(receipt.discovered_at);
+  if (discoveredAt && (!acknowledgedAt || Date.parse(discoveredAt) <= Date.parse(acknowledgedAt))) {
+    return discoveredAt;
+  }
+  return null;
+}
+
+function shouldReplaceLatestReceipt(candidate, latest) {
+  if (!latest || typeof latest !== "object" || Array.isArray(latest)) return true;
+  const candidateExportAt = effectiveExportTimestamp(candidate);
+  const latestExportAt = effectiveExportTimestamp(latest);
+  if (candidateExportAt !== latestExportAt) {
+    if (!candidateExportAt) return false;
+    if (!latestExportAt) return true;
+    return Date.parse(candidateExportAt) > Date.parse(latestExportAt);
+  }
+  const candidateAcknowledgedAt = safeTimestamp(candidate && candidate.acknowledged_at);
+  const latestAcknowledgedAt = safeTimestamp(latest && latest.acknowledged_at);
+  if (candidateAcknowledgedAt !== latestAcknowledgedAt) {
+    if (!candidateAcknowledgedAt) return false;
+    if (!latestAcknowledgedAt) return true;
+    return Date.parse(candidateAcknowledgedAt) > Date.parse(latestAcknowledgedAt);
+  }
+  const candidateKey = typeof (candidate && candidate.key) === "string" ? candidate.key : "";
+  const latestKey = typeof (latest && latest.key) === "string" ? latest.key : "";
+  return candidateKey > latestKey;
+}
+
+function acknowledgementReceipt(existingReceipt, candidateReceipt) {
+  // A retry after a lost HTTP response must never downgrade an already
+  // read-back-verified receipt with an older or legacy payload.
+  return existingReceipt && existingReceipt.status === "ready" ? existingReceipt : candidateReceipt;
+}
+
+function pipelineReceiptStatus(stages) {
+  if (stages.audit.state === "blocked_model_review") return "blocked_model_review";
+  if ([stages.download, stages.processing].some((stage) => stage.state === "error")) return "processing_error";
+  if (stages.audit.state === "error") return "audit_error";
+  if (stages.sheet_sync.state === "error") return "sheet_sync_failed";
+  if (stages.sheet_readback.state === "error") return "sheet_readback_failed";
+  if (stages.acknowledgement.state === "error") return "acknowledgement_error";
+  if (["pending", "running"].includes(stages.processing.state) || stages.audit.state === "running") return "processing";
+  if (stages.audit.state !== "complete") return "discovered";
+  if (stages.sheet_sync.state !== "complete") {
+    return stages.sheet_sync.state === "not_reported" ? "sheet_sync_unverified" : "sheet_sync_pending";
+  }
+  if (stages.sheet_readback.state !== "complete") {
+    return stages.sheet_readback.state === "not_reported" ? "sheet_readback_unverified" : "sheet_readback_pending";
+  }
+  if (stages.acknowledgement.state !== "complete") return "pending_acknowledgement";
+  return "ready";
+}
+
+function compactPipelineReceipt(payload, { key, acknowledgedAt, sha256, audit }) {
+  const supplied = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const suppliedStages = supplied.stages && typeof supplied.stages === "object" && !Array.isArray(supplied.stages)
+    ? supplied.stages
+    : {};
+  const stages = Object.fromEntries(PIPELINE_STAGE_NAMES.map((name) => {
+    const suppliedStage = suppliedStages[name];
+    const state = suppliedStage && PIPELINE_STAGE_STATES.has(suppliedStage.state)
+      ? suppliedStage.state
+      : "not_reported";
+    const at = safeTimestamp(suppliedStage && suppliedStage.at);
+    return [name, at ? { state, at } : { state }];
+  }));
+  stages.acknowledgement = { state: "complete", at: acknowledgedAt };
+  const uploadedAt = safeTimestamp(supplied.uploaded_at);
+  const discoveredAt = safeTimestamp(supplied.discovered_at);
+  return {
+    schema_version: 1,
+    receipt_version: PIPELINE_RECEIPT_VERSION,
+    source: "cloud_receiver",
+    key,
+    uploaded_at: uploadedAt,
+    discovered_at: discoveredAt,
+    updated_at: acknowledgedAt,
+    acknowledged_at: acknowledgedAt,
+    sha256,
+    audit,
+    stages,
+    status: pipelineReceiptStatus(stages),
+  };
 }
 
 function receiptNeedsRetry(receipt) {
@@ -354,28 +498,69 @@ async function pendingExports(request, env) {
   });
 }
 
+async function latestReceipt(request, env) {
+  requireBucket(env);
+  requireBearer(request, env.PULL_AUTH_TOKEN);
+  const stored = await env.EXPORTS.get(LATEST_RECEIPT_KEY);
+  if (!stored) return json({ receipt: null });
+  try {
+    const receipt = await stored.json();
+    return json({ receipt: receipt && typeof receipt === "object" && !Array.isArray(receipt) ? receipt : null });
+  } catch {
+    throw new HttpError(503, "latest pipeline receipt is unreadable");
+  }
+}
+
 async function acknowledgeExport(request, env) {
   requireBucket(env);
   requireBearer(request, env.PULL_AUTH_TOKEN);
   const payload = await readJson(request);
   const key = requirePendingKey(payload.key);
   const receiptKey = await receiptKeyFor(key);
-  const existingReceipt = await env.EXPORTS.head(receiptKey);
+  const existingReceiptObject = await env.EXPORTS.get(receiptKey);
+  let existingReceipt = null;
+  if (existingReceiptObject) {
+    try {
+      existingReceipt = await existingReceiptObject.json();
+    } catch {
+      existingReceipt = null;
+    }
+  }
   if (!(await env.EXPORTS.head(key))) {
     throw new HttpError(404, "export was not found");
   }
   const sha256 = typeof payload.sha256 === "string" && /^[a-f0-9]{64}$/i.test(payload.sha256) ? payload.sha256.toLowerCase() : null;
+  const acknowledgedAt = new Date().toISOString();
+  const audit = compactAudit(payload.audit);
+  const candidateReceipt = compactPipelineReceipt(payload.pipeline_receipt, {
+    key,
+    acknowledgedAt,
+    sha256,
+    audit,
+  });
+  const receipt = acknowledgementReceipt(existingReceipt, candidateReceipt);
   await env.EXPORTS.put(
     receiptKey,
-    JSON.stringify({
-      key,
-      acknowledged_at: new Date().toISOString(),
-      sha256,
-      audit: compactAudit(payload.audit),
-    }),
+    JSON.stringify(receipt),
     { httpMetadata: { contentType: "application/json; charset=utf-8" } },
   );
-  return json({ acknowledged: true, key, idempotent: Boolean(existingReceipt) });
+  let latest = null;
+  const latestObject = await env.EXPORTS.get(LATEST_RECEIPT_KEY);
+  if (latestObject) {
+    try {
+      latest = await latestObject.json();
+    } catch {
+      latest = null;
+    }
+  }
+  if (shouldReplaceLatestReceipt(receipt, latest)) {
+    await env.EXPORTS.put(
+      LATEST_RECEIPT_KEY,
+      JSON.stringify(receipt),
+      { httpMetadata: { contentType: "application/json; charset=utf-8" } },
+    );
+  }
+  return json({ acknowledged: true, key, idempotent: Boolean(existingReceiptObject) });
 }
 
 async function health(env) {
@@ -399,6 +584,9 @@ async function route(request, env) {
   if (request.method === "GET" && url.pathname === "/v1/exports") {
     return pendingExports(request, env);
   }
+  if (request.method === "GET" && url.pathname === "/v1/receipts/latest") {
+    return latestReceipt(request, env);
+  }
   if (request.method === "POST" && url.pathname === "/v1/exports/ack") {
     return acknowledgeExport(request, env);
   }
@@ -418,4 +606,14 @@ export default {
   },
 };
 
-export { compactAudit, normalizeFilename, parseUploadSize, receiptNeedsRetry };
+export {
+  acknowledgementReceipt,
+  compactAudit,
+  compactPipelineReceipt,
+  effectiveExportTimestamp,
+  normalizeFilename,
+  parseUploadSize,
+  receiptNeedsRetry,
+  shouldReplaceLatestReceipt,
+  timestampFromPendingKey,
+};

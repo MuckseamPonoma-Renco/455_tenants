@@ -8,6 +8,8 @@ CATEGORIES = [
     "leaks_water_damage",
     "pests",
     "security_access",
+    "fire_safety",
+    "laundry",
     "other",
 ]
 
@@ -102,6 +104,9 @@ Rules:
 - Prefer high recall, but set needs_review=true when ambiguous.
 - Short follow-up fragments can still be real reports when recent chat or open incidents make the referent clear.
 - If a message describes being stuck, resuming, moving again, or someone forcing/shoving an elevator door, prefer category="elevator" over security/access when the surrounding context points to elevator trouble.
+- Fire hoses, standpipes, sprinklers, and other fire-protection equipment are category="fire_safety", not security/access or elevator.
+- Washers, dryers, laundry cards, and laundry-room equipment are category="laundry", never elevator.
+- When a short follow-up clearly continues a fire-safety or laundry thread, preserve that category from the immediately preceding context.
 - Only infer a specific elevator asset from surrounding context when the same elevator is clearly identified; otherwise leave asset=null.
 - If elevators mentioned but no north/south: asset=null. If both elevators: asset="elevator_both".
 - If not a building issue: is_issue=false, category="other", event_type="non_issue".
@@ -155,6 +160,8 @@ Return ONLY valid JSON with this schema:
 Instructions:
 - Use the surrounding chat and open incidents to resolve shorthand follow-ups and pronouns like "it", "still", or "moving again".
 - If the message sounds like intermittent elevator behavior, treat it as elevator context unless the message clearly describes a building door/lock/intercom problem.
+- Fire hoses, standpipes, sprinklers, and other fire-protection equipment are category="fire_safety". Laundry machines, cards, and laundry-room equipment are category="laundry".
+- Never let unrelated open elevator incidents override an explicit fire-safety or laundry topic.
 - Do not guess a specific elevator asset from vague follow-up context; use asset=null unless the asset is actually clear.
 - Only keep needs_review=true if the message is still genuinely ambiguous after this review.
 

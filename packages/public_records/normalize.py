@@ -55,6 +55,8 @@ def record_key(source: SourceConfig, row: dict[str, Any]) -> str:
         return str(row.get("unique_key") or "").strip()
     if source.key == "hpd_building":
         return str(row.get("buildingid") or "").strip()
+    if source.key == "hpd_registration_contacts":
+        return str(row.get("registrationcontactid") or "").strip()
     if source.key == "hpd_violations":
         return str(row.get("violationid") or "").strip()
     for field in ("id", "record_id", "unique_key"):
@@ -78,8 +80,25 @@ def _date(row: dict[str, Any], *keys: str) -> str | None:
 
 
 def _address(row: dict[str, Any]) -> str | None:
-    house = _first(row, "house_number", "house_no", "house__", "housenumber", "violation_location_house")
-    street = _first(row, "street_name", "house_street", "street", "streetname", "incident_address", "violation_location_street_name")
+    house = _first(
+        row,
+        "house_number",
+        "house_no",
+        "house__",
+        "housenumber",
+        "violation_location_house",
+        "businesshousenumber",
+    )
+    street = _first(
+        row,
+        "street_name",
+        "house_street",
+        "street",
+        "streetname",
+        "incident_address",
+        "violation_location_street_name",
+        "businessstreetname",
+    )
     if street and house and house not in street:
         return f"{house} {street}".strip()
     return street or _first(row, "physical_address", "incident_address")
@@ -109,6 +128,9 @@ def normalize_record(source: SourceConfig, row: dict[str, Any], *, source_url: s
         "disposition_comments",
         "device_job_description",
     )
+    if source.key == "hpd_registration_contacts":
+        status = _first(row, "type")
+        status_detail = _first(row, "corporationname", "contactdescription")
     job_number = _first(row, "job_filing_number", "job_number", "job__", "dob_violation_number")
     permit_number = _first(row, "work_permit", "permit_number", "tracking_number")
     device_number = _first(row, "device_number", "device_id", "bis_nyc_device_id")
