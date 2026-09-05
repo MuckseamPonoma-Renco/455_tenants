@@ -848,6 +848,7 @@ def test_public_service_view_uses_latest_incident_not_any_stale_both_outage(clie
                 start_ts_epoch=200,
                 last_ts_epoch=200,
                 title="North elevator still out",
+                updated_at="2026-09-05T16:15:27Z",
             ),
         ])
         session.commit()
@@ -858,6 +859,10 @@ def test_public_service_view_uses_latest_incident_not_any_stale_both_outage(clie
     answer = public_view["Actual elevator service reported by tenants"]["answer"]
     assert "north elevator" in answer
     assert "both-elevators outage" not in answer
+    assert (
+        public_view["Actual elevator service reported by tenants"]["last_checked_at"]
+        == "2026-09-05T16:15:27Z"
+    )
 
 
 def test_tenant_queue_shows_management_request_when_no_current_replacement_filing(client, monkeypatch):

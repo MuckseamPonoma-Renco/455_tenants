@@ -30,6 +30,9 @@ DEFAULT_MAX_LAST_CHECKED_DRIFT_MINUTES = 90.0
 DEFAULT_RETRIES = 3
 DEFAULT_RETRY_SLEEP_SECONDS = 5.0
 
+TENANT_ELEVATOR_EVIDENCE_TOPIC = "Actual elevator service reported by tenants"
+SYSTEM_WATCHDOG_FRESHNESS_TOPIC = "What residents should do"
+
 TAB_ENV_VARS = {
     "ElevatorWatch": "SHEETS_ELEVATOR_WATCH_TAB",
     "ProjectStatus": "SHEETS_PROJECT_STATUS_TAB",
@@ -64,6 +67,8 @@ class TabSpec:
     headers: tuple[str, ...]
     date_columns: frozenset[int]
     volatile_timestamp_column: int | None = None
+    evidence_timestamp_topics: frozenset[str] = frozenset()
+    system_freshness_topic: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +112,14 @@ def _resolved_tab_specs() -> tuple[TabSpec, ...]:
                 headers=header_tuple,
                 date_columns=date_columns,
                 volatile_timestamp_column=volatile_column,
+                evidence_timestamp_topics=(
+                    frozenset({TENANT_ELEVATOR_EVIDENCE_TOPIC})
+                    if logical_name == "ElevatorWatch"
+                    else frozenset()
+                ),
+                system_freshness_topic=(
+                    SYSTEM_WATCHDOG_FRESHNESS_TOPIC if logical_name == "ElevatorWatch" else None
+                ),
             )
         )
     titles = [spec.title for spec in specs]
@@ -469,6 +482,8 @@ def _timestamp_check(
     result: dict[str, object] = {
         "expected": _cell_text(expected),
         "live": _cell_text(live),
+        "timestamp_semantics": "automatic_check",
+        "freshness_required": True,
         "expected_parseable_timestamp": expected_is_timestamp,
         "live_parseable_timestamp": live_is_timestamp,
         "max_age_seconds": max_age_seconds,
@@ -495,6 +510,83 @@ def _timestamp_check(
             "age_seconds": age_seconds,
             "within_drift_bound": drift_ok,
             "within_freshness_bound": freshness_ok,
+        }
+    )
+    return result
+
+
+def _evidence_timestamp_check(
+    expected: object,
+    live: object,
+    *,
+    workbook_tz: ZoneInfo,
+    now: datetime,
+    max_future_seconds: float,
+) -> dict[str, object]:
+    """Compare a source-evidence timestamp without pretending it is a check heartbeat."""
+
+    expected_text = _cell_text(expected)
+    live_text = _cell_text(live)
+    expected_parsed = _parse_date_cell(expected, workbook_tz)
+    live_parsed = _parse_date_cell(live, workbook_tz)
+    expected_is_timestamp = expected_parsed is not None and expected_parsed.precision != "date"
+    live_is_timestamp = live_parsed is not None and live_parsed.precision != "date"
+    both_empty = not expected_text and not live_text
+    result: dict[str, object] = {
+        "expected": expected_text,
+        "live": live_text,
+        "timestamp_semantics": "tenant_evidence",
+        "freshness_required": False,
+        "evidence_timestamp_present": not both_empty,
+        "expected_parseable_timestamp": expected_is_timestamp,
+        "live_parseable_timestamp": live_is_timestamp,
+        "max_future_seconds": max_future_seconds,
+    }
+    if both_empty:
+        result.update(
+            {
+                "ok": True,
+                "reason": "",
+                "source_live_equivalent": True,
+                "within_future_bound": True,
+            }
+        )
+        return result
+    if not expected_is_timestamp or not live_is_timestamp:
+        result.update(
+            {
+                "ok": False,
+                "reason": "Tenant evidence Last checked must be blank in both views or contain a timestamp with time",
+                "source_live_equivalent": False,
+                "within_future_bound": False,
+            }
+        )
+        return result
+
+    assert expected_parsed is not None and live_parsed is not None
+    normalized_now = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    normalized_now = normalized_now.astimezone(timezone.utc)
+    equivalent = _date_cells_equivalent(expected, live, workbook_tz)
+    drift_seconds = abs((live_parsed.instant - expected_parsed.instant).total_seconds())
+    age_seconds = (normalized_now - live_parsed.instant).total_seconds()
+    future_ok = age_seconds >= -max_future_seconds
+    ok = equivalent and future_ok
+    if not equivalent:
+        reason = "Tenant evidence timestamp differs from the current renderer"
+    elif not future_ok:
+        reason = "Tenant evidence timestamp is implausibly in the future"
+    else:
+        reason = ""
+    result.update(
+        {
+            "ok": ok,
+            "reason": reason,
+            "expected_iso": expected_parsed.instant.isoformat().replace("+00:00", "Z"),
+            "live_iso": live_parsed.instant.isoformat().replace("+00:00", "Z"),
+            "drift_seconds": drift_seconds,
+            "age_seconds": age_seconds,
+            "source_live_equivalent": equivalent,
+            "within_future_bound": future_ok,
         }
     )
     return result
@@ -585,18 +677,28 @@ def _audit_tab(
             expected_value = _cell(expected_rows, row_index, column_index)
             live_value = _cell(live.display_values, row_index, column_index)
             if row_index > 0 and column_index == spec.volatile_timestamp_column:
-                timestamp_result = _timestamp_check(
-                    expected_value,
-                    live_value,
-                    workbook_tz=workbook_tz,
-                    now=now,
-                    max_age_seconds=max_age_seconds,
-                    max_drift_seconds=max_drift_seconds,
-                )
+                topic = _cell_text(_cell(expected_rows, row_index, 0))
+                if topic in spec.evidence_timestamp_topics:
+                    timestamp_result = _evidence_timestamp_check(
+                        expected_value,
+                        live_value,
+                        workbook_tz=workbook_tz,
+                        now=now,
+                        max_future_seconds=max_drift_seconds,
+                    )
+                else:
+                    timestamp_result = _timestamp_check(
+                        expected_value,
+                        live_value,
+                        workbook_tz=workbook_tz,
+                        now=now,
+                        max_age_seconds=max_age_seconds,
+                        max_drift_seconds=max_drift_seconds,
+                    )
                 timestamp_result.update(
                     {
                         "row": row_index + 1,
-                        "topic": _cell_text(_cell(expected_rows, row_index, 0)),
+                        "topic": topic,
                     }
                 )
                 volatile_checks.append(timestamp_result)
@@ -637,6 +739,34 @@ def _audit_tab(
                     }
                 )
 
+    system_freshness_matches = [
+        check for check in volatile_checks if check.get("topic") == spec.system_freshness_topic
+    ]
+    if spec.system_freshness_topic is None:
+        system_freshness_ok = True
+        system_freshness: dict[str, object] = {
+            "required": False,
+            "ok": True,
+            "topic": "",
+        }
+    elif len(system_freshness_matches) == 1:
+        system_freshness = {
+            **system_freshness_matches[0],
+            "required": True,
+        }
+        system_freshness_ok = bool(
+            system_freshness.get("ok") and system_freshness.get("freshness_required")
+        )
+    else:
+        system_freshness_ok = False
+        system_freshness = {
+            "required": True,
+            "ok": False,
+            "topic": spec.system_freshness_topic,
+            "matching_row_count": len(system_freshness_matches),
+            "reason": "Expected exactly one public watchdog freshness row",
+        }
+
     extra_count, extra_cells = _extra_populated_cells(
         live,
         expected_rows=expected_row_count,
@@ -658,6 +788,7 @@ def _audit_tab(
             row_count_ok,
             used_width_ok,
             content_ok,
+            system_freshness_ok,
             extra_count == 0,
             formula_count == 0,
         )
@@ -693,6 +824,7 @@ def _audit_tab(
         "unexpected_formula_cell_count": formula_count,
         "unexpected_formula_cells": formula_cells,
         "volatile_last_checked": volatile_checks,
+        "system_watchdog_freshness": system_freshness,
     }
 
 
@@ -916,13 +1048,19 @@ def main(argv: list[str] | None = None) -> int:
         "--max-last-checked-age-minutes",
         type=float,
         default=DEFAULT_MAX_LAST_CHECKED_AGE_MINUTES,
-        help="Maximum age of each non-header ElevatorWatch Last checked timestamp.",
+        help=(
+            "Maximum age of automatic-check timestamps in ElevatorWatch. "
+            "Tenant-evidence timestamps must match the renderer but may legitimately be older."
+        ),
     )
     parser.add_argument(
         "--max-last-checked-drift-minutes",
         type=float,
         default=DEFAULT_MAX_LAST_CHECKED_DRIFT_MINUTES,
-        help="Maximum difference between live and freshly rendered ElevatorWatch Last checked timestamps.",
+        help=(
+            "Maximum difference between live and freshly rendered automatic-check timestamps, "
+            "and maximum allowed future skew for tenant evidence."
+        ),
     )
     parser.add_argument("--limit", type=int, default=20, help="Maximum mismatch details per tab.")
     args = parser.parse_args(argv)

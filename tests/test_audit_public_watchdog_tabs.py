@@ -12,6 +12,26 @@ from scripts.audit_public_watchdog_tabs import ExpectedTab, LiveTab, TabSpec
 NY = ZoneInfo("America/New_York")
 
 
+def _semantic_elevator_spec() -> TabSpec:
+    return TabSpec(
+        logical_name="ElevatorWatch",
+        title="ElevatorWatch",
+        headers=(
+            "What people need to know",
+            "Current clear answer",
+            "Why it matters",
+            "Checked by",
+            "Last checked",
+            "Human needed",
+            "Source",
+        ),
+        date_columns=frozenset({4}),
+        volatile_timestamp_column=4,
+        evidence_timestamp_topics=frozenset({audit.TENANT_ELEVATOR_EVIDENCE_TOPIC}),
+        system_freshness_topic=audit.SYSTEM_WATCHDOG_FRESHNESS_TOPIC,
+    )
+
+
 def test_runtime_env_is_loaded_before_database_session_factory_import():
     source = (Path(audit.__file__)).read_text(encoding="utf-8")
 
@@ -138,6 +158,146 @@ def test_elevator_last_checked_rejects_date_only_or_stale_value():
     assert stale["ok"] is False
     assert stale["volatile_last_checked"][0]["within_freshness_bound"] is False
     assert stale["volatile_last_checked"][0]["within_drift_bound"] is False
+
+
+def test_old_tenant_evidence_timestamp_matches_without_becoming_a_false_stale_check():
+    spec = _semantic_elevator_spec()
+    expected_values = [
+        list(spec.headers),
+        [
+            audit.TENANT_ELEVATOR_EVIDENCE_TOPIC,
+            "The latest unresolved tenant report concerns both elevators.",
+            "Both elevators were reported out.",
+            "Automatic tenant report/incident check",
+            "2026-09-05T16:15:27Z",
+            "Report only what you observe.",
+            "",
+        ],
+        [
+            audit.SYSTEM_WATCHDOG_FRESHNESS_TOPIC,
+            "Use the tenant report form.",
+            "The system handles public-record checking.",
+            "System policy",
+            "2026-09-05T19:00:00Z",
+            "Only for real-world observations.",
+            "",
+        ],
+    ]
+    live_values = [list(row) for row in expected_values]
+    live_values[2][4] = "2026-09-05T18:59:00Z"
+
+    result = audit._audit_tab(
+        spec,
+        ExpectedTab(expected_values, "USER_ENTERED"),
+        LiveTab(live_values, live_values),
+        metadata=_metadata("ElevatorWatch"),
+        workbook_tz=NY,
+        now=datetime(2026, 9, 5, 19, 1, tzinfo=timezone.utc),
+        max_age_seconds=90 * 60,
+        max_drift_seconds=90 * 60,
+        limit=20,
+    )
+
+    checks = {row["topic"]: row for row in result["volatile_last_checked"]}
+    tenant_evidence = checks[audit.TENANT_ELEVATOR_EVIDENCE_TOPIC]
+    assert result["ok"] is True
+    assert tenant_evidence["timestamp_semantics"] == "tenant_evidence"
+    assert tenant_evidence["freshness_required"] is False
+    assert tenant_evidence["source_live_equivalent"] is True
+    assert tenant_evidence["age_seconds"] == 9933
+    assert result["system_watchdog_freshness"]["ok"] is True
+    assert result["system_watchdog_freshness"]["freshness_required"] is True
+
+
+def test_tenant_evidence_timestamp_still_has_to_match_the_renderer():
+    spec = _semantic_elevator_spec()
+    expected_values = [
+        list(spec.headers),
+        [
+            audit.TENANT_ELEVATOR_EVIDENCE_TOPIC,
+            "Current state",
+            "Evidence summary",
+            "Automatic tenant report/incident check",
+            "2026-09-05T16:15:27Z",
+            "No",
+            "",
+        ],
+        [
+            audit.SYSTEM_WATCHDOG_FRESHNESS_TOPIC,
+            "Policy",
+            "Why",
+            "System policy",
+            "2026-09-05T19:00:00Z",
+            "No",
+            "",
+        ],
+    ]
+    live_values = [list(row) for row in expected_values]
+    live_values[1][4] = "2026-09-05T16:14:27Z"
+
+    result = audit._audit_tab(
+        spec,
+        ExpectedTab(expected_values, "USER_ENTERED"),
+        LiveTab(live_values, live_values),
+        metadata=_metadata("ElevatorWatch"),
+        workbook_tz=NY,
+        now=datetime(2026, 9, 5, 19, 1, tzinfo=timezone.utc),
+        max_age_seconds=90 * 60,
+        max_drift_seconds=90 * 60,
+        limit=20,
+    )
+
+    tenant_evidence = next(
+        row
+        for row in result["volatile_last_checked"]
+        if row["topic"] == audit.TENANT_ELEVATOR_EVIDENCE_TOPIC
+    )
+    assert result["ok"] is False
+    assert tenant_evidence["source_live_equivalent"] is False
+    assert tenant_evidence["reason"] == "Tenant evidence timestamp differs from the current renderer"
+
+
+def test_fresh_tenant_evidence_does_not_hide_a_stale_system_watchdog_heartbeat():
+    spec = _semantic_elevator_spec()
+    values = [
+        list(spec.headers),
+        [
+            audit.TENANT_ELEVATOR_EVIDENCE_TOPIC,
+            "Current state",
+            "Evidence summary",
+            "Automatic tenant report/incident check",
+            "2026-09-05T18:59:00Z",
+            "No",
+            "",
+        ],
+        [
+            audit.SYSTEM_WATCHDOG_FRESHNESS_TOPIC,
+            "Policy",
+            "Why",
+            "System policy",
+            "2026-09-05T19:00:00Z",
+            "No",
+            "",
+        ],
+    ]
+    live_values = [list(row) for row in values]
+    live_values[2][4] = "2026-09-05T16:15:27Z"
+
+    result = audit._audit_tab(
+        spec,
+        ExpectedTab(values, "USER_ENTERED"),
+        LiveTab(live_values, live_values),
+        metadata=_metadata("ElevatorWatch"),
+        workbook_tz=NY,
+        now=datetime(2026, 9, 5, 19, 1, tzinfo=timezone.utc),
+        max_age_seconds=90 * 60,
+        max_drift_seconds=90 * 60,
+        limit=20,
+    )
+
+    assert result["ok"] is False
+    assert result["system_watchdog_freshness"]["ok"] is False
+    assert result["system_watchdog_freshness"]["within_freshness_bound"] is False
 
 
 def test_tab_audit_detects_extra_rows_columns_and_formulas():
