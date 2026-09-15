@@ -17,8 +17,9 @@ from packages.nyc311.drafts import build_filing_draft
 
 
 ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
-EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted"})
-CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"claimed", "submitted"})
+SUBMISSION_UNCERTAIN_JOB_STATES = frozenset({"submitting", "submission_unknown"})
+EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted"}) | SUBMISSION_UNCERTAIN_JOB_STATES
+CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"claimed", "submitted"}) | SUBMISSION_UNCERTAIN_JOB_STATES
 PRE_SUBMISSION_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "failed"})
 REFRESHABLE_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "failed"})
 FILING_APPROVAL_PHRASE = "APPROVED \u2014 GO LIVE"
@@ -197,7 +198,7 @@ def _equivalent_job_blocks_filing(
     signature: tuple[str, str, str, str, str],
     now: datetime,
 ) -> bool:
-    if job.state in {"awaiting_approval", "approved", "pending", "claimed"}:
+    if job.state in {"awaiting_approval", "approved", "pending", "claimed"} | SUBMISSION_UNCERTAIN_JOB_STATES:
         return True
     if job.state != "submitted":
         return False
@@ -307,6 +308,8 @@ def claimed_filing_job_is_current(session, job: FilingJob) -> bool:
     incident = session.get(Incident, job.incident_id) if job.incident_id else None
     if incident is None or not incident_is_auto_eligible(incident):
         return False
+    if session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == incident.incident_id)) is not None:
+        return False
     draft = build_filing_draft(incident)
     return bool(
         draft is not None
@@ -395,6 +398,48 @@ def _refresh_filing_job_draft(job: FilingJob, inc: Incident, draft, payload_json
     job.last_error = None
     job.updated_at = now_iso()
     return job
+
+
+def recover_cancelled_filing_job(session, job: FilingJob) -> str:
+    """Recover a known pre-submit cancellation without reviving uncertain work."""
+    if job.state != "claimed":
+        return job.state
+    incident = session.get(Incident, job.incident_id) if job.incident_id else None
+    if incident is None or not incident_is_auto_eligible(incident):
+        _retire_ineligible_job(job)
+        return job.state
+    existing_case = session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == incident.incident_id))
+    if existing_case is not None:
+        _skip_job_with_existing_receipt(job, existing_case)
+        return job.state
+    draft = build_filing_draft(incident)
+    if draft is None:
+        job.state = "skipped"
+        job.claimed_at = None
+        job.updated_at = now_iso()
+        job.notes = _append_job_note(job.notes, "auto-skipped because no current filing draft is available")
+        return job.state
+    # A newer corroborating report changes the bound payload but does not
+    # invalidate the complaint. Keep retrying that same job, not a new filing.
+    job.state = "pending"
+    _refresh_filing_job_draft(job, incident, draft, draft.payload_json())
+    job.claimed_at = None
+    job.updated_at = now_iso()
+    job.last_error = None
+    job.notes = _append_job_note(job.notes, "cancelled at portal review; refreshed current eligible draft")
+    max_attempts = max(1, _env_int("AUTO_FILE_MAX_PORTAL_ATTEMPTS", 3))
+    if int(job.attempts or 0) >= max_attempts:
+        job.state = "failed"
+        job.last_error = "Portal review changed before submission; automatic attempt limit reached"
+    return job.state
+
+
+def _skip_job_with_existing_receipt(job: FilingJob, case: ServiceRequestCase) -> None:
+    job.state = "skipped"
+    job.claimed_at = None
+    job.last_error = None
+    job.updated_at = now_iso()
+    job.notes = _append_job_note(job.notes, f"auto-skipped because incident already has service request {case.service_request_number}")
 
 
 def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
@@ -523,7 +568,11 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
     ).all()
     max_attempts = max(1, _env_int("AUTO_FILE_MAX_PORTAL_ATTEMPTS", 3))
     for row in rows:
-        if row.state == "failed" and int(row.attempts or 0) >= max_attempts:
+        if int(row.attempts or 0) >= max_attempts:
+            if row.state == "pending":
+                row.state = "failed"
+                row.updated_at = now_iso()
+                row.last_error = row.last_error or "Automatic portal attempt limit reached; inspect before retrying"
             continue
         incident = session.get(Incident, row.incident_id) if row.incident_id else None
         if incident is None or not incident_is_auto_eligible(incident):
@@ -531,6 +580,11 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
             row.updated_at = now_iso()
             note = "auto-skipped because incident is no longer auto-eligible"
             row.notes = _append_job_note(row.notes, note)
+            skipped += 1
+            continue
+        existing_case = session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == incident.incident_id))
+        if existing_case is not None:
+            _skip_job_with_existing_receipt(row, existing_case)
             skipped += 1
             continue
         draft = build_filing_draft(incident)

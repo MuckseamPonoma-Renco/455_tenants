@@ -63,11 +63,12 @@ def upsert_service_request_case(
             existing.incident_id = incident_id
         if filing_job_id and not existing.filing_job_id:
             existing.filing_job_id = filing_job_id
-        if complaint_type:
+        if complaint_type and (complaint_type.casefold() != "unknown" or not existing.complaint_type):
             existing.complaint_type = complaint_type
         if agency:
             existing.agency = agency
-        if status:
+        # Re-ingesting a chat mention is not a new official status observation.
+        if status and (raw_status or not existing.last_checked_at):
             existing.status = status
         if resolution_description:
             existing.resolution_description = resolution_description[:2000]
@@ -229,6 +230,11 @@ PORTAL_FIELD_LABELS = {
     "time_to_next_update": "Time To Next Update",
 }
 INVALID_PORTAL_STATUS_LABELS = {"sign in | sign up", "subscribe", "service request status"}
+VALID_STATUS_LABELS = {
+    "closed", "completed", "in progress", "in process", "open", "submitted", "pending",
+    "assigned", "started", "cancelled", "canceled", "resolved", "reopened", "duplicate",
+}
+CLOSED_STATUS_LABELS = {"closed", "completed", "cancelled", "canceled", "resolved", "duplicate"}
 
 
 def _clean_portal_value(value: str | None) -> str:
@@ -238,7 +244,7 @@ def _clean_portal_value(value: str | None) -> str:
 
 def _clean_portal_status(value: str | None) -> str:
     clean = _clean_portal_value(value)
-    if clean.casefold() in INVALID_PORTAL_STATUS_LABELS:
+    if clean.casefold() not in VALID_STATUS_LABELS:
         return ""
     return clean
 
@@ -282,6 +288,9 @@ def portal_lookup_to_raw_status(lookup: Any) -> dict | None:
         "found": bool(payload.get("found")),
         "status": _clean_portal_status(str(payload.get("status") or "")),
         "final_url": _clean_portal_value(str(payload.get("final_url") or "")),
+        "observed_service_request_number": normalize_sr_number(
+            _portal_field(page_text, "SR Number") or _portal_field(page_text, "Service Request Number")
+        ),
     }
     for key, value in fields.items():
         clean = _clean_portal_value(value)
@@ -297,13 +306,44 @@ def portal_lookup_to_raw_status(lookup: Any) -> dict | None:
             raw[target_key] = normalized
     if "Department of Buildings" in page_text:
         raw["agency"] = "DOB"
+    if not raw["status"] and raw.get("date_closed_normalized"):
+        raw["status"] = "Closed"
+        raw["status_inferred_from"] = "date_closed"
     return raw
 
 
+def _portal_validation_error(case: ServiceRequestCase, raw: dict | None) -> str | None:
+    if not raw:
+        return "invalid_lookup"
+    expected = normalize_sr_number(case.service_request_number)
+    if raw.get("service_request_number") != expected or raw.get("observed_service_request_number") != expected:
+        return "service_request_number_mismatch_or_missing"
+    if not raw.get("found"):
+        return "not_found"
+    if not raw.get("status"):
+        return "missing_verified_status"
+    if raw.get("date_closed_normalized") and str(raw["status"]).casefold() not in CLOSED_STATUS_LABELS:
+        return "open_status_with_closed_date"
+    return None
+
+
+def _open_data_validation_error(case: ServiceRequestCase, live: dict | None) -> str | None:
+    if not isinstance(live, dict):
+        return "missing_record"
+    if normalize_sr_number(str(live.get("unique_key") or "")) != normalize_sr_number(case.service_request_number):
+        return "service_request_number_mismatch_or_missing"
+    status = _clean_portal_status(live.get("status"))
+    if not status and not normalize_timestamp(live.get("closed_date")):
+        return "missing_verified_status"
+    if status and live.get("closed_date") and status.casefold() not in CLOSED_STATUS_LABELS:
+        return "open_status_with_closed_date"
+    return None
+
+
 def apply_open_data_status(case: ServiceRequestCase, live: dict) -> bool:
-    if not live:
+    if _open_data_validation_error(case, live):
         return False
-    case.status = live.get("status") or case.status
+    case.status = _clean_portal_status(live.get("status")) or "Closed"
     case.agency = live.get("agency") or case.agency
     case.complaint_type = live.get("complaint_type") or case.complaint_type
     case.resolution_description = (live.get("resolution_description") or case.resolution_description or "")[:2000] or None
@@ -313,28 +353,27 @@ def apply_open_data_status(case: ServiceRequestCase, live: dict) -> bool:
         case.submitted_at = normalize_timestamp(live.get("created_date")) or case.submitted_at
     if live.get("closed_date"):
         case.closed_at = normalize_timestamp(live.get("closed_date")) or live.get("closed_date")
+    elif case.status.casefold() not in CLOSED_STATUS_LABELS:
+        case.closed_at = None
     return True
 
 
 def apply_portal_lookup_status(case: ServiceRequestCase, lookup: Any) -> bool:
     raw = portal_lookup_to_raw_status(lookup)
-    if not raw:
+    if _portal_validation_error(case, raw):
         return False
     case.last_checked_at = raw.get("checked_at") or now_iso()
     case.raw_status_json = _json_dumps(raw)
-    if raw.get("found"):
-        if raw.get("status"):
-            case.status = str(raw["status"])
-        elif (case.status or "").casefold() in INVALID_PORTAL_STATUS_LABELS:
-            case.status = "submitted"
-        case.complaint_type = case.complaint_type or raw.get("problem")
-        case.agency = raw.get("agency") or case.agency
-        if raw.get("date_reported_normalized"):
-            case.submitted_at = raw["date_reported_normalized"]
-        if raw.get("date_closed_normalized"):
-            case.closed_at = raw["date_closed_normalized"]
-        if raw.get("problem_details") and not case.resolution_description:
-            case.resolution_description = str(raw["problem_details"])[:2000]
+    case.status = str(raw["status"])
+    case.complaint_type = case.complaint_type or raw.get("problem")
+    case.agency = raw.get("agency") or case.agency
+    if raw.get("date_reported_normalized"):
+        case.submitted_at = raw["date_reported_normalized"]
+    if raw.get("date_closed_normalized"):
+        case.closed_at = raw["date_closed_normalized"]
+    elif case.status.casefold() not in CLOSED_STATUS_LABELS:
+        case.closed_at = None
+    # "Problem Details: Not Working" describes the complaint, not its resolution.
     return True
 
 
@@ -352,19 +391,62 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def sync_all_case_statuses(session, *, portal_fallback: bool | None = None, headless: bool = True) -> list[dict]:
+class StatusSyncResults(list):
+    """Backwards-compatible case rows plus an explicit, non-silent cycle receipt."""
+
+    def __init__(self):
+        super().__init__()
+        self.summary = {
+            "ok": True, "total": 0, "attempted": 0, "updated": 0,
+            "not_found": 0, "unverified": 0, "deferred": 0, "errors": 0,
+            "error_details": [], "coverage_complete": False,
+        }
+
+
+def _last_status_attempt(case: ServiceRequestCase) -> str:
+    try:
+        raw = json.loads(case.raw_status_json or "{}")
+        attempt = raw.get("status_check_attempt") or {}
+        return max(str(attempt.get("checked_at") or ""), str(case.last_checked_at or ""))
+    except (ValueError, TypeError, AttributeError):
+        return str(case.last_checked_at or "")
+
+
+def _record_unsuccessful_attempt(case: ServiceRequestCase, outcome: str) -> None:
+    try:
+        raw = json.loads(case.raw_status_json or "{}")
+        if not isinstance(raw, dict):
+            raw = {"prior_raw_status": raw}
+    except (ValueError, TypeError):
+        raw = {"prior_raw_status": case.raw_status_json}
+    raw["status_check_attempt"] = {"checked_at": now_iso(), "outcome": outcome}
+    case.raw_status_json = _json_dumps(raw)
+
+
+def sync_all_case_statuses(session, *, portal_fallback: bool | None = None, headless: bool = True, commit_each: bool = False) -> StatusSyncResults:
     use_portal_fallback = _env_bool("NYC311_STATUS_SYNC_PORTAL_FALLBACK", True) if portal_fallback is None else portal_fallback
     portal_max_cases = max(0, _env_int("NYC311_STATUS_SYNC_PORTAL_MAX_CASES", 25))
-    results = []
-    rows = session.scalars(select(ServiceRequestCase).order_by(ServiceRequestCase.submitted_at.desc())).all()
+    results = StatusSyncResults()
+    rows = list(session.scalars(select(ServiceRequestCase)).all())
+    # Failed/not-found attempts rotate too, without falsely refreshing last_checked_at.
+    rows.sort(key=lambda case: (_last_status_attempt(case), case.id or 0))
+    results.summary["total"] = len(rows)
     portal_checked = 0
     for case in rows:
+        results.summary["attempted"] += 1
         source = "nyc_open_data"
+        problems = []
+        outcome = "not_found"
         try:
             live = fetch_live_status(case.service_request_number)
             updated = apply_open_data_status(case, live) if live else False
+            if live and not updated:
+                outcome = "unverified"
+                problems.append({"source": source, "error": _open_data_validation_error(case, live)})
         except Exception as exc:
             updated = False
+            outcome = "error"
+            problems.append({"source": source, "error": str(exc)[:500]})
             append_audit_event(
                 "NYC311_STATUS_OPEN_DATA_ERROR",
                 None,
@@ -378,12 +460,35 @@ def sync_all_case_statuses(session, *, portal_fallback: bool | None = None, head
                 lookup = lookup_service_request_status(case.service_request_number, headless=headless)
                 updated = apply_portal_lookup_status(case, lookup)
                 source = "nyc311_portal"
+                if not updated:
+                    raw = portal_lookup_to_raw_status(lookup)
+                    outcome = "not_found" if raw and not raw.get("found") else "unverified"
+                    problems.append({"source": source, "error": _portal_validation_error(case, raw)})
             except Exception as exc:
+                outcome = "error"
+                problems.append({"source": "nyc311_portal", "error": str(exc)[:500]})
                 append_audit_event(
                     "NYC311_STATUS_PORTAL_ERROR",
                     None,
                     {"service_request_number": case.service_request_number, "error": str(exc)[:500]},
                 )
+        elif not updated and use_portal_fallback:
+            if outcome == "not_found":
+                outcome = "deferred"
         if updated:
             results.append({"service_request_number": case.service_request_number, "status": case.status, "source": source})
+            results.summary["updated"] += 1
+        else:
+            key = "errors" if outcome == "error" else outcome
+            results.summary[key] += 1
+            if outcome != "deferred":
+                _record_unsuccessful_attempt(case, outcome)
+            if problems:
+                results.summary["error_details"].append({"service_request_number": case.service_request_number, "problems": problems})
+        if commit_each:
+            # Browser/network work can take minutes. Preserve completed checks
+            # and release database locks between cases, not after the whole queue.
+            session.commit()
+    results.summary["ok"] = not any(results.summary[key] for key in ("errors", "not_found", "unverified"))
+    results.summary["coverage_complete"] = results.summary["updated"] == results.summary["total"]
     return results

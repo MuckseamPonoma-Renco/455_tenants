@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from packages.auth import require_bearer_token
 from packages.db import FilingJob, ServiceRequestCase, get_session
-from packages.nyc311.planner import approve_filing_job, claim_next_job, filing_job_preview
+from packages.nyc311.planner import SUBMISSION_UNCERTAIN_JOB_STATES, approve_filing_job, claim_next_job, filing_job_preview, now_iso
 from packages.nyc311.tracker import create_case_from_filing_job, normalize_sr_number, upsert_service_request_case
 from packages.queue import enqueue_full_resync
 from packages.worker_jobs import sync_311_statuses as sync_311_statuses_now
@@ -45,6 +46,22 @@ def _schedule_sheet_refresh() -> None:
         enqueue_full_resync()
     except Exception:
         return
+
+
+def _guard_receipt_binding(session, job: FilingJob, sr_number: str) -> None:
+    """Reconciliation may complete unknown work, but cannot relabel a receipt."""
+    linked = session.scalar(select(ServiceRequestCase).where(
+        ServiceRequestCase.filing_job_id == job.job_id,
+        ServiceRequestCase.service_request_number != sr_number,
+    ))
+    if linked:
+        raise HTTPException(status_code=409, detail='Filing job already has a different service-request receipt')
+    existing = session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.service_request_number == sr_number))
+    if existing and (
+        existing.filing_job_id not in {None, job.job_id}
+        or (existing.incident_id and job.incident_id and existing.incident_id != job.incident_id)
+    ):
+        raise HTTPException(status_code=409, detail='Service-request receipt is already linked to different filing evidence')
 
 
 @router.get('/filings/{job_id}/preview')
@@ -109,15 +126,18 @@ def mobile_claim_next(authorization: str | None = Header(default=None)):
 @router.post('/filings/{job_id}/submitted')
 def mobile_mark_submitted(job_id: int, payload: FilingSubmittedPayload, authorization: str | None = Header(default=None)):
     require_bearer_token(authorization, kind='mobile')
-    sr_number = normalize_sr_number(payload.service_request_number)
+    supplied_sr_number = payload.service_request_number.strip()
+    sr_number = normalize_sr_number(supplied_sr_number) if re.fullmatch(r'(?:311[- ]?)?\d{8}', supplied_sr_number) else None
     if not sr_number:
         raise HTTPException(status_code=400, detail='Invalid NYC311 service request number')
     with get_session() as session:
-        job = session.get(FilingJob, job_id)
+        job = session.scalar(select(FilingJob).where(FilingJob.job_id == job_id).with_for_update())
         if not job:
             raise HTTPException(status_code=404, detail='Unknown filing job')
         try:
+            _guard_receipt_binding(session, job, sr_number)
             case = create_case_from_filing_job(session, job=job, sr_number=sr_number)
+            job.last_error = None
             if payload.notes:
                 job.notes = ((job.notes or '') + ' | ' + payload.notes)[:2000]
             if payload.app_status:
@@ -128,10 +148,12 @@ def mobile_mark_submitted(job_id: int, payload: FilingSubmittedPayload, authoriz
         except IntegrityError:
             # Another request may have inserted the SR case between our initial lookup and commit.
             session.rollback()
-            job = session.get(FilingJob, job_id)
+            job = session.scalar(select(FilingJob).where(FilingJob.job_id == job_id).with_for_update())
             if not job:
                 raise HTTPException(status_code=404, detail='Unknown filing job')
+            _guard_receipt_binding(session, job, sr_number)
             case = create_case_from_filing_job(session, job=job, sr_number=sr_number)
+            job.last_error = None
             if payload.notes:
                 job.notes = ((job.notes or '') + ' | ' + payload.notes)[:2000]
             if payload.app_status:
@@ -145,10 +167,13 @@ def mobile_mark_submitted(job_id: int, payload: FilingSubmittedPayload, authoriz
 def mobile_mark_failed(job_id: int, payload: FilingFailedPayload, authorization: str | None = Header(default=None)):
     require_bearer_token(authorization, kind='mobile')
     with get_session() as session:
-        job = session.get(FilingJob, job_id)
+        job = session.scalar(select(FilingJob).where(FilingJob.job_id == job_id).with_for_update())
         if not job:
             raise HTTPException(status_code=404, detail='Unknown filing job')
+        if job.state in SUBMISSION_UNCERTAIN_JOB_STATES | {'submitted', 'skipped'}:
+            raise HTTPException(status_code=409, detail='This filing cannot be retried through a failed callback; reconcile its receipt or incident state first')
         job.state = 'failed'
+        job.updated_at = now_iso()
         job.last_error = payload.error[:2000]
         if payload.notes:
             job.notes = ((job.notes or '') + ' | ' + payload.notes)[:2000]

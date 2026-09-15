@@ -21,6 +21,7 @@ os.environ['AUTO_FILE_MIN_WITNESSES'] = '1'
 os.environ['AUTO_FILE_MIN_REPORTS'] = '1'
 os.environ['LLM_MODE'] = 'off'
 os.environ['AUDIT_DIR'] = str(ROOT / '.test_audit')
+os.environ['NYC311_STATUS_STATE_PATH'] = str(ROOT / '.test_audit/nyc311-status.json')
 os.environ['BUILDING_NAME'] = '455 Ocean Parkway'
 os.environ['BUILDING_FULL_ADDRESS'] = '455 OCEAN PARKWAY, BROOKLYN, NY, 11218'
 os.environ['BUILDING_STREET_ADDRESS'] = '455 OCEAN PARKWAY'

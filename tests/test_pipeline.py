@@ -1390,7 +1390,7 @@ def test_mobile_claim_submit_and_status_sync(client, monkeypatch):
     })
     assert submitted.status_code == 200, submitted.text
 
-    def fake_sync(session):
+    def fake_sync(session, **kwargs):
         case = session.query(ServiceRequestCase).filter_by(service_request_number='311-99999999').one()
         case.status = 'Closed'
         case.agency = 'DOB'

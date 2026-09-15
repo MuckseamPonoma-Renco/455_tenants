@@ -30,6 +30,10 @@ class PortalSubmissionCancelled(RuntimeError):
     pass
 
 
+class PortalSubmissionUncertain(RuntimeError):
+    """Final submit may have reached NYC311; never retry without reconciliation."""
+
+
 @dataclass
 class PortalAddressMatch:
     address_id: str
@@ -368,8 +372,22 @@ def _extract_lookup_status(page_text: str) -> str | None:
                     continue
                 if candidate.casefold() in invalid:
                     continue
-                return candidate
+                if candidate.casefold() in {"in progress", "open", "closed", "pending", "assigned", "started", "completed", "cancelled", "canceled"}:
+                    return candidate
+                break
+    # Closed DOB pages omit SR Status. Infer only when an explicit status was
+    # absent so contradictory open-status/closed-date evidence remains visible.
+    for idx, line in enumerate(lines):
+        if line.casefold() == "date closed" and idx + 1 < len(lines):
+            if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}(?:,?\s+.*)?", lines[idx + 1]):
+                return "Closed"
+    if re.search(r"\b(?:reviewed this complaint and closed it|service request (?:has been|is) closed)\b", page_text, re.I):
+        return "Closed"
     return None
+
+
+def _lookup_matches(page_text: str, sr_number: str) -> bool:
+    return bool(re.search(r"\bSR Number\s+" + re.escape(sr_number) + r"\b", page_text, re.I))
 
 
 def submit_elevator_complaint(
@@ -441,15 +459,27 @@ def submit_elevator_complaint(
             raise PortalSubmissionCancelled("Filing payload or incident state changed before final submission")
 
         previous_url = page.url
-        page.locator("#NextButton").click(force=True, no_wait_after=True)
         try:
-            _wait_for_submit_confirmation(page, previous_url)
-        except PlaywrightError:
-            page.wait_for_timeout(6000)
-        page.wait_for_timeout(2500)
-        confirmation_text = page.locator("body").inner_text()
-        service_request_number = _extract_confirmation_sr_number(page, confirmation_text)
-        confirmation_screenshot_path = _save_screenshot(page, screenshot_path, "confirmation")
+            page.locator("#NextButton").click(force=True, no_wait_after=True)
+            # A generic 'Service Request' heading exists before submission too.
+            # Wait for an actual numbered receipt instead of that heading.
+            page.wait_for_function(r"""() => {
+                const text = document.body?.innerText || '';
+                return /\b311[-\s]?\d{8}\b/.test(text)
+                    || !!document.querySelector('a[href*="sr-details/?srnum=311-"]');
+            }""", timeout=60000)
+            confirmation_text = page.locator("body").inner_text()
+            service_request_number = _extract_confirmation_sr_number(page, confirmation_text)
+            if not service_request_number:
+                raise RuntimeError("No numbered NYC311 receipt after final submit")
+            # Screenshots are evidence aids, not a reason to lose a real receipt.
+            try:
+                confirmation_screenshot_path = _save_screenshot(page, screenshot_path, "confirmation")
+            except PlaywrightError:
+                confirmation_screenshot_path = None
+        except Exception as exc:
+            browser.close()
+            raise PortalSubmissionUncertain("NYC311 final submission outcome needs receipt reconciliation") from exc
         browser.close()
         return PortalSubmissionResult(
             service_request_number=service_request_number,
@@ -476,16 +506,23 @@ def lookup_service_request_status(sr_number: str, *, headless: bool = True) -> P
         page.goto(CHECK_STATUS_URL, wait_until="domcontentloaded", timeout=120_000)
         page.locator("#ReferenceNumberInput").fill(normalized, force=True)
         page.locator("#SubmitBtn").click(force=True, no_wait_after=True)
-        page.wait_for_timeout(4000)
+        page.wait_for_function(r"""sr => {
+            const text = document.body?.innerText || '';
+            return /invalid service request|service request (?:was )?not found/i.test(text)
+                || (text.includes(sr) && /SR Number/.test(text)
+                    && (/SR Status/.test(text) || /Date Closed\s+\d/.test(text)
+                        || /reviewed this complaint and closed it/i.test(text)));
+        }""", arg=normalized, timeout=45000)
         text = page.locator("body").inner_text()
+        final_url = page.url
         browser.close()
 
-    found = "Invalid Service Request number" not in text
     status = _extract_lookup_status(text)
+    found = _lookup_matches(text, normalized) and status is not None
     return PortalStatusLookup(
         service_request_number=normalized,
         found=found,
         status=status,
         page_text=text,
-        final_url=CHECK_STATUS_URL,
+        final_url=final_url,
     )

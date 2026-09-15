@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 
 from packages.db import FilingJob, Incident, RawMessage, ServiceRequestCase
 from packages.llm.openai_client import llm_enabled
-from packages.timeutil import normalize_timestamp
+from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
 
 
 def _now() -> datetime:
@@ -105,11 +105,24 @@ def build_ops_summary(session) -> dict[str, Any]:
         'approved': 0,
         'pending': 0,
         'claimed': 0,
+        'submitting': 0,
+        'submission_unknown': 0,
         'submitted': 0,
         'failed': 0,
     }
     for job in jobs:
         job_counts[job.state] = job_counts.get(job.state, 0) + 1
+    try:
+        stale_submission_minutes = max(1, int(os.environ.get('CLAIM_STALE_MINUTES', '30')))
+    except ValueError:
+        stale_submission_minutes = 30
+    submission_cutoff = int((_now() - timedelta(minutes=stale_submission_minutes)).timestamp())
+    stale_submitting = sum(
+        job.state == 'submitting'
+        and (parse_ts_to_epoch(job.updated_at or job.claimed_at) or 0) <= submission_cutoff
+        for job in jobs
+    )
+    reconciliation_needed = job_counts.get('submission_unknown', 0) + stale_submitting
 
     repeated_cutoff = int((_now() - timedelta(days=30)).timestamp())
     recent_elevator_count = session.scalar(
@@ -139,6 +152,12 @@ def build_ops_summary(session) -> dict[str, Any]:
     elif open_incidents and job_counts.get('failed', 0):
         stage = 'filing_attention_needed'
         next_step = 'Inspect the failed portal attempt; automatic retries stop at the configured attempt limit.'
+    if job_counts.get('submitting', 0):
+        stage = 'filing_submission_in_progress'
+        next_step = 'A final NYC311 submission is in progress; wait for its receipt and do not submit it again.'
+    if reconciliation_needed:
+        stage = 'filing_attention_needed'
+        next_step = 'Reconcile the saved NYC311 confirmation or receipt before retrying; an uncertain submission may already exist.'
 
     alerts: list[dict[str, Any]] = []
     actions: list[dict[str, str]] = []
@@ -164,6 +183,19 @@ def build_ops_summary(session) -> dict[str, Any]:
             'code': 'failed_jobs',
             'title': '311 filing retries needed',
             'detail': f"{job_counts['failed']} filing job(s) failed and need a portal rerun or selector refresh.",
+        })
+
+    if reconciliation_needed:
+        alerts.append({
+            'level': 'critical',
+            'code': '311_submission_unknown',
+            'title': '311 receipt reconciliation required',
+            'detail': f'{reconciliation_needed} filing job(s) may already have been submitted. Automatic retries are blocked to prevent duplicates.',
+        })
+        actions.append({
+            'kind': 'do_now',
+            'title': 'Verify the existing 311 submission receipt',
+            'detail': 'Inspect the confirmation evidence and reconcile the service-request number; do not reset or refile an uncertain submission.',
         })
 
     if recent_elevator_count >= 3:
@@ -221,6 +253,9 @@ def build_ops_summary(session) -> dict[str, Any]:
         'filing_jobs_awaiting_approval': int(job_counts.get('awaiting_approval', 0)),
         'filing_jobs_approved': int(job_counts.get('approved', 0)),
         'filing_jobs_failed': int(job_counts.get('failed', 0)),
+        'filing_jobs_submitting': int(job_counts.get('submitting', 0)),
+        'filing_jobs_submission_unknown': int(job_counts.get('submission_unknown', 0)),
+        'filing_jobs_receipt_reconciliation_needed': int(reconciliation_needed),
         'service_requests_total': int(case_count),
         'recent_elevator_incidents_30d': int(recent_elevator_count),
         'llm_enabled': _has_llm(),
