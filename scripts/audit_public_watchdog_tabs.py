@@ -31,6 +31,8 @@ DEFAULT_RETRIES = 3
 DEFAULT_RETRY_SLEEP_SECONDS = 5.0
 
 TENANT_ELEVATOR_EVIDENCE_TOPIC = "Actual elevator service reported by tenants"
+LOBBY_POSTING_EVIDENCE_TOPIC = "Lobby posting / start-date notice"
+HUMAN_ONLY_PHYSICAL_CHECK = "Human-only physical check"
 SYSTEM_WATCHDOG_FRESHNESS_TOPIC = "What residents should do"
 
 TAB_ENV_VARS = {
@@ -522,6 +524,7 @@ def _evidence_timestamp_check(
     workbook_tz: ZoneInfo,
     now: datetime,
     max_future_seconds: float,
+    manual_physical_check: bool = False,
 ) -> dict[str, object]:
     """Compare a source-evidence timestamp without pretending it is a check heartbeat."""
 
@@ -532,10 +535,11 @@ def _evidence_timestamp_check(
     expected_is_timestamp = expected_parsed is not None and expected_parsed.precision != "date"
     live_is_timestamp = live_parsed is not None and live_parsed.precision != "date"
     both_empty = not expected_text and not live_text
+    evidence_label = "Manual physical evidence" if manual_physical_check else "Tenant evidence"
     result: dict[str, object] = {
         "expected": expected_text,
         "live": live_text,
-        "timestamp_semantics": "tenant_evidence",
+        "timestamp_semantics": "manual_physical_evidence" if manual_physical_check else "tenant_evidence",
         "freshness_required": False,
         "evidence_timestamp_present": not both_empty,
         "expected_parseable_timestamp": expected_is_timestamp,
@@ -556,7 +560,7 @@ def _evidence_timestamp_check(
         result.update(
             {
                 "ok": False,
-                "reason": "Tenant evidence Last checked must be blank in both views or contain a timestamp with time",
+                "reason": f"{evidence_label} Last checked must be blank in both views or contain a timestamp with time",
                 "source_live_equivalent": False,
                 "within_future_bound": False,
             }
@@ -572,9 +576,9 @@ def _evidence_timestamp_check(
     future_ok = age_seconds >= -max_future_seconds
     ok = equivalent and future_ok
     if not equivalent:
-        reason = "Tenant evidence timestamp differs from the current renderer"
+        reason = f"{evidence_label} timestamp differs from the current renderer"
     elif not future_ok:
-        reason = "Tenant evidence timestamp is implausibly in the future"
+        reason = f"{evidence_label} timestamp is implausibly in the future"
     else:
         reason = ""
     result.update(
@@ -678,13 +682,24 @@ def _audit_tab(
             live_value = _cell(live.display_values, row_index, column_index)
             if row_index > 0 and column_index == spec.volatile_timestamp_column:
                 topic = _cell_text(_cell(expected_rows, row_index, 0))
-                if topic in spec.evidence_timestamp_topics:
+                # The issued-permit branch asks a resident to inspect the lobby.
+                # A machine refresh cannot claim this physical observation was
+                # performed. Other lobby branches remain automatic source checks.
+                manual_physical_check = (
+                    spec.logical_name == "ElevatorWatch"
+                    and topic == LOBBY_POSTING_EVIDENCE_TOPIC
+                    and "Checked by" in spec.headers
+                    and _cell_text(_cell(expected_rows, row_index, spec.headers.index("Checked by")))
+                    == HUMAN_ONLY_PHYSICAL_CHECK
+                )
+                if topic in spec.evidence_timestamp_topics or manual_physical_check:
                     timestamp_result = _evidence_timestamp_check(
                         expected_value,
                         live_value,
                         workbook_tz=workbook_tz,
                         now=now,
                         max_future_seconds=max_drift_seconds,
+                        manual_physical_check=manual_physical_check,
                     )
                 else:
                     timestamp_result = _timestamp_check(

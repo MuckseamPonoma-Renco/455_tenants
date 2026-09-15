@@ -1021,6 +1021,13 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             return None
 
     mechanism_update = bool(CONTEXTUAL_ELEVATOR_MECHANISM_RE.search(text))
+    # Resolve this narrow fragment only with same-chat elevator context. Mere
+    # mechanic presence or a prediction of repair is not a fresh outage report.
+    reduced_service_report = bool(re.fullmatch(
+        r"\s*(?:only\s+(?:one|1)\s+(?:is\s+)?working|down\s+to\s+(?:one|1))"
+        r"(?:\s+(?:now|today|currently)|\s+at\s+\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?)?[.!]?\s*",
+        text, re.IGNORECASE,
+    ))
     confirmation_update = bool(
         CONTEXTUAL_CONFIRMATION_RE.search(text)
         and _has_recent_same_chat_elevator_context(session, rm, window_seconds=15 * 60)
@@ -1039,7 +1046,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             "signal_type": "report",
             "category": "elevator",
             "asset": explicit_elevator_asset(text),
-            "event_type": "still_out" if continuing_outage else "status_update",
+            "event_type": "outage" if reduced_service_report else "still_out" if continuing_outage else "status_update",
             "severity": 4,
             "confidence": 78,
             "title": "Elevator outage update",
@@ -1061,7 +1068,7 @@ def _prune_incident_if_unreferenced(session, incident_id: str | None) -> None:
     if session.query(ServiceRequestCase).filter(ServiceRequestCase.incident_id == incident_id).count():
         return
     jobs = session.query(FilingJob).filter(FilingJob.incident_id == incident_id).all()
-    if any(job.state in {"claimed", "submitted"} for job in jobs):
+    if any(job.state in {"claimed", "submitting", "submission_unknown", "submitted"} for job in jobs):
         return
     for job in jobs:
         job.state = "skipped"
@@ -1361,6 +1368,10 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
     rule_choice = _rule_choice(rules)
     reviewed_nonissue = bool(not rule_choice and REVIEWED_NONISSUE_CONTEXT_RE.search(rm.text or ""))
     context_choice = _contextual_topic_followup_choice(session, rm) or _contextual_elevator_followup_choice(session, rm, rules)
+    # Context resolves fragments; it must never downgrade an explicit current
+    # outage to a generic update merely because it starts with 'Yeah'.
+    if rule_choice and rule_choice.get("event_type") in {"outage", "still_out"}:
+        context_choice = None
     if context_choice and (
         not rule_choice
         or (rule_choice.get("category") == "heat_hot_water" and context_choice.get("category") == "elevator")

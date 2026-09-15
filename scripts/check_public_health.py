@@ -93,6 +93,12 @@ def validate_health(
         elif automation_age > max_automation_age_seconds:
             failures.append(f'automation is stale ({automation_age}s old)')
 
+    nyc311_status = payload.get('nyc311_status')
+    if isinstance(nyc311_status, dict):
+        details['nyc311_status'] = nyc311_status.get('state')
+        if nyc311_status.get('state') != 'ready' or nyc311_status.get('has_error') is not False:
+            failures.append('NYC311 status verification is not ready')
+
     capture = payload.get('whatsapp_capture')
     if not isinstance(capture, dict):
         failures.append('WhatsApp capture health is missing')

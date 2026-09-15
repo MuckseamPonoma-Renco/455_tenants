@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from packages.automation_status import read_automation_status
 from packages.db import database_is_ready
 from packages.llm.openai_client import llm_enabled
+from packages.nyc311.health import public_status as public_311_status
 from packages.whatsapp.status import read_capture_status
 
 router = APIRouter()
@@ -476,6 +477,7 @@ def health():
         'sheets_configured': bool((os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID') or '').strip()) and _sheets_creds_present(),
         'whatsapp_capture': whatsapp_capture,
         'automation': _public_automation_status(read_automation_status()),
+        'nyc311_status': public_311_status(),
         'chat_export_sync': _public_chat_export_sync_status(),
         'cloud_export_receiver': _public_cloud_export_receiver_status(),
         'storage': _public_storage_status(),

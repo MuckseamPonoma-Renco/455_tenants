@@ -258,6 +258,10 @@ def test_portal_worker_cancels_at_review_when_incident_state_changes(client, mon
         'ts_epoch': 1770000500,
     })
     def cancel_at_review(*_args, **_kwargs):
+        with get_session() as session:
+            incident = session.query(Incident).one()
+            incident.status = 'closed'
+            session.commit()
         raise PortalSubmissionCancelled('incident closed before final submit')
 
     monkeypatch.setattr('packages.nyc311.portal_worker.submit_elevator_complaint', cancel_at_review)

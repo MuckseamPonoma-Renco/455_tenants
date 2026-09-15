@@ -157,17 +157,20 @@ def queue_311_jobs():
 
 
 def sync_311_statuses():
+    from packages.nyc311.health import record_status_sync
     with get_session() as session:
-        results = sync_all_case_statuses(session)
+        results = sync_all_case_statuses(session, commit_each=True)
         session.commit()
+    summary = getattr(results, 'summary', {'ok': True, 'updated': len(results)})
+    record_status_sync(summary)
     if results:
         _safe_sync_sheets()
     append_audit_event(
         "SYNC_311_STATUSES",
         None,
-        {"updated": len(results), "sheet_sync": "updated" if results else "skipped_no_changes"},
+        {**summary, "sheet_sync": "updated" if results else "skipped_no_changes"},
     )
-    return {"ok": True, "updated": len(results)}
+    return summary
 
 
 def sync_public_records():
