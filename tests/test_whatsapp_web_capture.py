@@ -174,7 +174,7 @@ def test_ingest_whatsapp_web_stores_attachment_manifest(client):
 
 
 def test_ingest_whatsapp_web_strips_quoted_reply_from_message_text(client):
-    quoted = "Maureen VanTrease\n+1 (917) 693-7436\nI am getting tired of walking down 12 flights."
+    quoted = "Maureen VanTrease\n+1 (212) 555-0106\nI am getting tired of walking down 12 flights."
     manifest = build_attachment_manifest(
         message_context={"reply_text": f"{quoted}\n{quoted}"},
         source="whatsapp_web",
@@ -260,7 +260,7 @@ def test_ingest_whatsapp_web_promotes_recent_export_alias_and_reprocesses(client
         json={
             "chat_name": "455 Tenants",
             "text": text,
-            "sender": "+1 (917) 400-8504",
+            "sender": "+1 (212) 555-0105",
             "ts_epoch": 1783951440,
         },
     )
@@ -274,7 +274,7 @@ def test_ingest_whatsapp_web_promotes_recent_export_alias_and_reprocesses(client
         row = session.query(RawMessage).one()
         assert row.source == "whatsapp_web"
         assert row.chat_name == "455 Tenants"
-        assert row.sender == "+1 (917) 400-8504"
+        assert row.sender == "+1 (212) 555-0105"
         assert row.ts_epoch == 1783951440
 def test_ingest_whatsapp_web_duplicate_can_fill_missing_attachments(client):
     first = client.post(

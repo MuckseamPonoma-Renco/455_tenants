@@ -432,7 +432,7 @@ def test_public_evidence_rows_use_message_text_not_quoted_reply(tmp_path, monkey
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example")
     monkeypatch.setenv("WHATSAPP_CAPTURE_MEDIA_DIR", str(media_dir))
 
-    quoted = "Karen KWA\n+1 (917) 257-4844\nNorth lift working!!!"
+    quoted = "Karen KWA\n+1 (212) 555-0104\nNorth lift working!!!"
     manifest = build_attachment_manifest(
         items=[{"kind": "image", "status": "downloaded", "path": str(photo), "filename": "photo.jpg"}],
         message_context={"reply_text": f"{quoted}\n{quoted}"},
@@ -1096,7 +1096,7 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
     )
 
     reply_text = (
-        "Molly\n+1 (347) 581-0269\n"
+        "Molly\n+1 (212) 555-0102\n"
         "Was the north lift ever operational today? It was out when we left at 7, "
         "and out when we just came home, but I don’t know what happened in between."
     )
@@ -1135,7 +1135,7 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
         text="Just left for my evening rounds and looks like both elevators working. One was still down ~11am",
         attachments=build_attachment_manifest(
             items=[],
-            message_context={"reply_text": "Molly\n+1 (347) 581-0269\nCan someone write here if they see an elevator technician today?"},
+            message_context={"reply_text": "Molly\n+1 (212) 555-0102\nCan someone write here if they see an elevator technician today?"},
             source="whatsapp_web",
         ),
         source="whatsapp_web",

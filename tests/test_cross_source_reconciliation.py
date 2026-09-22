@@ -65,14 +65,14 @@ def test_cross_source_match_recognizes_concise_outage_update(client):
             source="whatsapp_web",
             text="South lift out again.",
             ts_epoch=1784330820,
-            sender="+1 (347) 581-0269",
+            sender="+1 (212) 555-0102",
         )
         short_reply = _raw(
             "live-short-reply",
             source="whatsapp_web",
             text="Thanks.",
             ts_epoch=1784330920,
-            sender="+1 (347) 581-0269",
+            sender="+1 (212) 555-0102",
         )
         session.add_all([live, short_reply])
         session.commit()
@@ -98,14 +98,14 @@ def test_cross_source_match_accepts_short_operational_update_but_not_generic_rep
             source="whatsapp_web",
             text="Both working",
             ts_epoch=1784331000,
-            sender="+1 (208) 450-9517",
+            sender="+1 (212) 555-0101",
         )
         generic = _raw(
             "live-short-generic",
             source="whatsapp_web",
             text="Yes",
             ts_epoch=1784331060,
-            sender="+1 (631) 703-8841",
+            sender="+1 (212) 555-0103",
         )
         session.add_all([operational, generic])
         session.commit()
@@ -140,7 +140,7 @@ def test_reconciliation_pairs_short_directional_followup_but_not_generic_reply(c
                     source="whatsapp_web",
                     text="Same going up",
                     ts_epoch=1784331017,
-                    sender="+1 (347) 581-0269",
+                    sender="+1 (212) 555-0102",
                 ),
                 _raw(
                     "archive-short-generic",
@@ -154,7 +154,7 @@ def test_reconciliation_pairs_short_directional_followup_but_not_generic_reply(c
                     source="whatsapp_web",
                     text="Thanks",
                     ts_epoch=1784331117,
-                    sender="+1 (347) 581-0269",
+                    sender="+1 (212) 555-0102",
                 ),
             ]
         )
@@ -220,7 +220,7 @@ def test_authoritative_rule_state_locks_still_out_and_restore():
 def test_reconciliation_merges_exact_aliases_without_losing_submitted_cases(client):
     archive_message_id = "south-archive-alias"
     live_message_id = "south-live-alias"
-    live_sender = "+1 (347) 581-0269"
+    live_sender = "+1 (212) 555-0102"
     first = _raw(
         "south-initial",
         source="tasker",
@@ -328,7 +328,7 @@ def test_reconciliation_rosters_identity_only_alias_without_deleting_evidence(cl
         source="whatsapp_web",
         text="The superintendent said the lobby package room will reopen tomorrow.",
         ts_epoch=1784330820,
-        sender="+1 (347) 581-0269",
+        sender="+1 (212) 555-0102",
     )
     with get_session() as session:
         session.add_all([archive, live])
@@ -365,7 +365,7 @@ def test_reconciliation_resolves_issue_nonissue_alias_conflict(client):
         source="whatsapp_web",
         text="Two working!",
         ts_epoch=1785170440,
-        sender="+1 (347) 581-0269",
+        sender="+1 (212) 555-0102",
     )
     with get_session() as session:
         incident = _incident(
