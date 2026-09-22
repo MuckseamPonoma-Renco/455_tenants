@@ -1,5 +1,7 @@
 # API reference
 
+Intake, admin, read API, filing callbacks, and attachment manifests require bearer authentication. The health/report routes and eligible media downloads are public. See [sharing boundaries](OPERATIONS.md#resident-sharing-and-private-data) before exposing a deployment. JSON examples below are fictional.
+
 ## POST /ingest/whatsapp_web
 Accepts one WhatsApp Web message captured from Chrome/Playwright on the Mac mini.
 
@@ -8,7 +10,7 @@ Payload shape matches the legacy Tasker payload, plus optional `attachments` JSO
 ## POST /ingest/whatsapp_web_batch
 Accepts multiple WhatsApp Web messages in one request.
 
-Payload shape is the same as `/ingest/whatsapp_web`.
+Wrap single-message payloads in an `items` array: `{"items": [<message>, ...]}`.
 
 Use this for the Chrome/Playwright live watcher. Duplicate messages are deduped against both legacy Android Tasker and Chrome live capture. Captured media can be opened through `/media/whatsapp/{message_id}/{attachment_index}` and is surfaced into Sheets when `PUBLIC_BASE_URL` is configured.
 
@@ -19,9 +21,9 @@ Accepts one WhatsApp message.
 
 ```json
 {
-  "chat_name": "455 Tenants",
+  "chat_name": "Example Tenant Chat",
   "text": "Both elevators are out again",
-  "sender": "Tibor Simon",
+  "sender": "Example Resident",
   "ts_epoch": 1770000000
 }
 ```
@@ -37,9 +39,9 @@ Accepts multiple WhatsApp notification messages in one request.
 {
   "items": [
     {
-      "chat_name": "455 Tenants",
+      "chat_name": "Example Tenant Chat",
       "text": "Both elevators are out again",
-      "sender": "Tibor Simon",
+      "sender": "Example Resident",
       "ts_epoch": 1770000000
     }
   ]
@@ -52,10 +54,10 @@ Use this for replaying a phone-side backlog after downtime. Duplicate messages a
 Returns the parsed attachment manifest for one stored message plus any tenant-openable public media URLs.
 
 ## GET /media/whatsapp/{message_id}/{attachment_index}
-Public file route used by the spreadsheet for captured WhatsApp screenshots and downloaded media.
+Public file route for eligible downloaded attachments. It excludes `message_screenshot` attachments and filtered images, and enforces allowed media paths. Content filtering is not a privacy guarantee; inspect eligible attachments before sharing.
 
 ## POST /ingest/export
-Multipart form upload of TXT or ZIP containing `_chat.txt`.
+Multipart form upload of a WhatsApp TXT export or ZIP. The shared parser reads every supported text chat file in the archive. Disable live filing and use the isolated environment described in [verification](VERIFY.md) when replaying history.
 
 ## GET /api/incidents
 Returns classified incidents.
@@ -78,10 +80,10 @@ Returns:
 - a management-ready follow-up draft
 - the current next-best action
 
-Works without an API key via deterministic fallback text, and improves automatically once `OPENAI_API_KEY` is set.
+Works without a model API key via deterministic fallback text. Optional model-assisted briefing requires configured API access; generated drafts still require review.
 
 ## GET /api/project
-Returns the tenant-safe elevator replacement watchdog state split into management claims, trusted official public records, and tenant-observed reality. Weak or conflicting official-record matches are kept internal until verified.
+Returns the resident-oriented elevator replacement watchdog state split into management claims, trusted official public records, and tenant-observed reality. Weak or conflicting official-record matches are kept internal until verified.
 
 ## GET /api/project/records
 Returns tenant-visible trusted elevator/replacement-relevant public records. Rows include `machine_verification_status`, `machine_confidence`, and `machine_verified_at`. Machine verification is official-source corroboration, not a human confirmation.
@@ -109,7 +111,7 @@ the current draft before the final submit click.
 Stores the SR number and marks the job submitted.
 
 ## POST /mobile/filings/{job_id}/failed
-Marks a filing job failed and stores the failure reason.
+Marks a retryable filing job failed and stores the failure reason. Returns HTTP 409 for `submitting`, `submission_unknown`, `submitted`, or `skipped` jobs; reconcile uncertain receipts instead of using this callback to reset them.
 
 ## POST /mobile/sr_updates
 Stores a status update from the portal worker or another trusted source.
@@ -118,12 +120,12 @@ Stores a status update from the portal worker or another trusted source.
 Runs the 311 case tracker sync immediately.
 
 ## POST /admin/sync_public_records
-Imports verified-configured NYC Open Data sources into `PublicRecordWatch`.
+Imports the configured NYC Open Data sources into `PublicRecordWatch`; record verification is tracked separately.
 
 ## POST /admin/resync_replacement_watchdog
 Imports public records, evaluates replacement-watchdog rules, and syncs watchdog sheet tabs.
 
-## POST /admin/verify_public_record/{id}
+## POST /admin/verify_public_record/{record_id}
 Marks an imported public record human-verified and completes its verification action.
 
 ## POST /admin/add_watchdog_check

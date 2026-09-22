@@ -619,7 +619,7 @@
       "category_label": "",
       "summary": "",
       "show_evidence": false,
-      "reason": "Historical injury and emergency-access advocacy is not a current elevator alarm and contains sensitive medical detail."
+      "reason": "Personal context without a standalone actionable building update; excluded from the resident view."
     },
     {
       "message_id": "80a5be7816ff8de14adfb3b6e40cf353d17c444826f33f9a6b5ce1ddd71d029b",
@@ -809,7 +809,7 @@
       "category_label": "Leaks / water damage",
       "summary": "A stairwell puddle was reported to building staff and created an added access burden during an elevator outage.",
       "show_evidence": false,
-      "reason": "Current summary publicly exposes cancer treatment and other sensitive medical details."
+      "reason": "Retain the reported building-service condition; omit unrelated personal context and evidence links from the resident view."
     },
     {
       "message_id": "983b8b4e534a0a2c920cda760e994729a127d9778cf97d9a76a87307de2a5532",

@@ -1,192 +1,94 @@
-# Tenant Issue OS — WhatsApp capture → incident engine → browser 311 filing → Sheets control surface
+# Tenant Issue OS
 
-This repo is the working backend for the 455 Ocean Parkway tenant project.
+Tenant reports arrive as chat messages, while incident history, evidence, and city service requests live in different places. Tenant Issue OS connects those records so an operator can trace a reported problem from the original message through follow-up and case status.
 
-The core loop is:
+This Python/FastAPI project combines WhatsApp capture, incident tracking, NYC311 integration, public-record checks, and Google Sheets reporting. It was developed for a single-building tenant workflow, with traceable decisions and separate operator and resident views.
 
-1. Mac Chrome Playwright captures a WhatsApp message.
-2. Backend stores the raw message.
-3. Backend decides whether it is a real building issue.
-4. Backend clusters it into an incident.
-5. Backend prepares a 311 filing job when eligible.
-6. A local Playwright worker claims the current eligible job and files NYC311 through the web portal automatically.
-7. The worker revalidates the incident and exact claim-bound payload immediately before submission.
-8. SR number comes back to the backend.
-9. Backend tracks the case and syncs the spreadsheet.
+**Start here:** [public tenant spreadsheet](https://docs.google.com/spreadsheets/d/1zdbS-MXdHzUu_dOoyOxD1gUGGyqkcKB2_DIFhy5MqP0/edit#gid=0) · [how to read the spreadsheet](docs/PUBLIC_SPREADSHEET.md) · [local setup](#local-setup) · [verification](docs/VERIFY.md) · [operator guide](docs/OPERATIONS.md) · [API reference](docs/API_REFERENCE.md)
 
-## What is the primary face of the system
+## What it does
 
-The Google Sheet is the primary day-to-day operator control surface.
+- Captures messages and attachments through Chrome/Playwright, imports WhatsApp TXT/ZIP exports, and accepts an optional tenant report form.
+- Deduplicates reports, combines rules with optional LLM review, and records the classification evidence and final decision.
+- Groups reports into incidents, tracks outage/restoration events and witnesses, and links NYC311 service requests.
+- Queues eligible current incidents for a Playwright filing worker, rechecks the exact payload before submission, and retains uncertain submissions for reconciliation.
+- Checks official public records and keeps management claims, tenant observations, and corroborated records distinct in the replacement-project watchdog.
+- Generates operator spreadsheets, a separate resident `Tenant Log`, and CSV/Markdown chronology bundles.
 
-For residents, do not share the raw multi-tab workbook by default. Sync a separate clean `Tenant Log` workbook/tab instead so they see the tenant incident, evidence, and 311 record.
+## Architecture
 
-It should show:
-
-- Dashboard: current building state and control links
-- Incidents: structured issue timeline
-- Queue311: what still needs filing
-- Cases311: which SRs exist and their status
-- DecisionLog: how the message engine decided what each message meant
-- Coverage: whether capture is missing days/messages
-
-The API is still useful, but the Sheet is not a side feature. It is the main operator face.
-
-## Core product functions
-
-- WhatsApp Web capture from Chrome on the Mac mini via Playwright
-- retired Tasker ingest kept only as a compatibility shim for old stored or migration data
-- raw message dedupe
-- hybrid rules + LLM message classification
-- incident clustering
-- outage / restore handling
-- automatic 311 draft queue for eligible live incidents
-- Playwright filing worker
-- SR number capture from chat or browser worker
-- 311 case status tracking
-- legal chronology export
-- spreadsheet sync for all major state
-- complete `Tenant Log` sheet sync for resident incident history, evidence links, and 311 case tracking
-- optional QR/link report form for tenants (`/report`)
-
-## LLM role
-
-The LLM is not required for transport or persistence.
-
-But it now has a first-class role in the decision engine when enabled:
-
-- `LLM_MODE=assist` → rules handle obvious cases, LLM helps with fuzzy/ambiguous reports
-- `LLM_MODE=supervised` → LLM reviews every message and the system logs rule vs LLM vs final choice
-- `LLM_MODE=off` → deterministic rules only
-- ambiguous or disagreeing rule/LLM outcomes can trigger a stronger review model before the final decision is stored
-
-Model-review failures are stored explicitly. A weekly supervised audit fails closed
-when required reviews are missing or the OpenAI API reports an error; it does not
-mislabel those messages as successful non-issues.
-
-The final filing queue remains deterministic and currentness-gated. Weekly chat
-audits and cloud historical recovery force `AUTO_FILE_ENABLED=0`, so replayed
-history cannot create or submit a live filing job.
-
-## What is finished in code
-
-- Real-time `/ingest/whatsapp_web` ingestion with media-aware attachment capture
-- Real-time `/ingest/whatsapp_web_batch` backlog replay from the Chrome/Playwright watcher
-- Retired legacy `/ingest/tasker` compatibility ingest for old stored or migration data
-- Bulk WhatsApp export ingestion with automatic reprocessing
-- Elevator outage / restore clustering with witness counting
-- Auto-extraction of SR numbers from chat messages like `311-25815998`
-- Automatically queue and file eligible current incidents with claim-time and pre-submit validation
-- Filing worker API:
-  - `GET /mobile/filings/{job_id}/preview`
-  - `POST /mobile/filings/{job_id}/approve`
-  - `POST /mobile/filings/claim_next`
-  - `POST /mobile/filings/{job_id}/submitted`
-  - `POST /mobile/filings/{job_id}/failed`
-  - `POST /mobile/sr_updates`
-- 311 case status sync from the public NYC Open Data endpoint
-- Legal bundle export to CSV + Markdown
-- Decision log sync so you can audit rules vs LLM vs final result in the spreadsheet
-- Simple tenant report form at `/report` for QR/link rollout
-- Inline-processing mode for local/dev so Redis is optional
-
-## Quick start
-
-### 1. Configure env
-
-```bash
-cp .env.example .env
+```mermaid
+flowchart LR
+    Inputs[WhatsApp capture / export / report form] --> API[FastAPI intake]
+    API --> DB[(SQLAlchemy records)]
+    DB --> Engine[Rules + optional LLM review]
+    Engine --> DB
+    DB --> Worker[Currentness + payload checks / Playwright worker]
+    Worker --> NYC[NYC311 portal]
+    NYC -->|Receipt + status| DB
+    Records[Official public records] -->|Match + corroborate| DB
+    DB --> Sheets[Google Sheets / operator + resident views]
+    DB --> Export[CSV + Markdown bundles]
 ```
 
-Fill in:
+The database holds messages, decisions, incidents, filing jobs, and case records. Sheets are generated views; editing a cell is not a database update or a filing approval. Local development can use SQLite and inline processing. The deployment configuration supports PostgreSQL and a Redis/RQ processing path; see the [worker compatibility note](docs/OPERATIONS.md#docker-and-background-processing).
 
-- `INGEST_TOKEN`
-- `MOBILE_FILER_TOKEN` (optional; defaults to `INGEST_TOKEN`)
-- `DATABASE_URL`
-- `GOOGLE_SHEETS_SPREADSHEET_ID`
-- optionally `GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID` for a separate clean tenant log; this should be a dedicated workbook because Google Sheets sharing is workbook-wide, not tab-wide
-- `GOOGLE_APPLICATION_CREDENTIALS`
-- building address fields used in anonymous filing drafts
-- optionally `PUBLIC_BASE_URL` so the Dashboard can expose the tenant report form link and Sheets can open captured WhatsApp media
-- optionally `PUBLIC_UPDATES_CHAT_NAMES` to scope the resident evidence log more tightly than the live watcher if you do not want every watched chat surfaced there
+## Human control and safety boundaries
 
-For Cloudflare Tunnel + Neon hosting, use the guide in `docs/DEPLOY_CLOUDFLARE_NEON.md`.
+- **Live filing is automatic when enabled.** The supplied `.env.example` sets `AUTO_FILE_ENABLED=1`. Normal eligible jobs do **not** require per-case approval; `/approve` remains for legacy/manual compatibility. Operators choose sources, building configuration, eligibility thresholds, credentials, and whether to run the worker. For local review, disable filing and leave the portal worker and automation daemon stopped.
+- **Before the final click**, the worker rechecks incident eligibility and the claim-bound payload. It records `submitting` before clicking; `submission_unknown` and `submitting` do not automatically retry. An operator must reconcile the receipt before considering another attempt. [Filing contract →](docs/NYC311_PORTAL_AUTOMATION.md)
+- **Historical processing suppresses filing creation.** Archive-processing and reprocessing paths suppress new filing jobs; weekly audit and cloud recovery runners disable automatic filing for their historical processing. Keep filing disabled and workers stopped during review/import. Later queue operations can still act on eligible incidents, and an age threshold alone is not a replay safeguard.
+- **LLM output is recorded evidence, not filing authority.** Rules, model output, and the final decision are retained. Required model-review failures remain visible; a supervised audit does not treat a missing review as a successful non-issue.
+- **Sharing is an operator decision.** Use a dedicated resident workbook, because sharing applies to the whole Google workbook. Redaction rules are not a privacy guarantee: inspect rendered text and linked media before sharing. Some media routes are public by design. Keep raw exports, credentials, access-needs records, and operator tabs private. [Sharing boundaries →](docs/OPERATIONS.md#resident-sharing-and-private-data)
 
-### 2. Local dev without Redis worker
+## Local setup
+
+Use a fresh checkout with Python 3.11 (the repository pins 3.11.15). This path needs no Google, WhatsApp, NYC311, or OpenAI credentials.
 
 ```bash
+git clone https://github.com/MuckseamPonoma-Renco/455_tenants.git
+cd 455_tenants
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+export DATABASE_URL=sqlite:///./local-review.sqlite3
 export PROCESS_INLINE=1
 export DISABLE_SHEETS_SYNC=1
-uvicorn apps.api.main:app --reload
+export LLM_MODE=off
+export AUTO_FILE_ENABLED=0
+export INGEST_TOKEN=local-review-only
+export MOBILE_FILER_TOKEN=local-review-only
+
+.venv/bin/python -c "from packages.db import init_db; init_db()"
+.venv/bin/python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 3. Full docker run
+Open `http://127.0.0.1:8000/docs` for the API schema. The example tokens are only for this loopback review session. Use fictional inputs and do not call live status/public-record sync endpoints during offline review. On a machine with an existing deployment, isolate status-file paths as described in [verification](docs/VERIFY.md#isolated-smoke-check).
+
+The exports apply to the current shell. Bare `uvicorn` does not load `.env` automatically. Production-oriented scripts have their own environment loading; [configure integrations separately](docs/OPERATIONS.md#integration-configuration) after local verification. Copying `.env.example` without reviewing it is not a safe local quick start.
+
+## Verification
+
+From the fresh checkout:
 
 ```bash
-docker compose up --build
+.venv/bin/python -m pytest -q
+node --test cloudflare/chat_export_receiver/worker.test.mjs
 ```
 
-## Main endpoints
+The Python suite uses a disposable SQLite database and disables Sheets and LLM calls in its fixtures. The receiver tests require a recent Node.js runtime with `node:test` and Web APIs. Tests exercise application behavior with fixtures and mocks; they do not establish live capture, successful city submissions, current public records, or spreadsheet freshness.
 
-### Ingest
+See [verification](docs/VERIFY.md) for an isolated smoke check and the separate checks needed for a configured deployment. Live complaints are operational actions, not demo tests.
 
-- `GET /health`
-- `POST /ingest/whatsapp_web`
-- `POST /ingest/whatsapp_web_batch`
-- `POST /ingest/tasker` (legacy compatibility only)
-- `POST /ingest/tasker_batch` (legacy compatibility only)
-- `POST /ingest/export`
-- `GET /report`
-- `POST /report/submit`
+## Explore the implementation
 
-### Admin
+| Area | Source |
+| --- | --- |
+| Intake and authenticated API routes | [`apps/api/routers/`](apps/api/routers/) |
+| Incident and decision processing | [`packages/incident/`](packages/incident/), [`packages/worker_jobs.py`](packages/worker_jobs.py) |
+| Filing eligibility, payload validation, receipts | [`packages/nyc311/`](packages/nyc311/) |
+| Public-record checks and project watchdog | [`packages/public_records/`](packages/public_records/), [`packages/project_watch/`](packages/project_watch/) |
+| Operator and resident output | [`packages/sheets/`](packages/sheets/) |
+| Regression tests | [`tests/`](tests/), [uncertain-submission tests](tests/test_311_uncertain_callbacks.py) |
 
-- `POST /admin/reprocess_last/{n}`
-- `POST /admin/resync_sheets`
-- `POST /admin/queue_311_jobs`
-- `POST /admin/sync_311_statuses`
-- `POST /admin/export_legal_bundle`
-
-### Read API
-
-- `GET /api/incidents`
-- `GET /api/queue`
-- `GET /api/cases`
-- `GET /api/decisions`
-- `GET /api/summary`
-- `GET /api/briefing`
-
-### Filing worker API
-
-- `GET /mobile/filings/{job_id}/preview`
-- `POST /mobile/filings/{job_id}/approve`
-- `POST /mobile/filings/claim_next`
-- `POST /mobile/filings/{job_id}/submitted`
-- `POST /mobile/filings/{job_id}/failed`
-- `POST /mobile/sr_updates`
-- `POST /mobile/sr_updates/sync_now`
-
-## Recommended rollout
-
-1. Initialize and connect the Sheet.
-2. Import the WhatsApp export.
-3. Review `Dashboard`, `Incidents`, `Queue311`, and `DecisionLog`.
-4. Run the Chrome/Playwright watcher on the Mac mini for the exact tenant chats you want to monitor.
-   Keep the Android Tasker path off unless you explicitly need temporary backward compatibility.
-5. Review a filing preview and approve its unchanged payload.
-6. Run the Playwright portal worker.
-7. Confirm SR appears in `Cases311`.
-8. Share the separate `Tenant Log` spreadsheet when you want tenants to see the clean public incident record, and add a QR or link to `/report` only if the first tenant tests show it is intuitive.
-
-## Files to read next
-
-- `docs/WHATSAPP_WEB_CAPTURE_SETUP.md`
-- `docs/NYC311_PORTAL_AUTOMATION.md`
-- `docs/DEPLOY_CLOUDFLARE_NEON.md`
-- `docs/VERIFY.md`
-- `docs/API_REFERENCE.md`
-
-Legacy-only references, not setup guides:
-
-- `docs/ANDROID_CAPTURE_SETUP.md`
-- `docs/TASKER_SETUP.md`
-- `docs/ANDROID_FILER_SETUP.md`
+The [operator guide](docs/OPERATIONS.md) retains configuration, LLM modes, the endpoint inventory, rollout steps, and links to current and legacy setup guides. Browser sessions, upstream portals, API access, and source freshness remain deployment dependencies; a passing local suite is not an uptime claim.

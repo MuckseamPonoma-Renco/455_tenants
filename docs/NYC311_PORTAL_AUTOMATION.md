@@ -42,6 +42,8 @@ for the same incident also blocks filing at claim and at final review.
 
 ## Run the filing worker once
 
+This can submit a real complaint. Use it only for an authorized live deployment with a genuine current eligible incident, not as a demo or smoke test.
+
 ```bash
 ./.venv/bin/python scripts/run_311_portal_worker.py
 ```
@@ -52,7 +54,7 @@ What it does:
 2. Opens the elevator complaint portal flow.
 3. Sets `Additional Details` to `Bldg w/ Multiple Devices`.
 4. Pastes `job.payload.description`.
-5. Resolves `455 OCEAN PARKWAY` through the portal lookup service.
+5. Resolves the configured building address through the portal lookup service.
 6. Marks the filing anonymous.
 7. Reaches review, submits, extracts the SR number, and stores the result back in the app.
 
@@ -80,7 +82,7 @@ discard an entire batch's progress.
 
 ## Notes
 
-- Archive imports and historical reprocessing cannot create live filing jobs.
+- Archive-processing and historical reprocessing suppress new filing creation. Keep automatic filing disabled and workers stopped during replay; later queue operations can consider eligible incidents.
 - Only failures known to precede the submission boundary retry automatically.
 - The low-level portal helper defaults to review-only; only the automatic worker explicitly enables the final submit click.
 - The browser context runs in `America/New_York` so the portal accepts `Date/Time Observed` validation consistently.

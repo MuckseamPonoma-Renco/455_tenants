@@ -1670,7 +1670,7 @@ def test_issue_summary_strips_contact_lines_and_person_followup(client, monkeypa
 
     response = client.post('/ingest/whatsapp_web', headers=auth_headers(), json={
         'chat_name': '455 Tenants',
-        'text': 'Karen KWA\n+1 (917) 257-4844\n14D\nNorth lift working!!!\nNo longer :(',
+        'text': 'Karen KWA\n+1 (212) 555-0104\n14D\nNorth lift working!!!\nNo longer :(',
         'sender': 'Karen',
         'ts_epoch': 1776802100,
     })
