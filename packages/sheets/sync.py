@@ -803,16 +803,20 @@ def _ensure_tab_exists(svc, sheet_id: str, tab: str, *, rename_single_existing: 
     ).execute()
 
 
-def _sheet_title_to_id_map(svc, sheet_id: str) -> dict[str, int]:
+def _sheet_properties_by_title(svc, sheet_id: str) -> dict[str, dict]:
     meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
-    out: dict[str, int] = {}
+    out: dict[str, dict] = {}
     for sheet in meta.get("sheets", []):
         props = sheet.get("properties", {})
         title = props.get("title")
         sheet_gid = props.get("sheetId")
         if isinstance(title, str) and isinstance(sheet_gid, int):
-            out[title] = sheet_gid
+            out[title] = props
     return out
+
+
+def _sheet_title_to_id_map(svc, sheet_id: str) -> dict[str, int]:
+    return {title: properties["sheetId"] for title, properties in _sheet_properties_by_title(svc, sheet_id).items()}
 
 
 def _hide_stale_public_qa_tabs(svc, sheet_id: str, *, active_tab: str) -> None:
@@ -929,9 +933,10 @@ def _apply_tab_layout(
     layout: str,
     layout_meta: dict[str, object] | None = None,
 ) -> None:
-    sheet_gid = _sheet_title_to_id_map(svc, sheet_id).get(tab)
-    if sheet_gid is None:
+    properties = _sheet_properties_by_title(svc, sheet_id).get(tab)
+    if properties is None:
         return
+    sheet_gid = properties["sheetId"]
 
     end_row = max(row_count, 1)
     meta = layout_meta or {}
@@ -1304,6 +1309,23 @@ def _apply_tab_layout(
             requests.append({"autoResizeDimensions": {"dimensions": {
                 "sheetId": sheet_gid, "dimension": "ROWS", "startIndex": 1, "endIndex": end_row,
             }}})
+
+    if layout in {"public_updates", "public_watchdog"}:
+        # Values outside the generated table were already cleared by the sync.
+        # Hide empty viewport space without deleting cells or changing the sheet
+        # ID. New rows and any future wider schema become visible on each sync.
+        grid = properties.get("gridProperties", {})
+        for dimension, used, grid_key in (("COLUMNS", column_count, "columnCount"), ("ROWS", end_row, "rowCount")):
+            requests.append({"updateDimensionProperties": {
+                "range": {"sheetId": sheet_gid, "dimension": dimension, "startIndex": 0, "endIndex": used},
+                "properties": {"hiddenByUser": False}, "fields": "hiddenByUser",
+            }})
+            extent = grid.get(grid_key)
+            if isinstance(extent, int) and extent > used:
+                requests.append({"updateDimensionProperties": {
+                    "range": {"sheetId": sheet_gid, "dimension": dimension, "startIndex": used, "endIndex": extent},
+                    "properties": {"hiddenByUser": True}, "fields": "hiddenByUser",
+                }})
 
     svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()
 
