@@ -1,19 +1,19 @@
-# Public tenant spreadsheet
+# Public tenant log
 
-[Open the public workbook — start with Tenant Log](https://docs.google.com/spreadsheets/d/1zdbS-MXdHzUu_dOoyOxD1gUGGyqkcKB2_DIFhy5MqP0/edit#gid=0)
+[Open the published Tenant Log](https://docs.google.com/spreadsheets/d/e/2PACX-1vQ9A_Y-07pb6ZHoN4LBDXwyNxdN3XoVcO9dqHl_ibjjfPiu1TZ1PKokKMy5ABorCciI318-6CLdcKtf/pubhtml?gid=0&single=true)
 
-The workbook brings together building issues, follow-up, and elevator replacement updates. It contains real building history, selected evidence, city service-request references, and official-record checks.
+This published page shows the **Tenant Log** tab: building issues, follow-up, selected evidence, and city service-request references. It is the primary resident-facing link.
 
-## Four views
+## Workbook views
 
 | View | Use it to answer |
 | --- | --- |
-| Tenant Log | What happened, when was it reported, and what follow-up is recorded? |
-| ElevatorWatch | What do the available records and observations say about the replacement project? |
-| PublicRecords | Which official records support the update, and where can I read them? |
-| WeeklyDigest | What changed in the latest summary, and is any resident action needed? |
+| Tenant Log — published entrypoint | What happened, when was it reported, and what follow-up is recorded? |
+| ElevatorWatch — supporting view | What do the available records and observations say about the replacement project? |
+| PublicRecords — supporting view | Which official records support the update, and where can I read them? |
+| WeeklyDigest — supporting view | What changed in the latest summary, and is any resident action needed? |
 
-Start with **Tenant Log**. Open **ElevatorWatch** for the replacement project, then follow source and evidence links for detail. Detailed processing decisions, verification checks, and operator action tracking are kept in the separate private workbook.
+The three supporting views remain in the resident workbook; the published link above opens only **Tenant Log**. Workbook layout and Google's publication settings are managed separately. Detailed processing decisions, observer notes, and internal action tracking stay in the separate private workbook.
 
 ## Reading an update
 

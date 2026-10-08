@@ -189,7 +189,13 @@ Sync does not automatically remove older tabs. When migrating an existing shared
 .venv/bin/python scripts/migrate_public_workbook.py
 ```
 
-After approval of the plan, `--archive` copies obsolete public detail and QA tabs into the private workbook and verifies their values by readback. Run that step before deploying the new projections. Initialize the four public views with `scripts/init_sheet.py --public-tabs`, run the intended sync, and inspect their content and evidence links. Audit public watchdog output with `scripts/audit_public_watchdog_tabs.py --audience public`; `--audience operator` checks all six detailed watchdog views. Audit Tenant Log separately with `scripts/audit_public_tenant_log.py`.
+After approval of the plan, `--archive` copies obsolete public detail and QA tabs into the private workbook and verifies their values by readback. Run that step before deploying the new projections. Initialize the four resident workbook views with the command below, replacing `PUBLIC_SPREADSHEET_ID` with the configured resident workbook ID. The initializer reads the local `.env` and checks that the destination differs from the operator workbook. Then run the intended sync and inspect content and evidence links.
+
+```bash
+.venv/bin/python scripts/init_sheet.py --spreadsheet-id PUBLIC_SPREADSHEET_ID --public-tabs
+```
+
+This initializes workbook tabs without changing Google's publication settings. Verify the intended published scope separately and keep the primary published link on Tenant Log. Audit public watchdog output with `scripts/audit_public_watchdog_tabs.py --audience public`; `--audience operator` checks all six detailed watchdog views. Audit Tenant Log separately with `scripts/audit_public_tenant_log.py`.
 
 Only after the approved migration and passing readback, `scripts/migrate_public_workbook.py --retire` can remove the archived obsolete public copies. It requires matching private archives and value-level readback of all six operator tables, public watchdog views, and Tenant Log. Unknown tabs are left untouched. Read back both workbooks after migration. Sharing permissions and database records are not changed by the helper.
 

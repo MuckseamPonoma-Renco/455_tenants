@@ -2,9 +2,9 @@
 
 Building reports, incident updates, and city service requests in one public record.
 
-**[Open the public tenant spreadsheet](https://docs.google.com/spreadsheets/d/1zdbS-MXdHzUu_dOoyOxD1gUGGyqkcKB2_DIFhy5MqP0/edit#gid=0)**
+**[Open the public tenant log](https://docs.google.com/spreadsheets/d/e/2PACX-1vQ9A_Y-07pb6ZHoN4LBDXwyNxdN3XoVcO9dqHl_ibjjfPiu1TZ1PKokKMy5ABorCciI318-6CLdcKtf/pubhtml?gid=0&single=true)**
 
-Start with **Tenant Log** for building issues and follow-up. **ElevatorWatch** summarizes the replacement project, with supporting official records and a weekly digest. [How to read the spreadsheet](docs/PUBLIC_SPREADSHEET.md).
+The published page opens **Tenant Log** for building issues and follow-up. Supporting workbook views cover the elevator replacement, official records, and weekly summaries. [How to read the log](docs/PUBLIC_SPREADSHEET.md).
 
 ## What this project does
 
