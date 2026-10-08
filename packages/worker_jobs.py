@@ -1,6 +1,7 @@
 from sqlalchemy import select
 
 from packages.audit import append_audit_event, daily_hash_chain
+from packages.automation_status import watchdog_result_ok
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, get_session
 from packages.incident.extractor import classify_and_upsert_incident
 from packages.nyc311.legal_export import export_legal_bundle as export_bundle_impl
@@ -22,14 +23,25 @@ from packages.sheets.sync import (
 
 
 def sync_all_sheets() -> None:
-    sync_incidents_to_sheets()
-    sync_dashboard_to_sheets()
-    sync_coverage_to_sheets()
-    sync_311_cases_to_sheets()
-    sync_311_queue_to_sheets()
-    sync_decisions_to_sheets()
-    sync_replacement_watchdog_to_sheets()
-    sync_public_updates_to_sheets()
+    # Each generated view is independent. A failed operator table must not
+    # prevent residents from receiving incident or watchdog updates.
+    failures = []
+    for sync in (
+        sync_incidents_to_sheets,
+        sync_dashboard_to_sheets,
+        sync_coverage_to_sheets,
+        sync_311_cases_to_sheets,
+        sync_311_queue_to_sheets,
+        sync_decisions_to_sheets,
+        sync_replacement_watchdog_to_sheets,
+        sync_public_updates_to_sheets,
+    ):
+        try:
+            sync()
+        except Exception as exc:
+            failures.append(f"{sync.__name__}: {exc}")
+    if failures:
+        raise RuntimeError("Spreadsheet updates failed: " + "; ".join(failures))
 
 
 def _safe_sync_sheets():
@@ -37,6 +49,8 @@ def _safe_sync_sheets():
         sync_all_sheets()
     except Exception as exc:
         append_audit_event("SHEETS_SYNC_SKIPPED", None, {"error": str(exc)[:300]})
+        return False
+    return True
 
 
 ARCHIVE_MESSAGE_SOURCES = frozenset({"export", "export_media", "zip_import"})
@@ -129,10 +143,10 @@ def process_pending_messages(limit: int = 100, *, latest_first: bool = False, re
 
 
 def full_resync_sheets():
-    _safe_sync_sheets()
-    append_audit_event("FULL_RESYNC_SHEETS", None, {})
+    ok = _safe_sync_sheets()
+    append_audit_event("FULL_RESYNC_SHEETS", None, {"ok": ok})
     daily_hash_chain()
-    return {"ok": True}
+    return {"ok": ok}
 
 
 def reprocess_last_n(n: int):
@@ -177,18 +191,39 @@ def sync_public_records():
     with get_session() as session:
         result = sync_public_records_impl(session)
         session.commit()
-    _safe_sync_sheets()
+    result = _complete_watchdog_sync(result)
     append_audit_event("SYNC_PUBLIC_RECORDS", None, result)
-    return {"ok": True, **result}
+    return result
 
 
 def resync_replacement_watchdog():
     with get_session() as session:
         result = sync_replacement_watchdog_impl(session)
         session.commit()
-    _safe_sync_sheets()
+    result = _complete_watchdog_sync(result)
     append_audit_event("RESYNC_REPLACEMENT_WATCHDOG", None, result)
-    return {"ok": True, **result}
+    return result
+
+
+def _complete_watchdog_sync(result):
+    """A committed database update alone is not a successful public refresh."""
+    result = dict(result)
+    result["sheet_errors"] = 0
+    result["sheet_readback_ok"] = False
+    try:
+        sync_replacement_watchdog_to_sheets()
+        from scripts.audit_public_watchdog_tabs import run_audit
+
+        audit = run_audit(retries=2, retry_sleep=2, limit=3)
+        if not audit.get("ok"):
+            raise RuntimeError("Public watchdog Sheet readback did not match the verified renderer or freshness contract.")
+        result["sheet_readback_ok"] = True
+    except Exception as exc:
+        result["sheet_errors"] = 1
+        # Details stay in the operator audit log, not unauthenticated health.
+        append_audit_event("WATCHDOG_SHEETS_SYNC_FAILED", None, {"error": str(exc)[:300]})
+    result["ok"] = watchdog_result_ok({**result, "ok": True})
+    return result
 
 
 def export_legal_bundle():

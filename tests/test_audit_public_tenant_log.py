@@ -14,7 +14,7 @@ AUDIT_NOW = datetime(2026, 6, 27, 17, 0, tzinfo=public_audit.NY)
 
 
 def _pad(*values):
-    return [*values, *([""] * (10 - len(values)))]
+    return [*values, *([""] * (public_audit.PUBLIC_MANAGED_COLUMNS - len(values)))]
 
 
 def _tenant_log_values(*, hour: str = "04:47") -> list[list[object]]:
@@ -434,10 +434,10 @@ def test_full_log_rejects_stale_extra_rows_and_bounds_details():
     assert result["no_stale_extra_rows"] is False
 
 
-def test_full_log_rejects_populated_cells_beyond_ten_managed_columns():
+def test_full_log_rejects_populated_cells_beyond_seven_managed_columns():
     expected = _tenant_log_values()
     formatted = [list(row) for row in expected]
-    formatted[0].append("stale column K")
+    formatted[0].append("stale column H")
     result = public_audit._audit_logical_tenant_log(
         expected,
         _live_tenant_log(expected, formatted=formatted),
@@ -446,10 +446,10 @@ def test_full_log_rejects_populated_cells_beyond_ten_managed_columns():
     )
 
     assert result["ok"] is False
-    assert result["live_used_column_width"] == 11
+    assert result["live_used_column_width"] == 8
     assert result["used_column_width_ok"] is False
     assert result["beyond_managed_column_cell_count"] == 1
-    assert result["beyond_managed_column_cells"][0]["column"] == 11
+    assert result["beyond_managed_column_cells"][0]["column"] == 8
     assert result["no_populated_or_formula_cells_beyond_managed_range"] is False
 
 
@@ -480,7 +480,7 @@ def test_full_log_requires_exact_approved_formulas_and_rejects_stale_formulas():
     )
 
     unexpected_formula_values = [list(row) for row in expected]
-    unexpected_formula_values[4][9] = '=IMAGE("https://stale.test/unmanaged.jpg")'
+    unexpected_formula_values[4].append('=IMAGE("https://stale.test/unmanaged.jpg")')
     unexpected = public_audit._audit_logical_tenant_log(
         expected,
         _live_tenant_log(expected, formulas=unexpected_formula_values),
@@ -489,7 +489,7 @@ def test_full_log_requires_exact_approved_formulas_and_rejects_stale_formulas():
     )
     assert unexpected["ok"] is False
     assert unexpected["unexpected_formula_cell_count"] == 1
-    assert unexpected["unexpected_formula_cells"][0]["column"] == 10
+    assert unexpected["unexpected_formula_cells"][0]["column"] == 8
 
 
 def test_full_log_rejects_a_missing_required_section_and_header():

@@ -30,6 +30,9 @@ if [[ ! -f "$RUNTIME_ROOT/.env" ]]; then
 fi
 chmod 600 "$RUNTIME_ROOT/.env"
 
+# Verify correction preservation before staging code or touching any service.
+"$(mac_service_runtime_python)" "$REPO_ROOT/scripts/check_runtime_migration.py" --runtime-root "$RUNTIME_ROOT" --source-root "$REPO_ROOT"
+
 if ! command -v rsync >/dev/null 2>&1; then
   echo "install_chat_export_sync_launch_agent.sh requires rsync" >&2
   exit 1

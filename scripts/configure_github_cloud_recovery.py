@@ -15,6 +15,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from packages.local_env import _strip_inline_comment
+from packages.sheets.public_semantic_overrides import OVERRIDE_PATH_ENV
+from scripts.materialize_private_overrides import SECRET_NAME, encode_private_manifest
 
 APPROVAL_PHRASE = "APPROVED \u2014 GO LIVE"
 DEFAULT_REPO = "MuckseamPonoma-Renco/455_tenants"
@@ -58,6 +60,14 @@ RECOVERY_ENV_KEYS = (
     "PUBLIC_UPDATES_CHAT_NAMES",
     "PUBLIC_RECORD_AUTO_VERIFY_MIN_CONFIDENCE",
     "NYC_OPEN_DATA_RETRIES",
+    "NYC_OPEN_DATA_APP_TOKEN",
+    "SOCRATA_APP_TOKEN",
+    "NYC_OPEN_DATA_MIN_INTERVAL_SECONDS",
+    "NYC_OPEN_DATA_MAX_ROWS",
+    "AUTOMATION_PUBLIC_RECORD_SYNC_SECONDS",
+    "AUTOMATION_PUBLIC_RECORD_RETRY_SECONDS",
+    "PUBLIC_RECORD_SYNC_GRACE_SECONDS",
+    "BUILDING_ADDRESS_ALIASES",
     "NYC311_TRACKER_RETRIES",
     "ELEVATOR_SILENCE_GAP_SECONDS",
     "OTHER_WINDOW_SECONDS",
@@ -73,6 +83,7 @@ REQUIRED_KEYS = (
 SECRET_NAMES = (
     "CLOUD_RECOVERY_ENV",
     "CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON",
+    SECRET_NAME,
     "CLOUD_RECOVERY_ENABLED",
 )
 
@@ -121,6 +132,13 @@ def google_credentials(values: dict[str, str], *, base_dir: Path | None = None) 
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
+def private_override_secret(values: dict[str, str]) -> str:
+    configured = values.get(OVERRIDE_PATH_ENV, "").strip()
+    if not configured or not Path(configured).expanduser().is_absolute():
+        raise ValueError(f"runtime environment requires an absolute {OVERRIDE_PATH_ENV}")
+    return encode_private_manifest(Path(configured).expanduser())
+
+
 def _run_gh(args: list[str], *, stdin: str) -> None:
     completed = subprocess.run(
         ["gh", *args],
@@ -133,12 +151,13 @@ def _run_gh(args: list[str], *, stdin: str) -> None:
         raise RuntimeError(completed.stderr.strip() or "gh command failed")
 
 
-def apply_configuration(*, repo: str, recovery_env: str, credentials_json: str) -> None:
+def apply_configuration(*, repo: str, recovery_env: str, credentials_json: str, overrides_secret: str) -> None:
     _run_gh(["secret", "set", "CLOUD_RECOVERY_ENV", "--repo", repo], stdin=recovery_env)
     _run_gh(
         ["secret", "set", "CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON", "--repo", repo],
         stdin=credentials_json,
     )
+    _run_gh(["secret", "set", SECRET_NAME, "--repo", repo], stdin=overrides_secret)
     _run_gh(
         ["variable", "set", "REQUIRE_CLOUD_EXPORT_RECEIVER", "--repo", repo],
         stdin="true",
@@ -177,6 +196,7 @@ def main() -> int:
     values = read_env(env_path)
     recovery_env = build_recovery_env(values)
     credentials_json = google_credentials(values, base_dir=env_path.parent)
+    overrides_secret = private_override_secret(values)
     result = preview(repo=args.repo, env_path=env_path, recovery_env=recovery_env)
     if not args.apply:
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -184,7 +204,7 @@ def main() -> int:
     if args.approval != APPROVAL_PHRASE:
         print(json.dumps({**result, "ok": False, "action": "approval_required"}, indent=2, sort_keys=True))
         return 2
-    apply_configuration(repo=args.repo, recovery_env=recovery_env, credentials_json=credentials_json)
+    apply_configuration(repo=args.repo, recovery_env=recovery_env, credentials_json=credentials_json, overrides_secret=overrides_secret)
     print(
         json.dumps(
             {

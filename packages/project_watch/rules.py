@@ -16,6 +16,7 @@ from packages.db import (
     WatchdogAction,
 )
 from packages.public_records.elevator_scope import describes_elevator_replacement_scope
+from packages.public_records.hearings import current_oath_hearing_outcome
 from packages.timeutil import parse_ts_to_epoch
 
 
@@ -225,7 +226,13 @@ def _record_text(record: PublicRecordWatch) -> str:
 
 def _permit_is_closed_or_expired(record: PublicRecordWatch) -> bool:
     status = (record.status or "").casefold()
-    if any(word in status for word in ("signed off", "loc issued", "co issued")):
+    if any(word in status.replace("-", " ") for word in ("signed off", "loc issued", "co issued", "withdrawn", "cancelled", "canceled", "revoked", "expired")):
+        return True
+    try:
+        raw = json.loads(record.raw_json or "{}")
+    except (ValueError, TypeError):
+        raw = {}
+    if isinstance(raw, dict) and (raw.get("signedoff_date") or raw.get("signoff_date")):
         return True
     expiry_epoch = parse_ts_to_epoch(record.expires_at)
     return bool(expiry_epoch and expiry_epoch < int(datetime.now(tz=timezone.utc).timestamp()))
@@ -238,9 +245,11 @@ def _is_current_replacement_permit(record: PublicRecordWatch) -> bool:
 
 
 def _is_current_replacement_filing(record: PublicRecordWatch) -> bool:
+    return _is_replacement_filing(record) and not _permit_is_closed_or_expired(record)
+
+
+def _is_replacement_filing(record: PublicRecordWatch) -> bool:
     if record.record_type != "elevator_permit_application":
-        return False
-    if _permit_is_closed_or_expired(record):
         return False
     text = _record_text(record)
     if "door lock monitoring" in text or "dlm" in text:
@@ -261,6 +270,25 @@ def _complete_open_actions(session, action_type: str, *, keep_related_incident_i
         action.status = "completed"
         action.completed_at = now_iso()
         action.updated_at = now_iso()
+
+
+def _complete_obsolete_record_actions(session, action_type: str, current_record_ids: set[int]) -> None:
+    for action in session.scalars(select(WatchdogAction).where(
+        WatchdogAction.action_type == action_type,
+        WatchdogAction.status.in_(["open", "pending"]),
+    )).all():
+        if action.source_record_id not in current_record_ids:
+            record = session.get(PublicRecordWatch, action.source_record_id) if action.source_record_id else None
+            if record and getattr(record, "source_presence_status", None) == "not_seen":
+                action.status = "pending"
+                action.owner_role = "operator"
+                action.detail = (f"Record {record.record_key} was absent from the latest source refresh. "
+                                 "Verify source coverage and current record status. Absence does not establish correction or resolution.")
+                action.updated_at = now_iso()
+                continue
+            action.status = "completed"
+            action.completed_at = now_iso()
+            action.updated_at = now_iso()
 
 
 def _incident_has_automated_followup(session, incident_id: str) -> bool:
@@ -316,16 +344,34 @@ def _latest_elevator_state(session, incident: Incident) -> str:
 
 
 def evaluate_project_rules(session) -> list[WatchdogAction]:
+    # Rules may also run independently of ingestion. Only verified building
+    # matches should generate tenant requests or suppress a missing-filing check.
+    from packages.public_records.verification import apply_machine_verification
+
     session.flush()
+    apply_machine_verification(session)
     actions: list[WatchdogAction] = []
-    records = session.scalars(select(PublicRecordWatch)).all()
+    all_records = session.scalars(select(PublicRecordWatch)).all()
+    trusted_records = [row for row in all_records
+               if row.visible_public and not row.needs_human_verification
+               and row.machine_verification_status != "official_conflict"
+               and (row.machine_verified_at or row.human_verified_at)]
+    records = [row for row in trusted_records if getattr(row, "source_presence_status", None) != "not_seen"]
+    known_replacement_filings = sorted(
+        [row for row in trusted_records if _is_replacement_filing(row)],
+        key=lambda row: (parse_ts_to_epoch(row.filed_at) or 0, row.record_key), reverse=True,
+    )
+    previously_seen_filing = bool(known_replacement_filings)
     elevator_filing_records = [
         row for row in records
         if row.record_type in {"elevator_permit_application", "elevator_device_detail", "elevator_safety_compliance"}
     ]
-    permit_records = [row for row in elevator_filing_records if row.record_type == "elevator_permit_application"]
+    permit_records = [row for row in known_replacement_filings[:1]
+                      if row in elevator_filing_records and _is_current_replacement_filing(row)]
     current_replacement_filing_ids: set[int] = set()
     current_replacement_permit_ids: set[int] = set()
+    current_objection_ids: set[int] = set()
+    current_approved_ids: set[int] = set()
 
     for record in permit_records:
         status = (record.status or "").casefold()
@@ -333,20 +379,27 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
         if _is_current_replacement_filing(record):
             current_replacement_filing_ids.add(record.id)
         if any(word in status or word in detail for word in ("objection", "incomplete", "hold")):
+            current_objection_ids.add(record.id)
             actions.append(
                 ensure_action(
                     session,
                     action_type="objection_or_hold",
                     severity="watch",
                     title="Ask management for correction/resubmission date",
-                    detail=f"Permit filing {record.record_key} appears to have an objection, incomplete item, or hold.",
+                    detail=(f"DOB elevator filing {record.record_key} is {record.status or 'on hold'}. "
+                            "Ask management for the examiner's specific objections, who is correcting each item, "
+                            "and the target resubmission date. The requested response deadline is an organizing deadline."),
                     due_in_days=3,
-                    owner_role="operator",
+                    owner_role="tenant_association",
                     source_record_id=record.id,
-                    draft_message="What is the correction or resubmission date for the DOB filing issue on the elevator replacement?",
+                    draft_message=(f"DOB elevator filing {record.record_key} is listed as {record.status or 'on hold'}. "
+                                   "Please provide the specific objections or hold items, the person responsible for each correction, "
+                                   "and the target correction and resubmission dates. Please also provide the dated schedule for each "
+                                   "elevator, including equipment delivery, permit issuance, shutdown, return to service, and inspection."),
                 )
             )
         if "approved" in status and not record.permit_issued_at:
+            current_approved_ids.add(record.id)
             actions.append(
                 ensure_action(
                     session,
@@ -396,7 +449,7 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
                 )
             )
 
-    if not current_replacement_filing_ids:
+    if not current_replacement_filing_ids and not previously_seen_filing:
         actions.append(
             ensure_action(
                 session,
@@ -425,20 +478,70 @@ def evaluate_project_rules(session) -> list[WatchdogAction]:
     else:
         _complete_open_actions(session, "no_public_filing_after_30_days")
 
-    for stale_action in session.scalars(
-        select(WatchdogAction).where(
-            WatchdogAction.action_type == "permit_issued",
-            WatchdogAction.status.in_(["open", "pending"]),
-        )
-    ).all():
-        if stale_action.source_record_id not in current_replacement_permit_ids:
-            stale_action.status = "completed"
-            stale_action.completed_at = now_iso()
-            stale_action.updated_at = now_iso()
+    _complete_obsolete_record_actions(session, "objection_or_hold", current_objection_ids)
+    _complete_obsolete_record_actions(session, "approved_no_permit", current_approved_ids)
+
+    _complete_obsolete_record_actions(session, "permit_issued", current_replacement_permit_ids)
 
     _complete_open_actions(session, "active_official_elevator_record")
 
+    class_one_ids: set[int] = set()
+    hearing_ids: set[int] = set()
     now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    for record in records:
+        if record.record_type != "dob_ecb_violation" or not _is_elevator_public_record(record):
+            continue
+        if (record.status or "").casefold() not in {"active", "open", "pending"}:
+            continue
+        try:
+            raw = json.loads(record.raw_json or "{}")
+        except (ValueError, TypeError):
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        if re.fullmatch(r"CLASS\s*-?\s*1", str(raw.get("severity") or "").strip(), re.IGNORECASE):
+            class_one_ids.add(record.id)
+            actions.append(ensure_action(
+                session, action_type="class_one_correction_evidence", severity="watch",
+                title=f"Request affected-car and correction evidence for {record.record_key}",
+                detail=(f"DOB lists summons {record.record_key} as Class 1 and {record.status}. "
+                        "Ask which elevator is affected, its current service status, and for correction and certification evidence. "
+                        "Database status alone does not establish today's physical condition or prove a repair."),
+                due_in_days=1, owner_role="tenant_association", source_record_id=record.id,
+                draft_message=(f"For Class 1 elevator summons {record.record_key}, please identify the affected elevator, "
+                               "confirm its current operating status, and provide dated repair and DOB correction/certification evidence."),
+            ))
+        hearing_epoch = parse_ts_to_epoch(raw.get("hearing_date"))
+        hearing_status = str(raw.get("hearing_status") or "").casefold()
+        hearing_outcome = current_oath_hearing_outcome(record, records, now=datetime.fromtimestamp(now_epoch, tz=timezone.utc))
+        if hearing_outcome:
+            for prior_action in session.scalars(select(WatchdogAction).where(
+                WatchdogAction.action_type == "hearing_outcome_request",
+                WatchdogAction.source_record_id == record.id,
+                WatchdogAction.status.in_(["open", "pending"]),
+            )).all():
+                prior_action.detail = (
+                    f"OATH publishes hearing result {hearing_outcome['hearing_result']} with decision date "
+                    f"{hearing_outcome['decision_date']} for summons {record.record_key}. The hearing-outcome request "
+                    "is satisfied by this official record. Physical correction and accepted DOB certification remain separate questions."
+                )
+        if hearing_epoch and "pending" in hearing_status and hearing_epoch <= now_epoch + 7 * 86400 and not hearing_outcome:
+            hearing_ids.add(record.id)
+            hearing_date = datetime.fromtimestamp(hearing_epoch, tz=timezone.utc).date().isoformat()
+            actions.append(ensure_action(
+                session, action_type="hearing_outcome_request", severity="watch",
+                title=f"Request {hearing_date} hearing outcome for {record.record_key}",
+                detail=(f"The official feed lists the hearing for {record.record_key} on {hearing_date} as pending. "
+                        "Request the hearing outcome and any accepted correction/certification evidence after the hearing; "
+                        "a pending feed entry can lag the actual proceeding."),
+                due_at=datetime.fromtimestamp(hearing_epoch + 86400, tz=timezone.utc).isoformat(),
+                owner_role="tenant_association", source_record_id=record.id,
+                draft_message=(f"Please share the outcome of the {hearing_date} hearing for {record.record_key} "
+                               "and any accepted correction/certification evidence."),
+            ))
+    _complete_obsolete_record_actions(session, "class_one_correction_evidence", class_one_ids)
+    _complete_obsolete_record_actions(session, "hearing_outcome_request", hearing_ids)
+
     open_elevator_incidents = session.scalars(
         select(Incident).where(Incident.category == "elevator", Incident.status != "closed")
     ).all()

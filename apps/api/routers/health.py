@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from packages.automation_status import read_automation_status
+from packages.automation_status import read_automation_status, watchdog_max_age_seconds, watchdog_source_receipts_complete
 from packages.db import database_is_ready
 from packages.llm.openai_client import llm_enabled
 from packages.nyc311.health import public_status as public_311_status
@@ -109,6 +109,53 @@ def _public_automation_status(status: dict[str, Any]) -> dict[str, Any]:
         'poll_seconds': _positive_int(status.get('poll_seconds')),
         'updated_at': _text(status.get('updated_at')),
         'has_error': bool(_text(status.get('last_error'))),
+    }
+
+
+def _public_watchdog_status(automation: dict[str, Any]) -> dict[str, Any]:
+    status = automation.get('watchdog')
+    if not isinstance(status, dict):
+        return {'state': 'missing', 'has_error': True, 'last_success_at': None, 'source_errors': None}
+    interval = _positive_int(status.get('interval_seconds'))
+    maximum_age = watchdog_max_age_seconds(interval)
+    last_success = _parse_timestamp(status.get('last_success_at'))
+    age = (_utcnow() - last_success).total_seconds() if last_success else None
+    has_error = bool(status.get('has_error') or status.get('source_errors') or status.get('sheet_errors') or status.get('sheet_readback_ok') is not True)
+    state = _text(status.get('state')) or 'missing'
+    if state != 'disabled':
+        if has_error:
+            state = 'degraded'
+        elif age is None or not 0 <= age <= maximum_age:
+            state = 'stale' if last_success else 'missing'
+    source_health = status.get('source_health')
+    source_health = source_health if isinstance(source_health, dict) else {}
+    sources = source_health.get('sources')
+    if not watchdog_source_receipts_complete(sources, now=_utcnow(), max_age_seconds=maximum_age):
+        has_error = True
+        if state in {'ready', 'working'}:
+            state = 'degraded'
+    # Source names, counts and timestamps are operational indicators. Never
+    # publish exception text, query URLs, private paths or credentials.
+    safe_sources = []
+    for source in sources if isinstance(sources, list) else []:
+        if isinstance(source, dict):
+            safe_sources.append({
+                key: source.get(key)
+                for key in ('source_key', 'state', 'last_attempt_at', 'last_success_at', 'row_count', 'source_errors')
+            })
+    return {
+        'state': state,
+        'has_error': has_error or state not in {'ready', 'working'},
+        'last_attempt_at': _text(status.get('last_attempt_at')),
+        'last_completed_at': _text(status.get('last_completed_at')),
+        'last_success_at': _text(status.get('last_success_at')),
+        'interval_seconds': interval,
+        'retry_seconds': _positive_int(status.get('retry_seconds')),
+        'max_age_seconds': maximum_age,
+        'source_errors': status.get('source_errors'),
+        'sheet_errors': status.get('sheet_errors', 0),
+        'sheet_readback_ok': status.get('sheet_readback_ok') is True,
+        'sources': safe_sources,
     }
 
 
@@ -465,9 +512,12 @@ def _public_cloud_export_receiver_status() -> dict[str, Any]:
 @router.get('/health')
 def health():
     whatsapp_capture = _public_capture_status(read_capture_status())
+    automation = read_automation_status()
+    watchdog = _public_watchdog_status(automation)
     database_configured = bool((os.environ.get('DATABASE_URL') or '').strip())
     return {
         'ok': True,
+        'watchdog_operational_state': 'degraded' if watchdog['has_error'] else 'ready',
         'process_inline': _truthy('PROCESS_INLINE'),
         'llm_enabled': llm_enabled(),
         'sheets_disabled': _truthy('DISABLE_SHEETS_SYNC'),
@@ -476,8 +526,9 @@ def health():
         'redis_configured': bool((os.environ.get('REDIS_URL') or '').strip()),
         'sheets_configured': bool((os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID') or '').strip()) and _sheets_creds_present(),
         'whatsapp_capture': whatsapp_capture,
-        'automation': _public_automation_status(read_automation_status()),
+        'automation': _public_automation_status(automation),
         'nyc311_status': public_311_status(),
+        'watchdog': watchdog,
         'chat_export_sync': _public_chat_export_sync_status(),
         'cloud_export_receiver': _public_cloud_export_receiver_status(),
         'storage': _public_storage_status(),

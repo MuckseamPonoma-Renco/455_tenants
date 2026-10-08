@@ -1,12 +1,47 @@
+import json
+
 import pytest
 
 from packages.db import Incident, MessageDecision, RawMessage
 from packages.sheets import sync as sheets_sync
-from packages.sheets.public_semantic_overrides import PublicSemanticOverride, PublicSemanticOverrideError
+from packages.sheets.public_semantic_overrides import (
+    OVERRIDE_PATH_ENV, PublicSemanticOverride, PublicSemanticOverrideError, raw_text_sha256,
+)
 
 
-RESTORE_MESSAGE_ID = "a1f33f3c5ea919e042d082a0a25768ffafe85230ce57490f155c16b1971086be"
-TRANSIT_MESSAGE_ID = "d2abe256aac02ed84ffd4a7926ae5f8c500fdf7562cd14d842a3799275cf5c38"
+RESTORE_MESSAGE_ID = "a" * 64
+TRANSIT_MESSAGE_ID = "b" * 64
+RESTORE_TEXT = "Both fictional elevators are working again."
+TRANSIT_TEXT = "The example train is late."
+
+
+@pytest.fixture(autouse=True)
+def synthetic_private_overrides(tmp_path, monkeypatch):
+    entries = [
+        {
+            "message_id": RESTORE_MESSAGE_ID,
+            "raw_text_sha256": raw_text_sha256(RESTORE_TEXT),
+            "include": True,
+            "issue_label": "Both elevators working",
+            "category_label": "Elevator",
+            "summary": "Both elevators were reported working.",
+            "show_evidence": False,
+            "reason": "Fictional evidence-suppression example.",
+        },
+        {
+            "message_id": TRANSIT_MESSAGE_ID,
+            "raw_text_sha256": raw_text_sha256(TRANSIT_TEXT),
+            "include": False,
+            "issue_label": "",
+            "category_label": "",
+            "summary": "",
+            "show_evidence": False,
+            "reason": "Fictional unrelated-message example.",
+        },
+    ]
+    path = tmp_path / "synthetic-private-overrides.json"
+    path.write_text(json.dumps({"schema_version": 1, "overrides": entries}))
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(path))
 
 
 def _incident() -> Incident:
@@ -24,7 +59,7 @@ def _incident() -> Incident:
 def _raw(message_id: str, text: str) -> RawMessage:
     return RawMessage(
         message_id=message_id,
-        chat_name="455 Tenants",
+        chat_name="Example Tenants",
         sender="Tenant",
         sender_hash="sender-hash",
         ts_iso="2026-06-01T12:00:00Z",
@@ -36,7 +71,7 @@ def _raw(message_id: str, text: str) -> RawMessage:
 
 def test_audited_override_controls_inclusion_labels_and_summary():
     incident = _incident()
-    raw = _raw(RESTORE_MESSAGE_ID, "Both currently working")
+    raw = _raw(RESTORE_MESSAGE_ID, RESTORE_TEXT)
     stale_decision = MessageDecision(
         message_id=RESTORE_MESSAGE_ID,
         incident_id=incident.incident_id,
@@ -53,7 +88,7 @@ def test_audited_override_controls_inclusion_labels_and_summary():
 
 def test_audited_exclusion_wins_over_stale_positive_decision():
     incident = _incident()
-    raw = _raw(TRANSIT_MESSAGE_ID, "I've been waiting on the Delancey platform for 20 minutes 😔")
+    raw = _raw(TRANSIT_MESSAGE_ID, TRANSIT_TEXT)
     stale_decision = MessageDecision(
         message_id=TRANSIT_MESSAGE_ID,
         incident_id=incident.incident_id,
@@ -67,7 +102,7 @@ def test_audited_exclusion_wins_over_stale_positive_decision():
 
 def test_audited_evidence_suppression_is_enforced_in_rendered_row(monkeypatch):
     incident = _incident()
-    raw = _raw(RESTORE_MESSAGE_ID, "Both currently working")
+    raw = _raw(RESTORE_MESSAGE_ID, RESTORE_TEXT)
     decision = MessageDecision(
         message_id=RESTORE_MESSAGE_ID,
         incident_id=incident.incident_id,
@@ -85,7 +120,7 @@ def test_audited_evidence_suppression_is_enforced_in_rendered_row(monkeypatch):
         [incident],
         {raw.message_id: raw},
         {},
-        {"455 tenants"},
+        {"example tenants"},
         {incident.incident_id: [raw.message_id]},
         {raw.message_id: decision},
     )

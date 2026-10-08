@@ -35,7 +35,7 @@ def raw_json(row: dict[str, Any]) -> str:
 
 
 def record_key(source: SourceConfig, row: dict[str, Any]) -> str:
-    if source.key == "dob_now_elevator_applications":
+    if source.key in {"dob_now_elevator_applications", "dob_now_electrical_applications"}:
         return str(row.get("job_filing_number") or "").strip()
     if source.key == "dob_now_elevator_device_details":
         job = str(row.get("job_filing_number") or "").strip()
@@ -120,6 +120,7 @@ def normalize_record(source: SourceConfig, row: dict[str, Any], *, source_url: s
         row,
         "filingstatus_or_filingincludes",
         "descriptionofwork",
+        "job_description",
         "violation_description",
         "violation_details",
         "description",
@@ -131,6 +132,27 @@ def normalize_record(source: SourceConfig, row: dict[str, Any], *, source_url: s
     if source.key == "hpd_registration_contacts":
         status = _first(row, "type")
         status_detail = _first(row, "corporationname", "contactdescription")
+    if source.key == "oath_hearings":
+        result = _first(row, "hearing_result")
+        status = result or _first(row, "hearing_status", "status")
+        details = [status_detail] if status_detail else []
+        if result:
+            details.append(f"OATH hearing result: {result}")
+        decision_date = _date(row, "decision_date")
+        if decision_date:
+            details.append(f"Decision date: {decision_date[:10]}")
+        if result or decision_date:
+            details.append("A hearing decision does not establish physical correction or accepted DOB certification")
+        status_detail = "; ".join(details) or None
+    if source.key == "dob_now_electrical_applications":
+        details = [status_detail] if status_detail else []
+        if row.get("job_status"):
+            details.append(f"Electrical job status: {row['job_status']}")
+        for field, label in (("job_start_date", "start"), ("completion_date", "completion")):
+            date = _date(row, field)
+            if date:
+                details.append(f"Applicant-entered planned {label}: {date[:10]} (not verified progress)")
+        status_detail = "; ".join(details) or None
     job_number = _first(row, "job_filing_number", "job_number", "job__", "dob_violation_number")
     permit_number = _first(row, "work_permit", "permit_number", "tracking_number")
     device_number = _first(row, "device_number", "device_id", "bis_nyc_device_id")
@@ -139,7 +161,7 @@ def normalize_record(source: SourceConfig, row: dict[str, Any], *, source_url: s
         "source_system": source.key,
         "record_type": source.record_type,
         "record_key": key,
-        "bbl": _first(row, "bbl"),
+        "bbl": _first(row, "bbl", "gis_bbl"),
         "bin": _first(row, "bin", "bin__"),
         "address": _address(row),
         "job_number": job_number,
@@ -150,7 +172,7 @@ def normalize_record(source: SourceConfig, row: dict[str, Any], *, source_url: s
         "status_detail": status_detail,
         "filed_at": _date(row, "filing_date", "date_entered", "created_date", "issue_date", "violation_date", "inspectiondate"),
         "approved_at": _date(row, "approved_date", "approveddate", "permit_entire_date"),
-        "permit_issued_at": _date(row, "issued_date", "permit_entire_date"),
+        "permit_issued_at": _date(row, "issued_date", "permit_entire_date", "permit_issued_date"),
         "inspection_date": _date(row, "periodic_latest_inspection", "inspection_date", "inspectiondate"),
         "expires_at": _date(row, "permit_expiration_date", "expired_date", "expiration_date"),
         "source_url": source_url or _source_url(source),

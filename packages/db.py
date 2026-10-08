@@ -228,7 +228,22 @@ class PublicRecordWatch(Base):
 
     actions = relationship("WatchdogAction", back_populates="source_record")
 
+    source_presence_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_checked_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     __table_args__ = (UniqueConstraint("source_system", "record_type", "record_key", name="uq_public_record_watch_key"),)
+
+
+class PublicRecordSourceState(Base):
+    __tablename__ = "public_record_source_states"
+    source_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    state: Mapped[str] = mapped_column(String(32), default="unknown")
+    last_attempt_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_success_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    query_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_errors: Mapped[int] = mapped_column(Integer, default=0)
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ComplianceCheck(Base):
@@ -273,6 +288,7 @@ class WeeklyDigest(Base):
     tenant_update_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     used_llm: Mapped[bool] = mapped_column(Boolean, default=False)
+    tenant_actions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AccessNeedPrivate(Base):
@@ -295,13 +311,16 @@ _initialized = False
 def _ensure_added_columns() -> None:
     additions = {
         "public_record_watch": {
+            "source_presence_status": "VARCHAR(32)",
+            "source_checked_at": "VARCHAR(64)",
             "machine_verification_status": "VARCHAR(64)",
             "machine_confidence": "INTEGER",
             "machine_verified_at": "VARCHAR(64)",
             "machine_verified_by": "VARCHAR(128)",
             "machine_verification_summary": "TEXT",
             "corroborating_records_json": "TEXT",
-        }
+        },
+        "weekly_digests": {"tenant_actions_json": "TEXT"},
     }
     widened_varchars = {
         "message_decisions": {

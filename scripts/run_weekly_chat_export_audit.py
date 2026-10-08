@@ -207,7 +207,9 @@ def main() -> None:
             "error": "",
         }
     )
-    reconciliation = run_reconciliation(out_dir=out_dir)
+    # An audit-only invocation must not merge incidents or move case/job links.
+    # The normal import path still reconciles its newly ingested aliases.
+    reconciliation = run_reconciliation(out_dir=out_dir, dry_run=args.skip_import)
     require_llm_review = args.llm_mode in {"all", "supervised"}
     summary = run_audit(
         export_path,

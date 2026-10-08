@@ -16,7 +16,13 @@ from packages.local_env import load_local_env_file
 load_local_env_file()
 
 from packages.audit import append_audit_event, daily_hash_chain
-from packages.automation_status import write_automation_status
+from packages.automation_status import (
+    public_record_retry_seconds,
+    public_record_sync_seconds,
+    update_watchdog_status,
+    watchdog_result_ok,
+    write_automation_status,
+)
 from packages.nyc311.portal_worker import run_portal_filing_once
 from packages.worker_jobs import full_resync_sheets, process_pending_messages, resync_replacement_watchdog, sync_311_statuses
 from scripts.audit_public_tenant_log import run_audit as run_public_tenant_log_audit
@@ -78,6 +84,37 @@ def _run_step(label: str, func):
 def _run_work_step(label: str, func, *, poll_seconds: int):
     _write_automation_status(state="working", poll_seconds=poll_seconds)
     return _run_step(label, func)
+
+
+def _run_watchdog_step(*, poll_seconds: int, interval_seconds: int) -> dict:
+    _write_automation_status(state="working", poll_seconds=poll_seconds)
+    update_watchdog_status(state="working", interval_seconds=interval_seconds)
+    try:
+        result = resync_replacement_watchdog()
+    except Exception as exc:
+        result = {"ok": False, "source_errors": None, "sheet_errors": None}
+        update_watchdog_status(
+            state="degraded", interval_seconds=interval_seconds, result=result, error=str(exc)[:500]
+        )
+        _record_audit_event("AUTOMATION_STEP_ERROR", None, {"step": "replacement watchdog sync", "error": str(exc)[:500]})
+        _log(f"replacement watchdog sync error: {exc}")
+        return result
+    if not isinstance(result, dict):
+        result = {"ok": False, "source_errors": None, "sheet_errors": None}
+    succeeded = watchdog_result_ok(result)
+    update_watchdog_status(
+        state="ready" if succeeded else "degraded", interval_seconds=interval_seconds, result=result
+    )
+    if not succeeded:
+        _record_audit_event(
+            "AUTOMATION_STEP_ERROR", None,
+            {"step": "replacement watchdog sync", "error": "Incomplete source or Sheet sync", "source_errors": result.get("source_errors"), "sheet_errors": result.get("sheet_errors", 0)},
+        )
+    return result
+
+
+def _watchdog_next_delay(result: object, interval_seconds: int) -> int:
+    return interval_seconds if watchdog_result_ok(result) else public_record_retry_seconds(interval_seconds)
 
 
 def _public_tenant_log_qa() -> dict[str, object]:
@@ -153,11 +190,11 @@ def main() -> None:
     poll_seconds = max(10, args.poll_seconds or _env_int("AUTOMATION_POLL_SECONDS", 60))
     error_sleep_seconds = max(10, args.error_sleep_seconds or _env_int("AUTOMATION_ERROR_SLEEP_SECONDS", 30))
     status_sync_seconds = max(0, args.status_sync_seconds if args.status_sync_seconds is not None else _env_int("AUTOMATION_STATUS_SYNC_SECONDS", 3600))
-    public_record_sync_seconds = max(
+    public_record_interval_seconds = max(
         0,
         args.public_record_sync_seconds
         if args.public_record_sync_seconds is not None
-        else _env_int("AUTOMATION_PUBLIC_RECORD_SYNC_SECONDS", 21600),
+        else public_record_sync_seconds(),
     )
     public_tenant_log_audit_seconds = max(
         0,
@@ -174,7 +211,7 @@ def main() -> None:
     _log(
         "automation loop starting "
         f"headless={headless} verify_lookup={verify_lookup} poll_seconds={poll_seconds} "
-        f"status_sync_seconds={status_sync_seconds} public_record_sync_seconds={public_record_sync_seconds} "
+        f"status_sync_seconds={status_sync_seconds} public_record_sync_seconds={public_record_interval_seconds} "
         f"public_tenant_log_audit_seconds={public_tenant_log_audit_seconds} burst_size={burst_size} "
         f"startup_catchup_limit={startup_catchup_limit}"
     )
@@ -186,7 +223,7 @@ def main() -> None:
             "verify_lookup": verify_lookup,
             "poll_seconds": poll_seconds,
             "status_sync_seconds": status_sync_seconds,
-            "public_record_sync_seconds": public_record_sync_seconds,
+            "public_record_sync_seconds": public_record_interval_seconds,
             "public_tenant_log_audit_seconds": public_tenant_log_audit_seconds,
             "burst_size": burst_size,
             "startup_catchup_limit": startup_catchup_limit,
@@ -205,7 +242,9 @@ def main() -> None:
     _write_automation_status(state="ready", poll_seconds=poll_seconds)
 
     next_status_sync_at = time.monotonic() if status_sync_seconds > 0 else None
-    next_public_record_sync_at = time.monotonic() if public_record_sync_seconds > 0 else None
+    next_public_record_sync_at = time.monotonic() if public_record_interval_seconds > 0 else None
+    if public_record_interval_seconds == 0:
+        update_watchdog_status(state="disabled", interval_seconds=0)
     next_public_tenant_log_audit_at = time.monotonic() if public_tenant_log_audit_seconds > 0 else None
 
     while True:
@@ -240,11 +279,11 @@ def main() -> None:
                 next_public_tenant_log_audit_at = time.monotonic() + public_tenant_log_audit_seconds
 
             if next_public_record_sync_at is not None and now >= next_public_record_sync_at:
-                result = _run_work_step("replacement watchdog sync", resync_replacement_watchdog, poll_seconds=poll_seconds)
+                result = _run_watchdog_step(poll_seconds=poll_seconds, interval_seconds=public_record_interval_seconds)
                 if result is not None:
                     _log(f"replacement watchdog sync result: {result}")
                     did_work = True
-                next_public_record_sync_at = time.monotonic() + public_record_sync_seconds
+                next_public_record_sync_at = time.monotonic() + _watchdog_next_delay(result, public_record_interval_seconds)
 
             if next_status_sync_at is not None and now >= next_status_sync_at:
                 result = _run_work_step("status sync", sync_311_statuses, poll_seconds=poll_seconds)

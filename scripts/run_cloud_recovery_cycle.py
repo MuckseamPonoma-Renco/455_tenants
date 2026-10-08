@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from packages.local_env import load_local_env_file
+from packages.automation_status import watchdog_max_age_seconds, watchdog_result_ok, watchdog_source_receipts_complete
 
 MODES = ("exports", "status", "watchdog", "full")
 PRIMARY_ACTIVE_CHAT_EXPORT_STATES = {
@@ -51,12 +52,24 @@ class CloudRecoveryOperations:
     audit_public_tenant_log: Callable[[], dict[str, Any]]
 
 
-def config_errors(environ: dict[str, str] | None = None) -> list[str]:
+def config_errors(
+    environ: dict[str, str] | None = None, *, include_export_receiver: bool = True
+) -> list[str]:
     values = os.environ if environ is None else environ
-    errors = [name for name in REQUIRED_ENVIRONMENT if not str(values.get(name) or "").strip()]
+    required = REQUIRED_ENVIRONMENT if include_export_receiver else tuple(
+        name for name in REQUIRED_ENVIRONMENT if not name.startswith("CLOUD_EXPORT_RECEIVER_")
+    )
+    errors = [name for name in required if not str(values.get(name) or "").strip()]
     credentials_path = str(values.get("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
     if credentials_path and not Path(credentials_path).expanduser().is_file():
         errors.append("GOOGLE_APPLICATION_CREDENTIALS file is missing")
+    from packages.sheets.public_semantic_overrides import (
+        PublicSemanticOverrideError, require_private_overrides_for_publication,
+    )
+    try:
+        require_private_overrides_for_publication({**values, "DISABLE_SHEETS_SYNC": "0"})
+    except (PublicSemanticOverrideError, OSError, ValueError):
+        errors.append("valid private TENANT_PUBLIC_SEMANTIC_OVERRIDES_PATH is required for public Sheet recovery")
     return errors
 
 
@@ -85,13 +98,12 @@ def primary_automation_healthy(
     *,
     now: dt.datetime | None = None,
     require_chat_export_sync: bool = True,
+    require_watchdog_sync: bool = False,
 ) -> bool:
     """Return true when the Mac can own maintenance for this capability.
 
-    Status and watchdog recovery only require the core automation heartbeat.
-    Export recovery additionally requires a healthy chat-export pipeline.  Keeping
-    those signals separate prevents an export-only degradation from authorizing a
-    second host to rewrite maintenance-backed public Sheets.
+    Each capability requires its own completion evidence. A fresh loop heartbeat
+    cannot establish that public-record queries actually completed successfully.
     """
     endpoint = (url or os.environ.get("CLOUD_RECOVERY_PRIMARY_HEALTH_URL") or DEFAULT_PRIMARY_HEALTH_URL).strip()
     maximum_age = _primary_maximum_age_seconds()
@@ -134,6 +146,26 @@ def primary_automation_healthy(
             return False
         if chat_export_sync.get("has_error") is True:
             return False
+    if require_watchdog_sync:
+        watchdog = payload.get("watchdog")
+        if not isinstance(watchdog, dict) or watchdog.get("state") not in {"ready", "working"}:
+            return False
+        if watchdog.get("has_error") is not False or watchdog.get("source_errors") != 0:
+            return False
+        if watchdog.get("sheet_errors") != 0 or watchdog.get("sheet_readback_ok") is not True:
+            return False
+        last_success = _parse_timestamp(watchdog.get("last_success_at"))
+        if last_success is None:
+            return False
+        interval = watchdog.get("interval_seconds")
+        if not isinstance(interval, int) or interval <= 0:
+            return False
+        # Do not let an accidentally inflated primary setting disable recovery.
+        maximum_watchdog_age = min(watchdog_max_age_seconds(interval), watchdog_max_age_seconds())
+        if not 0 <= (current_time - last_success).total_seconds() <= maximum_watchdog_age:
+            return False
+        if not watchdog_source_receipts_complete(watchdog.get("sources"), now=current_time, max_age_seconds=maximum_watchdog_age):
+            return False
     return True
 
 
@@ -170,6 +202,7 @@ def run_cycle(
     operations: CloudRecoveryOperations | None = None,
     primary_healthy: Callable[[], bool] | None = None,
     primary_core_healthy: Callable[[], bool] | None = None,
+    primary_watchdog_healthy: Callable[[], bool] | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     if mode not in MODES:
@@ -178,14 +211,28 @@ def run_cycle(
     core_health_check = primary_core_healthy or primary_healthy or (
         lambda: primary_automation_healthy(require_chat_export_sync=False)
     )
+    watchdog_health_check = primary_watchdog_healthy or (
+        lambda: primary_automation_healthy(require_chat_export_sync=False, require_watchdog_sync=True)
+    )
     run_exports = mode in {"exports", "full"}
-    run_maintenance = mode in {"status", "watchdog", "full"}
+    run_status = mode in {"status", "full"}
+    run_watchdog = mode in {"watchdog", "full"}
     if not force:
-        core_healthy = core_health_check() if run_maintenance else False
-        export_healthy = export_health_check() if run_exports else False
-        run_maintenance = run_maintenance and not core_healthy
+        def primary_owns(check: Callable[[], bool]) -> bool:
+            try:
+                return check() is True
+            except Exception:
+                # An unavailable or malformed primary-health response must not
+                # prevent independent recovery work from being attempted.
+                return False
+
+        core_healthy = primary_owns(core_health_check) if run_status else False
+        watchdog_healthy = primary_owns(watchdog_health_check) if run_watchdog else False
+        export_healthy = primary_owns(export_health_check) if run_exports else False
+        run_status = run_status and not core_healthy
+        run_watchdog = run_watchdog and not watchdog_healthy
         run_exports = run_exports and not export_healthy
-        if not run_exports and not run_maintenance:
+        if not run_exports and not run_status and not run_watchdog:
             return {"ok": True, "mode": mode, "action": "skipped_primary_healthy"}
 
     operations = operations or _runtime_operations()
@@ -194,23 +241,46 @@ def run_cycle(
         "mode": mode,
         "action": "recovery_run",
     }
-    if not force and mode == "full" and (not run_exports or not run_maintenance):
+    if not force and mode == "full" and not (run_exports and run_status and run_watchdog):
         result["action"] = "partial_recovery_run"
 
+    def run_step(name: str, operation: Callable[[], dict[str, Any]], valid: Callable[[dict[str, Any]], bool]) -> None:
+        try:
+            step_result = operation()
+            if not isinstance(step_result, dict):
+                raise ValueError("invalid recovery result")
+            result[name] = step_result
+            succeeded = valid(step_result)
+        except Exception:
+            # Export errors can contain private archive paths. Report only the
+            # failed capability here, and continue independently useful work.
+            result[name] = {"ok": False, "error": "recovery_step_failed"}
+            succeeded = False
+        if not succeeded:
+            result["ok"] = False
+            result.setdefault("failed_steps", []).append(name)
+
     if run_exports:
-        config = operations.receiver_config()
-        if config is None:
-            raise RuntimeError("private cloud export receiver is not configured")
-        result["cloud_exports"] = _compact_cloud_result(operations.sync_cloud_exports(config))
+        def export_step() -> dict[str, Any]:
+            config = operations.receiver_config()
+            if config is None:
+                raise RuntimeError("private cloud export receiver is not configured")
+            exported = operations.sync_cloud_exports(config)
+            if not isinstance(exported, dict) or exported.get("ok") is not True:
+                raise RuntimeError("cloud export sync did not complete")
+            return _compact_cloud_result(exported)
 
-    if run_maintenance and mode in {"status", "full"}:
-        result["status_sync"] = operations.sync_311_statuses()
+        run_step("cloud_exports", export_step, lambda _value: True)
 
-    if run_maintenance and mode in {"watchdog", "full"}:
-        result["replacement_watchdog"] = operations.sync_replacement_watchdog()
+    if run_status:
+        run_step("status_sync", operations.sync_311_statuses, lambda value: value.get("ok") is True)
 
-    if run_maintenance and mode in {"status", "watchdog", "full"}:
-        result["public_tenant_log_qa"] = operations.audit_public_tenant_log()
+    if run_watchdog:
+        run_step("replacement_watchdog", operations.sync_replacement_watchdog, watchdog_result_ok)
+
+    if run_status or run_watchdog:
+        run_step("public_tenant_log_qa", operations.audit_public_tenant_log,
+                 lambda value: (value.get("repair_ok") if "repair_ok" in value else value.get("ok")) is True)
 
     return result
 
@@ -237,7 +307,12 @@ def main() -> int:
     os.environ.setdefault("PROCESS_INLINE", "1")
     os.environ.setdefault("DISABLE_SHEETS_SYNC", "0")
 
-    errors = config_errors()
+    # Full recovery isolates a missing export receiver in its export step, so
+    # status/watchdog work can still run. Explicit configuration checks remain
+    # strict for every capability selected by the caller.
+    errors = config_errors(include_export_receiver=(
+        args.mode == "exports" or (args.check_config and args.mode == "full")
+    ))
     if errors:
         print(json.dumps({"ok": False, "configuration_errors": errors}, sort_keys=True))
         return 2
@@ -254,7 +329,7 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "cloud_recovery_failed"}, sort_keys=True))
         return 1
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
-    return 0
+    return 0 if result.get("ok") is True else 1
 
 
 if __name__ == "__main__":

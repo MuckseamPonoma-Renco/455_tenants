@@ -49,6 +49,16 @@ def building_bin() -> str:
     return (os.environ.get("BUILDING_BIN") or "3126839").strip()
 
 
+def building_address_aliases() -> tuple[str, ...]:
+    """Official HPD house range for this parcel; never infer aliases citywide."""
+    configured = os.environ.get("BUILDING_ADDRESS_ALIASES", "").strip()
+    if configured:
+        return tuple(dict.fromkeys((building_address(), *(part.strip() for part in configured.split(",") if part.strip()))))
+    if building_bbl_compact() == "3053900074" and building_bin() == "3126839":
+        return tuple(f"{house} Ocean Parkway" for house in range(449, 458, 2))
+    return (building_address(),)
+
+
 def dob_now_public_portal_url() -> str:
     return os.environ.get("DOB_NOW_PUBLIC_PORTAL_URL", "https://a810-dobnow.nyc.gov/publish/Index.html#!/")
 
@@ -90,6 +100,28 @@ def source_configs() -> tuple[SourceConfig, ...]:
             filter_fields=("bbl", "bin", "borough", "house_number", "street_name", "job_filing_number"),
             elevator_specific=True,
             query_templates=({"bbl": "{bbl}"}, {"bin": "{bin}"}, {"borough": "{borough_upper}", "house_number": "455", "street_name": "OCEAN PARKWAY"}),
+        ),
+        SourceConfig(
+            key="dob_now_electrical_applications",
+            name="DOB NOW: Electrical Permit Applications",
+            dataset_id=os.environ.get("NYC_DOB_NOW_ELECTRICAL_APPLICATIONS_DATASET", "dm9a-ab7w"),
+            record_type="electrical_permit_application",
+            useful_fields=(
+                "job_filing_number", "job_number", "filing_number", "filing_date",
+                "filing_type", "filing_status", "job_status", "house_number",
+                "street_name", "borough", "block", "lot", "bin", "gis_bbl",
+                "category_work_list", "job_description", "permit_issued_date",
+                "job_start_date", "completion_date",
+            ),
+            required_fields=("job_filing_number", "filing_status", "bin", "filing_date", "job_description"),
+            filter_fields=("bin", "job_filing_number", "gis_bbl"),
+            elevator_specific=False,
+            notes=(
+                "Related electrical work only. An electrical permit does not establish approval "
+                "or issuance of the separate elevator alteration permit. Job start/completion "
+                "dates are applicant-entered plans, not verified construction progress."
+            ),
+            query_templates=({"bin": "{bin}"},),
         ),
         SourceConfig(
             key="dob_now_elevator_device_details",
@@ -261,10 +293,14 @@ def source_configs() -> tuple[SourceConfig, ...]:
                 "compliance_status",
                 "violation_description",
             ),
-            required_fields=("ticket_number", "issuing_agency", "violation_date"),
+            required_fields=(
+                "ticket_number", "issuing_agency", "violation_date",
+                "hearing_result", "hearing_date", "decision_date",
+            ),
             filter_fields=(
                 "ticket_number",
                 "issuing_agency",
+                "violation_location_borough",
                 "violation_location_block_no",
                 "violation_location_lot_no",
                 "violation_location_house",
@@ -273,8 +309,8 @@ def source_configs() -> tuple[SourceConfig, ...]:
             elevator_specific=False,
             notes="Official OATH hearing-status dataset. DOB/ECB records may be better matched by ticket number after DOB ECB import.",
             query_templates=(
-                {"issuing_agency": "DEPT. OF BUILDINGS", "violation_location_house": "455", "violation_location_street_name": "OCEAN PARKWAY"},
-                {"issuing_agency": "DEPT. OF BUILDINGS", "violation_location_block_no": "5390", "violation_location_lot_no": "74"},
+                {"issuing_agency": "DEPT. OF BUILDINGS", "violation_location_borough": "{borough_upper}", "violation_location_house": "449", "violation_location_street_name": "OCEAN PARKWAY"},
+                {"issuing_agency": "DEPT. OF BUILDINGS", "violation_location_borough": "{borough_upper}", "violation_location_block_no": "05390", "violation_location_lot_no": "0074"},
             ),
         ),
         SourceConfig(

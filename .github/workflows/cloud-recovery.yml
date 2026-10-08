@@ -45,6 +45,7 @@ jobs:
       CLOUD_RECOVERY_ENABLED: ${{ secrets.CLOUD_RECOVERY_ENABLED }}
       CLOUD_RECOVERY_ENV: ${{ secrets.CLOUD_RECOVERY_ENV }}
       CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON }}
+      CLOUD_RECOVERY_SEMANTIC_OVERRIDES_GZIP_BASE64: ${{ secrets.CLOUD_RECOVERY_SEMANTIC_OVERRIDES_GZIP_BASE64 }}
       EVENT_SCHEDULE: ${{ github.event.schedule }}
       MANUAL_MODE: ${{ inputs.mode }}
     steps:
@@ -101,9 +102,12 @@ jobs:
           umask 077
           env_file="$RUNNER_TEMP/tenant-issue-os-cloud.env"
           credentials_file="$RUNNER_TEMP/tenant-issue-os-google-service-account.json"
-          trap 'rm -f "$env_file" "$credentials_file"' EXIT
+          overrides_file="$RUNNER_TEMP/tenant-issue-os-semantic-overrides.json"
+          trap 'rm -f "$env_file" "$credentials_file" "$overrides_file"' EXIT
           printf '%s\n' "$CLOUD_RECOVERY_ENV" > "$env_file"
           printf '%s\n' "$CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON" > "$credentials_file"
+          python scripts/materialize_private_overrides.py --output "$overrides_file"
+          export TENANT_PUBLIC_SEMANTIC_OVERRIDES_PATH="$overrides_file"
           export GOOGLE_APPLICATION_CREDENTIALS="$credentials_file"
           python scripts/run_cloud_recovery_cycle.py --env-file "$env_file" --check-config
           if [[ "$MODE" != "check" ]]; then

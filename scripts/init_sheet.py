@@ -1,57 +1,22 @@
 """Initialize a Google Sheet with required tabs and headers."""
 import argparse
 import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from packages.sheets.schema import OPERATOR_HEADERS, PUBLIC_HEADERS, PUBLIC_WATCHDOG_HEADERS
+from packages.local_env import load_local_env_file
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-TABS = {
-    "Incidents": [
-        "incident_id", "category", "asset", "severity", "status", "start_ts", "end_ts", "duration_min",
-        "title", "summary", "proof_refs",
-        "evidence_preview", "evidence_1", "evidence_2", "evidence_3", "reply_context", "link_1", "link_2",
-        "report_count", "witness_count", "confidence", "needs_review", "updated_at",
-    ],
-    "Dashboard": ["metric", "value"],
-    "Coverage": ["day", "messages", "first_ts_epoch", "last_ts_epoch"],
-    "Cases311": ["service_request_number", "incident_id", "source", "complaint_type", "status", "agency", "submitted_at", "last_checked_at", "closed_at", "resolution_description"],
-    "Queue311": ["job_id", "incident_id", "state", "priority", "complaint_type", "form_target", "attempts", "created_at", "claimed_at", "completed_at", "notes"],
-    "DecisionLog": [
-        "message_ts", "decision_updated_at", "message_id", "source", "text", "chosen_source", "is_issue", "category", "event_type",
-        "confidence", "needs_review", "incident_id", "auto_file_candidate",
-        "media_preview", "media_1", "media_2", "media_3", "reply_context", "link_1", "link_2",
-        "rules_json", "llm_json", "final_json",
-    ],
-    "Tenant Log": [
-        "455 Tenants Log", "", "", "", "", "",
-    ],
-    "ElevatorWatch": [
-        "What people need to know", "Current clear answer", "Why it matters",
-        "Checked by", "Last checked", "Human needed", "Source",
-    ],
-    "ProjectStatus": [
-        "section", "item", "status", "detail", "source", "updated_at",
-    ],
-    "PublicRecords": [
-        "source_system", "record_type", "record_key", "verification_status", "machine_confidence",
-        "verification_summary", "status", "status_detail", "filed_at", "approved_at", "permit_issued_at",
-        "inspection_date", "expires_at", "needs_human_verification", "machine_verified_at",
-        "human_verified_at", "human_verified_by", "source_url", "bbl", "bin", "job_number",
-        "permit_number", "device_number",
-    ],
-    "WatchdogChecks": [
-        "check_type", "status", "checked_at", "checked_by", "photo_url", "source_url", "notes",
-    ],
-    "ActionQueue": [
-        "severity", "action_type", "title", "detail", "due_at", "owner_role", "status",
-        "source_record_id", "related_incident_id", "draft_message", "created_at", "completed_at",
-    ],
-    "WeeklyDigest": [
-        "period_start", "period_end", "tenant_update", "watchdog_status",
-        "tenant_action_needed", "generated_at", "used_llm",
-    ],
-}
+TABS = OPERATOR_HEADERS
 
 PRIVATE_ACCESS_NEEDS_TAB = {
     "AccessNeeds_Private": [
@@ -61,10 +26,7 @@ PRIVATE_ACCESS_NEEDS_TAB = {
 }
 
 
-PUBLIC_WATCHDOG_TABS = {
-    key: TABS[key]
-    for key in ("ElevatorWatch", "ProjectStatus", "PublicRecords", "WatchdogChecks", "ActionQueue", "WeeklyDigest")
-}
+PUBLIC_WATCHDOG_TABS = PUBLIC_WATCHDOG_HEADERS
 
 
 def tabs_to_initialize():
@@ -76,6 +38,10 @@ def tabs_to_initialize():
 
 def public_watchdog_tabs_to_initialize():
     return dict(PUBLIC_WATCHDOG_TABS)
+
+
+def public_tabs_to_initialize():
+    return dict(PUBLIC_HEADERS)
 
 
 def service():
@@ -103,8 +69,20 @@ def main():
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--title")
     group.add_argument("--spreadsheet-id")
+    ap.add_argument("--public-tabs", action="store_true", help="Initialize only the four resident-facing tabs in a dedicated public workbook.")
     ap.add_argument("--public-watchdog-tabs", action="store_true", help="Only add/update public replacement-watchdog tabs; preserve existing tabs.")
     args = ap.parse_args()
+    load_local_env_file(ROOT / ".env")
+
+    if args.public_tabs and args.public_watchdog_tabs:
+        ap.error("Choose --public-tabs or --public-watchdog-tabs")
+    public_mode = args.public_tabs or args.public_watchdog_tabs
+    internal_id = os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
+    public_id = os.environ.get("GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID", "").strip()
+    if public_mode and not internal_id:
+        ap.error("Configure the private GOOGLE_SHEETS_SPREADSHEET_ID before initializing a public workbook")
+    if args.spreadsheet_id and ((public_mode and args.spreadsheet_id == internal_id) or (not public_mode and args.spreadsheet_id == public_id)):
+        ap.error("Public and operator workbook destinations must be distinct")
 
     svc = service()
     if args.title:
@@ -129,14 +107,14 @@ def main():
     sheets = spreadsheet.get("sheets", [])
     titles = {sh["properties"]["title"]: sh["properties"]["sheetId"] for sh in sheets}
     requests = []
-    if not args.public_watchdog_tabs and sheets and "Incidents" not in titles:
+    if not public_mode and sheets and "Incidents" not in titles:
         requests.append({
             "updateSheetProperties": {
                 "properties": {"sheetId": sheets[0]["properties"]["sheetId"], "title": "Incidents"},
                 "fields": "title",
             }
         })
-    tabs = public_watchdog_tabs_to_initialize() if args.public_watchdog_tabs else tabs_to_initialize()
+    tabs = public_tabs_to_initialize() if args.public_tabs else (public_watchdog_tabs_to_initialize() if args.public_watchdog_tabs else tabs_to_initialize())
     for tab in tabs:
         if tab != "Incidents" and tab not in titles:
             requests.append({"addSheet": {"properties": {"title": tab}}})
@@ -151,7 +129,8 @@ def main():
             body={"values": [headers]},
         ).execute()
 
-    print("Share this sheet with your service-account email as Editor and set GOOGLE_SHEETS_SPREADSHEET_ID=", sid)
+    setting = "GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID" if public_mode else "GOOGLE_SHEETS_SPREADSHEET_ID"
+    print(f"Share this sheet with your service-account email as Editor and set {setting}=", sid)
 
 
 if __name__ == "__main__":

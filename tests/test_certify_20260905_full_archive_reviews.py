@@ -4,6 +4,8 @@ import hashlib
 import json
 from collections import Counter
 
+import pytest
+
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, get_session
 import scripts.certify_20260905_full_archive_reviews as certifier
 from scripts.audit_whatsapp_export_decisions import llm_review_details
@@ -135,18 +137,31 @@ def _json(value: str | None) -> dict[str, object]:
     return json.loads(value or "{}")
 
 
-def test_committed_ledger_is_the_exact_closed_world_scope():
-    ledger = certifier.load_review_ledger()
-    outcomes = Counter(entry.review_outcome for entry in ledger.entries)
-    ids = {entry.message_id for entry in ledger.entries}
-
+def test_explicit_synthetic_ledger_enforces_the_exact_closed_world_scope(tmp_path):
+    reviews = [
+        _review(f"{ordinal:064x}", f"Fictional source {ordinal}.", ordinal,
+                outcome="unchanged_correct" if ordinal <= 199 else "deferred_missing_evidence")
+        for ordinal in range(1, 207)
+    ]
+    ledger = certifier.load_review_ledger(_write_ledger(tmp_path, reviews))
     assert len(ledger.entries) == 206
-    assert outcomes == {"unchanged_correct": 199, "deferred_missing_evidence": 7}
-    assert len(ids) == 206
-    assert "c400f5b97089a35f4fcd6e6304ac9375f37a0d66a8d6f99bf8d1c9b05cfcbcad" not in ids
-    assert "4ddabad9aedeb1e362ad048e14fb6978f38cf71d7d2755535aad59b58ba793cc" not in ids
-    assert "9a29f78e3fab730079ae60903db277fa3d59f138fbb14845be2149db2e385f03" not in ids
+    assert Counter(entry.review_outcome for entry in ledger.entries) == {
+        "unchanged_correct": 199, "deferred_missing_evidence": 7,
+    }
+    assert len({entry.message_id for entry in ledger.entries}) == 206
     assert all(len(entry.raw_text_sha256) == 64 for entry in ledger.entries)
+
+
+def test_missing_private_ledger_path_fails_before_database_access(monkeypatch):
+    def forbidden_session():
+        raise AssertionError("missing ledger must fail before database access")
+
+    monkeypatch.setattr(certifier, "get_session", forbidden_session)
+    with pytest.raises(certifier.ReviewLedgerError, match="explicit private review ledger path"):
+        certifier.load_review_ledger()
+    result = certifier.certify(apply=True)
+    assert result["applied"] is False
+    assert "explicit private review ledger path" in result["errors"][0]
 
 
 def test_apply_succeeds_and_preserves_decision_semantics_and_final_fields(
