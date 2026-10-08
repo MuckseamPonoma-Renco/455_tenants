@@ -36,6 +36,12 @@ AUTOMATION_STATE=""
 AUTOMATION_AGE_SECONDS=""
 AUTOMATION_MAX_AGE_SECONDS=""
 AUTOMATION_HAS_ERROR=""
+WATCHDOG_STATE=""
+WATCHDOG_HAS_ERROR=""
+WATCHDOG_SOURCE_ERRORS=""
+WATCHDOG_SHEET_ERRORS=""
+WATCHDOG_LAST_SUCCESS=""
+WATCHDOG_RETRY_SECONDS=""
 
 usage() {
   cat <<'EOF'
@@ -78,6 +84,7 @@ refresh_endpoint_health() {
   refresh_storage_health
   refresh_database_health
   refresh_automation_freshness
+  refresh_watchdog_freshness
 
   : >"$PUBLIC_BODY_FILE"
   PUBLIC_HEALTH_CODE=""
@@ -166,6 +173,41 @@ print("\t".join((state, age, str(max_age), has_error)))
 PY
 )" || return 0
   IFS=$'\t' read -r AUTOMATION_STATE AUTOMATION_AGE_SECONDS AUTOMATION_MAX_AGE_SECONDS AUTOMATION_HAS_ERROR <<<"$parsed"
+}
+
+refresh_watchdog_freshness() {
+  WATCHDOG_STATE="missing"
+  WATCHDOG_HAS_ERROR="unknown"
+  WATCHDOG_SOURCE_ERRORS="unknown"
+  WATCHDOG_SHEET_ERRORS="unknown"
+  WATCHDOG_LAST_SUCCESS="unknown"
+  WATCHDOG_RETRY_SECONDS="unknown"
+  [[ -s "$LOCAL_BODY_FILE" ]] || return 0
+  local python_bin parsed
+  python_bin="$(mac_service_runtime_python)" || return 0
+  parsed="$("$python_bin" - "$LOCAL_BODY_FILE" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    payload = {}
+watchdog = payload.get("watchdog") or {}
+has_error = watchdog.get("has_error")
+values = (
+    str(watchdog.get("state") or "missing"),
+    "false" if has_error is False else "true" if has_error is True else "unknown",
+    str(watchdog.get("source_errors")) if watchdog.get("source_errors") is not None else "unknown",
+    str(watchdog.get("sheet_errors")) if watchdog.get("sheet_errors") is not None else "unknown",
+    str(watchdog.get("last_success_at") or "unknown"),
+    str(watchdog.get("retry_seconds") or "unknown"),
+)
+print("\t".join(values))
+PY
+)" || return 0
+  IFS=$'\t' read -r WATCHDOG_STATE WATCHDOG_HAS_ERROR WATCHDOG_SOURCE_ERRORS WATCHDOG_SHEET_ERRORS WATCHDOG_LAST_SUCCESS WATCHDOG_RETRY_SECONDS <<<"$parsed"
 }
 
 refresh_storage_health() {
@@ -327,6 +369,24 @@ service_status_row() {
   local state=""
   local needs_repair="false"
   local reason=""
+
+  if [[ "$name" == "public_records" ]]; then
+    if [[ ( "$WATCHDOG_STATE" == "ready" || "$WATCHDOG_STATE" == "working" ) \
+      && "$WATCHDOG_HAS_ERROR" == "false" && "$WATCHDOG_SOURCE_ERRORS" == "0" \
+      && "$WATCHDOG_SHEET_ERRORS" == "0" && "$WATCHDOG_LAST_SUCCESS" != "unknown" ]]; then
+      state="healthy"
+      reason="watchdog source and Sheet sync completed successfully at ${WATCHDOG_LAST_SUCCESS}"
+    else
+      state="degraded"
+      reason="watchdog state=${WATCHDOG_STATE} source_errors=${WATCHDOG_SOURCE_ERRORS} sheet_errors=${WATCHDOG_SHEET_ERRORS} last_success=${WATCHDOG_LAST_SUCCESS}; automation retries failed syncs after ${WATCHDOG_RETRY_SECONDS}s and cloud recovery checks this capability separately"
+    fi
+    # Source outages and incomplete refreshes are not evidence that a healthy
+    # process needs restarting. The daemon's short retry owns recovery.
+    reason="$(sanitize_field "$reason")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
 
   if [[ "$name" == "tunnel" ]] && ! mac_service_tunnel_configured; then
     configured="false"
@@ -616,6 +676,7 @@ collect_statuses() {
   service_status_row api >>"$STATUS_FILE"
   service_status_row storage >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
+  service_status_row public_records >>"$STATUS_FILE"
   service_status_row chat_export_sync >>"$STATUS_FILE"
   service_status_row cloud_export_receiver >>"$STATUS_FILE"
   service_status_row whatsapp_capture >>"$STATUS_FILE"

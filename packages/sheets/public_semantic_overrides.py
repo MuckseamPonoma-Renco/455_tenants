@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -19,6 +20,7 @@ from typing import Mapping
 
 
 DEFAULT_OVERRIDE_PATH = Path(__file__).with_name("public_semantic_overrides.json")
+OVERRIDE_PATH_ENV = "TENANT_PUBLIC_SEMANTIC_OVERRIDES_PATH"
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 _ROOT_FIELDS = frozenset({"schema_version", "overrides"})
 _ENTRY_FIELDS = frozenset(
@@ -158,19 +160,51 @@ def _load_override_file(path: Path) -> Mapping[str, PublicSemanticOverride]:
     return MappingProxyType(parsed)
 
 
-@lru_cache(maxsize=1)
-def _load_default_overrides() -> Mapping[str, PublicSemanticOverride]:
-    return _load_override_file(DEFAULT_OVERRIDE_PATH)
+@lru_cache(maxsize=8)
+def _load_versioned_overrides(
+    path: Path, modified_ns: int, changed_ns: int, size: int,
+) -> Mapping[str, PublicSemanticOverride]:
+    # File identity is part of the cache key: a replaced or corrected private
+    # manifest must not keep serving the previous decisions for this process.
+    return _load_override_file(path)
 
 
 def load_public_semantic_overrides(
     path: str | Path | None = None,
 ) -> Mapping[str, PublicSemanticOverride]:
-    """Load and strictly validate the audited override manifest."""
+    """Load private corrections, or the empty example shipped with the code.
 
-    if path is None:
-        return _load_default_overrides()
-    return _load_override_file(Path(path))
+    An explicit argument takes precedence over the environment setting. A
+    configured file must exist and validate; errors never fall back to the
+    empty default and silently discard a deployment's reviewed corrections.
+    """
+
+    configured = os.environ.get(OVERRIDE_PATH_ENV, "").strip()
+    selected = Path(path if path is not None else configured or DEFAULT_OVERRIDE_PATH).expanduser().resolve()
+    try:
+        version = selected.stat()
+    except OSError as exc:
+        raise PublicSemanticOverrideError(f"unable to load public semantic overrides from {selected}") from exc
+    return _load_versioned_overrides(selected, version.st_mtime_ns, version.st_ctime_ns, version.st_size)
+
+
+def require_private_overrides_for_publication(environ: Mapping[str, str] | None = None) -> None:
+    """Do not publish a configured workbook with implicit empty corrections.
+
+    Offline fixtures keep the generic default. A live deployment must make its
+    correction data explicit, even if that deployment deliberately has none.
+    """
+    values = os.environ if environ is None else environ
+    if str(values.get("DISABLE_SHEETS_SYNC", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    if not str(values.get("GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID", "")).strip():
+        return
+    configured = str(values.get(OVERRIDE_PATH_ENV, "")).strip()
+    if not configured:
+        raise PublicSemanticOverrideError(f"{OVERRIDE_PATH_ENV} is required before publishing a configured public workbook")
+    if Path(configured).expanduser().resolve() == DEFAULT_OVERRIDE_PATH.resolve():
+        raise PublicSemanticOverrideError("public publication requires a private manifest outside the bundled default")
+    load_public_semantic_overrides(configured)
 
 
 def get_public_semantic_override(
@@ -188,7 +222,7 @@ def get_public_semantic_override(
 
     if not isinstance(message_id, str):
         raise TypeError("message_id must be a string")
-    selected = (overrides if overrides is not None else _load_default_overrides()).get(message_id)
+    selected = (overrides if overrides is not None else load_public_semantic_overrides()).get(message_id)
     if selected is None:
         return None
     actual_digest = raw_text_sha256(raw_text)
@@ -202,10 +236,12 @@ def get_public_semantic_override(
 
 __all__ = [
     "DEFAULT_OVERRIDE_PATH",
+    "OVERRIDE_PATH_ENV",
     "PublicSemanticOverride",
     "PublicSemanticOverrideError",
     "PublicSemanticOverrideHashMismatch",
     "get_public_semantic_override",
     "load_public_semantic_overrides",
     "raw_text_sha256",
+    "require_private_overrides_for_publication",
 ]

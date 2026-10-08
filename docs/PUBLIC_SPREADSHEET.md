@@ -1,31 +1,26 @@
-# Public resident spreadsheet
+# Public tenant spreadsheet
 
-[Open the resident workbook — start with Tenant Log](https://docs.google.com/spreadsheets/d/1zdbS-MXdHzUu_dOoyOxD1gUGGyqkcKB2_DIFhy5MqP0/edit#gid=0)
+[Open the public workbook — start with Tenant Log](https://docs.google.com/spreadsheets/d/1zdbS-MXdHzUu_dOoyOxD1gUGGyqkcKB2_DIFhy5MqP0/edit#gid=0)
 
-This is the resident-facing output of the configured tenant system. It is a separate workbook from the private operator workbook and contains real building-issue history, city service-request references, public-record checks, and selected evidence.
+The workbook brings together building issues, follow-up, and elevator replacement updates. It contains real building history, selected evidence, city service-request references, and official-record checks.
 
-## Where to start
+## Four views
 
-| Tab | What it shows |
+| View | Use it to answer |
 | --- | --- |
-| Tenant Log | Issue updates, evidence references, and NYC311 case follow-up |
-| ProjectStatus | Replacement-project state and the evidence behind it |
-| PublicRecords | Building-related records from public sources |
-| WatchdogChecks | Observation and verification checks |
-| ActionQueue | Follow-up items and draft actions |
-| WeeklyDigest | Generated periodic summaries |
-| ElevatorWatch | Elevator-related monitoring information |
+| Tenant Log | What happened, when was it reported, and what follow-up is recorded? |
+| ElevatorWatch | What do the available records and observations say about the replacement project? |
+| PublicRecords | Which official records support the update, and where can I read them? |
+| WeeklyDigest | What changed in the latest summary, and is any resident action needed? |
 
-Start with **Tenant Log** for the resident experience. Use the other tabs to inspect how reports, official records, and follow-up information are kept separate.
+Start with **Tenant Log**. Open **ElevatorWatch** for the replacement project, then follow source and evidence links for detail. Detailed processing decisions, verification checks, and operator action tracking are kept in the separate private workbook.
 
-## How to interpret it
+## Reading an update
 
-The database holds the source records; the spreadsheet is generated output. Updates reflect the last completed processing and sync. Check each row's update/check dates and source before treating it as current.
+Check the update/check date and source before treating a row as current. The spreadsheet is generated from stored records and reflects the last completed processing and sync; editing a cell does not update the database.
 
-A city service request marked closed does not establish that the underlying building condition was repaired. A management statement, a tenant observation, and a corroborated official record are different kinds of evidence. Generated follow-up text is a draft, not proof that a message was sent or an action completed.
+A management statement, a resident observation, and an official record are different kinds of evidence. A city service request marked closed does not establish that the building condition was repaired. Generated follow-up text remains a draft until an action or receipt confirms completion.
 
-The workbook is an operational example for one building. It does not establish adoption, uptime, a service guarantee, or measured impact. The public source repository documents the implementation; [verification](VERIFY.md) explains the separate checks used for source freshness, receipts, and spreadsheet readback.
+This workbook documents one building's workflow. It does not establish adoption, uptime, or measured impact. [Verification](VERIFY.md) describes how source freshness, receipts, and spreadsheet output are checked.
 
-## Local example
-
-For a downloadable layout illustration without real incident data, see the [fictional resident-view example](TENANT_LOG_EXAMPLE.md). It is labeled separately and does not replace the operational workbook above.
+For an offline layout illustration without real incident data, use the [fictional resident-view example](TENANT_LOG_EXAMPLE.md).

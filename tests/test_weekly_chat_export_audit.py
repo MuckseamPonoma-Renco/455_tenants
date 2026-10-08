@@ -1,9 +1,34 @@
 import json
 import sys
+import pytest
 
 from packages.audit import compute_message_id, sender_hash
 from packages.db import MessageDecision, RawMessage, get_session
 import scripts.run_weekly_chat_export_audit as weekly_audit
+
+
+@pytest.mark.parametrize("skip_import", [True, False])
+def test_audit_only_keeps_reconciliation_read_only_and_normal_import_applies_it(tmp_path, monkeypatch, skip_import):
+    calls = []
+    args = ["weekly-audit", "--export", str(tmp_path / "chat.txt"), "--out-dir", str(tmp_path)]
+    if skip_import:
+        args.append("--skip-import")
+    monkeypatch.setattr(sys, "argv", args)
+    monkeypatch.setattr(weekly_audit, "import_export", lambda *a, **k: calls.append("import"))
+    monkeypatch.setattr(weekly_audit, "retry_incomplete_llm_reviews", lambda *a, **k: calls.append("retry") or {})
+    monkeypatch.setattr(weekly_audit, "run_reconciliation", lambda **kwargs: calls.append(("reconcile", kwargs["dry_run"])) or {"dry_run": kwargs["dry_run"]})
+    monkeypatch.setattr(weekly_audit, "run_audit", lambda *a, **k: {
+        "ok": True, "missing_db_messages": 0, "missing_decisions": 0, "llm_review_complete": True,
+    })
+    monkeypatch.setattr(weekly_audit, "sync_sheets_after_success", lambda: pytest.fail("Unrequested publication"))
+
+    weekly_audit.main()
+
+    assert ("reconcile", skip_import) in calls
+    assert ("import" in calls) is not skip_import
+    assert ("retry" in calls) is not skip_import
+    result = json.loads((tmp_path / "summary.json").read_text())
+    assert result["cross_source_reconciliation"]["dry_run"] is skip_import
 
 
 def test_weekly_zip_import_requests_all_message_model_review(tmp_path, monkeypatch):

@@ -19,11 +19,13 @@ from packages.local_env import load_local_env_file
 
 load_local_env_file(ROOT / ".env")
 
-from packages.db import Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
+from packages.db import Incident, MessageDecision, RawMessage, ServiceRequestCase
 from packages.sheets import sync as sheets_sync
+from packages.sheets.schema import PUBLIC_LOG_SECTION, PUBLIC_LOG_COLUMNS, PUBLIC_LOG_HEADERS
+from scripts.audit_public_watchdog_tabs import _noncommitting_get_session
 
 NY = ZoneInfo("America/New_York")
-PUBLIC_MANAGED_COLUMNS = 10
+PUBLIC_MANAGED_COLUMNS = PUBLIC_LOG_COLUMNS
 PUBLIC_READ_RANGE = "A:ZZ"
 APPROVED_PUBLIC_FORMULA_PREFIXES = ("=HYPERLINK(", "=IMAGE(")
 PUBLIC_REFRESH_MAX_AGE_SECONDS = 2 * 60 * 60
@@ -39,11 +41,11 @@ REQUIRED_PUBLIC_ROWS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "Category snapshot header",
         ("Category", "Incidents", "311 filings", "Latest update", "Latest issue"),
     ),
-    ("section", "Public update log", ("Public update log",)),
+    ("section", PUBLIC_LOG_SECTION, (PUBLIC_LOG_SECTION,)),
     (
         "header",
         "Public update log header",
-        ("Updated", "Issue", "Category", "311 follow-up", "Preview", "Open evidence", "Summary"),
+        tuple(PUBLIC_LOG_HEADERS),
     ),
     ("section", "311 case watch", ("311 case watch",)),
     (
@@ -181,7 +183,7 @@ def _row_time(value: object) -> datetime | None:
 
 def _public_rows(values: list[list[object]]) -> list[PublicRow]:
     try:
-        start = next(idx for idx, row in enumerate(values) if row and row[0] == "Public update log") + 2
+        start = next(idx for idx, row in enumerate(values) if row and row[0] == PUBLIC_LOG_SECTION) + 2
     except StopIteration:
         return []
     rows: list[PublicRow] = []
@@ -214,11 +216,14 @@ def _metric(values: list[list[object]], name: str) -> str:
 def _expected_values() -> list[list[object]]:
     fake = _FakeService()
     original_service = sheets_sync._service
+    original_get_session = sheets_sync.get_session
     try:
         sheets_sync._service = lambda: fake
+        sheets_sync.get_session = _noncommitting_get_session
         sheets_sync.sync_public_updates_to_sheets()
     finally:
         sheets_sync._service = original_service
+        sheets_sync.get_session = original_get_session
     for kind, kwargs in fake.calls:
         if kind == "update" and kwargs.get("range") == f"{sheets_sync._public_updates_tab()}!A1":
             if kwargs.get("valueInputOption") != "USER_ENTERED":
@@ -876,7 +881,7 @@ def _public_row_covers_source_row(public_row: PublicRow, source_row: PublicRow) 
 def _source_public_rows(*, days: int) -> list[SourcePublicRow]:
     cutoff = datetime.now(tz=NY) - timedelta(days=days)
     allowed_chat_names = sheets_sync._allowed_public_chat_names()
-    with get_session() as session:
+    with _noncommitting_get_session() as session:
         decision_rows = (
             session.query(MessageDecision, RawMessage, Incident)
             .join(RawMessage, MessageDecision.message_id == RawMessage.message_id)

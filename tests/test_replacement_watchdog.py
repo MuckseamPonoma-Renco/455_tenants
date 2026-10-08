@@ -243,6 +243,8 @@ def test_public_record_sync_continues_after_partial_source_failure(client, monke
             raise RuntimeError("temporary Socrata outage")
         if source.key == "dob_now_elevator_applications":
             return [_elevator_application_row()]
+        if source.key == "hpd_building":
+            return [{"buildingid": "348579", "registrationid": "373786", "bin": "3126839", "block": "5390", "lot": "74"}]
         return []
 
     monkeypatch.setattr(public_record_sync, "fetch_rows", flaky_fetch)
@@ -251,14 +253,14 @@ def test_public_record_sync_continues_after_partial_source_failure(client, monke
         result = sync_public_records(session)
         session.commit()
 
-        assert result["created"] == 1
+        assert result["created"] == 2
         assert result["source_errors"] == 1
-        assert session.query(PublicRecordWatch).count() == 1
+        assert session.query(PublicRecordWatch).count() == 2
         action = session.query(WatchdogAction).filter_by(action_type="public_record_source_error").one()
         assert action.status == "open"
         assert "dob_complaints" in (action.detail or "")
 
-    monkeypatch.setattr(public_record_sync, "fetch_rows", lambda source, params, limit=500: [])
+    monkeypatch.setattr(public_record_sync, "fetch_rows", lambda source, params, limit=500: [] if source.key == "dob_complaints" else flaky_fetch(source, params, limit))
     with get_session() as session:
         result = sync_public_records(session)
         session.commit()
@@ -566,7 +568,7 @@ def test_weekly_digest_sheet_keeps_management_draft_internal(client, monkeypatch
     sheets_sync.sync_weekly_digest_to_sheets()
     body_text = str([kwargs.get("body") for kind, kwargs in fake.calls if kind == "update"])
     assert "tenant_update" in body_text
-    assert "No tenant action needed" in body_text
+    assert "Historical action snapshot unavailable; see current ActionQueue." in body_text
     assert "Residents do not need to search DOB manually." in body_text
     assert "management_followup_draft" not in body_text
     assert "Please provide the current DOB filing number" not in body_text

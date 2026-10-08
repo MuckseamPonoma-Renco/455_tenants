@@ -3,20 +3,29 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from packages.sheets.schema import (
+    OPERATOR_HEADERS, PUBLIC_LOG_COLUMNS, PUBLIC_LOG_HEADERS, PUBLIC_LOG_SECTION,
+    PUBLIC_WATCHDOG_HEADERS, PUBLIC_WORKBOOK_TITLE, public_record_values,
+    public_digest_values, public_watchdog_values, public_log_values, PUBLIC_COLUMN_WIDTHS,
+)
 import google_auth_httplib2
 import httplib2
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
 from packages.incident.content_guardrails import nonreporting_content_reason
-from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted
+from packages.incident.building_conditions import building_condition_presentation
+from packages.sheets.public_elevator_observations import elevator_observation_presentation
+from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted, public_record_payload
 from packages.sheets.public_semantic_overrides import (
     PublicSemanticOverride,
     PublicSemanticOverrideError,
     get_public_semantic_override,
     load_public_semantic_overrides,
+    require_private_overrides_for_publication,
 )
 from packages.tasker_capture import is_noise_tasker_capture, normalize_tasker_capture, tasker_duplicate_window_seconds
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
@@ -34,8 +43,7 @@ PUBLIC_CURRENT_ISSUE_MAX_AGE_HOURS = 72
 PUBLIC_RECENT_ISSUE_MAX_AGE_HOURS = 168
 PUBLIC_DUPLICATE_WINDOW_SECONDS = int(os.environ.get("PUBLIC_DUPLICATE_WINDOW_SECONDS", "86400"))
 PUBLIC_UPDATE_DUPLICATE_WINDOW_SECONDS = int(os.environ.get("PUBLIC_UPDATE_DUPLICATE_WINDOW_SECONDS", "900"))
-PUBLIC_LAYOUT_COLUMNS = 10
-PUBLIC_WORKBOOK_TITLE = "455 Tenants Log"
+PUBLIC_LAYOUT_COLUMNS = PUBLIC_LOG_COLUMNS
 PUBLIC_FROZEN_ROWS = 1
 PUBLIC_THUMBNAIL_HEIGHT = 110
 PUBLIC_THUMBNAIL_WIDTH = 240
@@ -458,15 +466,63 @@ def _allowed_public_chat_names() -> set[str]:
 
 
 def _public_sheet_id() -> str:
-    return _env_first("GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID", "GOOGLE_SHEETS_SPREADSHEET_ID") or _sheet_id()
+    require_private_overrides_for_publication()
+    public_id = _configured_public_sheet_id()
+    if not public_id or public_id == _sheet_id():
+        raise RuntimeError("A dedicated GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID distinct from the operator workbook is required")
+    return public_id
 
 
 def _watchdog_sheet_id() -> str:
-    return _public_sheet_id()
+    operator_id = _sheet_id()
+    if operator_id == _configured_public_sheet_id():
+        raise RuntimeError("Public and operator workbooks must be distinct; refusing to expose operator tables")
+    return operator_id
 
 
 def _configured_public_sheet_id() -> str:
     return (os.environ.get("GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID") or "").strip()
+
+
+def _write_watchdog_table(logical_name: str, env_name: str, values: list[list[object]]) -> None:
+    _write_watchdog_view(_watchdog_sheet_id(), logical_name, env_name, values, layout="watchdog")
+
+
+def _write_public_watchdog_table(logical_name: str, env_name: str, values: list[list[object]]) -> None:
+    _write_watchdog_view(_public_sheet_id(), logical_name, env_name, values, layout="public_watchdog")
+
+
+def _write_watchdog_outputs(
+    logical_name: str, env_name: str, values: list[list[object]],
+    public_values: Callable[[], list[list[object]]],
+) -> None:
+    """Attempt both audience writes; a private failure must not stale the public view."""
+    errors: list[str] = []
+    try:
+        _write_watchdog_table(logical_name, env_name, values)
+    except Exception as exc:
+        errors.append(f"operator {logical_name}: {exc}")
+    if _configured_public_sheet_id():
+        try:
+            _write_public_watchdog_table(logical_name, env_name, public_values())
+        except Exception as exc:
+            errors.append(f"public {logical_name}: {exc}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
+
+
+def _write_watchdog_view(
+    sheet_id: str, logical_name: str, env_name: str,
+    values: list[list[object]], *, layout: str,
+) -> None:
+    svc = _service()
+    tab = _tab(env_name, default=logical_name)
+    _ensure_tab_exists(svc, sheet_id, tab)
+    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
+    _apply_tab_layout(
+        svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout=layout,
+        layout_meta={"column_widths": PUBLIC_COLUMN_WIDTHS.get(logical_name, ())},
+    )
 
 
 def _public_updates_tab() -> str:
@@ -809,7 +865,7 @@ def _unmerge_tab_range(svc, sheet_id: str, tab: str, *, row_count: int, column_c
                             "startRowIndex": 0,
                             "endRowIndex": max(row_count, 80),
                             "startColumnIndex": 0,
-                            "endColumnIndex": max(column_count, PUBLIC_LAYOUT_COLUMNS),
+                            "endColumnIndex": max(column_count, 10),  # Also unmerge/clear the previous ten-column layout.
                         }
                     }
                 }
@@ -927,7 +983,7 @@ def _apply_tab_layout(
                             "startRowIndex": 0,
                             "endRowIndex": max(end_row, 80),
                             "startColumnIndex": 0,
-                            "endColumnIndex": max(column_count, PUBLIC_LAYOUT_COLUMNS),
+                            "endColumnIndex": max(column_count, 10),  # Also unmerge/clear the previous ten-column layout.
                         }
                     }
                 },
@@ -938,7 +994,7 @@ def _apply_tab_layout(
                             "startRowIndex": 0,
                             "endRowIndex": max(end_row, 80),
                             "startColumnIndex": 0,
-                            "endColumnIndex": max(column_count, PUBLIC_LAYOUT_COLUMNS),
+                            "endColumnIndex": max(column_count, 10),  # Also unmerge/clear the previous ten-column layout.
                         },
                         "cell": {"userEnteredFormat": {}},
                         "fields": (
@@ -952,15 +1008,13 @@ def _apply_tab_layout(
                 },
                 _wrap_range_request(sheet_gid, start_col=0, end_col=max(column_count, PUBLIC_LAYOUT_COLUMNS), start_row=0, end_row=end_row),
                 _dimension_resize_request(sheet_gid, dimension="ROWS", start=0, end=end_row, pixel_size=122),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=0, end=1, pixel_size=145),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=1, end=2, pixel_size=180),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=2, end=3, pixel_size=210),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=3, end=4, pixel_size=120),
+                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=0, end=1, pixel_size=140),
+                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=1, end=2, pixel_size=190),
+                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=2, end=3, pixel_size=115),
+                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=3, end=4, pixel_size=135),
                 _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=4, end=5, pixel_size=205),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=5, end=6, pixel_size=250),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=6, end=7, pixel_size=130),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=7, end=8, pixel_size=340),
-                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=8, end=10, pixel_size=80),
+                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=5, end=6, pixel_size=135),
+                _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=6, end=7, pixel_size=330),
                 {
                     "mergeCells": {
                         "range": {
@@ -1071,6 +1125,19 @@ def _apply_tab_layout(
         for table_index in range(compact_table_count):
             data_start = header_rows[table_index] + 1
             data_end = max(data_start, section_rows[table_index + 1] - 1)
+            # These summary rows have no values beyond C (overview) or E
+            # (category snapshot). Let their explanations use that blank space
+            # without widening the category column in the incident table.
+            for row in range(header_rows[table_index], data_end):
+                requests.append({"mergeCells": {
+                    "range": {
+                        "sheetId": sheet_gid,
+                        "startRowIndex": row, "endRowIndex": row + 1,
+                        "startColumnIndex": 2 if table_index == 0 else 4,
+                        "endColumnIndex": PUBLIC_LAYOUT_COLUMNS,
+                    },
+                    "mergeType": "MERGE_ALL",
+                }})
             if data_end > data_start:
                 requests.append(
                     _dimension_resize_request(
@@ -1078,7 +1145,7 @@ def _apply_tab_layout(
                         dimension="ROWS",
                         start=data_start,
                         end=data_end,
-                        pixel_size=34,
+                        pixel_size=46 if table_index == 0 else 34,
                     )
                 )
 
@@ -1229,6 +1296,14 @@ def _apply_tab_layout(
         requests.extend([
             _dimension_resize_request(sheet_gid, dimension="COLUMNS", start=0, end=4, pixel_size=150),
         ])
+    elif layout == "public_watchdog":
+        requests.append(_wrap_range_request(sheet_gid, start_col=0, end_col=column_count, end_row=end_row))
+        for index, width in enumerate(meta.get("column_widths", ())):
+            requests.append(_dimension_resize_request(sheet_gid, dimension="COLUMNS", start=index, end=index + 1, pixel_size=width))
+        if end_row > 1:
+            requests.append({"autoResizeDimensions": {"dimensions": {
+                "sheetId": sheet_gid, "dimension": "ROWS", "startIndex": 1, "endIndex": end_row,
+            }}})
 
     svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()
 
@@ -2377,6 +2452,16 @@ def _public_should_include_update(
         return False
     if nonreporting_content_reason(text):
         return False
+    if PUBLIC_RECORDKEEPING_DISCUSSION_RE.search(text) or PUBLIC_FORM_PROCESS_DISCUSSION_RE.search(text):
+        return False
+    if incident.category == "elevator" and PUBLIC_ELEVATOR_SAFETY_DISCUSSION_RE.search(text):
+        return False
+    if incident.category == "elevator":
+        observation = elevator_observation_presentation(text)
+        if observation is not None:
+            return bool(observation["include"])
+    if incident.category == "other" and building_condition_presentation(text):
+        return True
     decision_event = _clean_text(getattr(decision, "event_type", ""))
     decision_category = _clean_text(getattr(decision, "category", ""))
     decision_is_elevator_restore = (
@@ -2603,6 +2688,14 @@ def _public_event_issue_label(incident: Incident, raw: RawMessage | None) -> str
     if semantic_override is not None:
         return semantic_override.issue_label
     text = _clean_text(getattr(raw, "text", ""))
+    if incident.category == "elevator":
+        observation = elevator_observation_presentation(text)
+        if observation is not None and observation["include"]:
+            return str(observation["label"])
+    if incident.category == "other":
+        condition = building_condition_presentation(text)
+        if condition:
+            return condition["label"]
     context_text = _public_update_detection_text(raw)
     if incident.category == "security_access" and PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
         return "Limited fire-stair access"
@@ -2734,6 +2827,12 @@ def _public_event_category_label(incident: Incident, raw: RawMessage | None) -> 
     if semantic_override is not None:
         return semantic_override.category_label
     text = _clean_text(getattr(raw, "text", ""))
+    if incident.category == "other":
+        condition = building_condition_presentation(text)
+        if condition:
+            return "Ventilation" if condition["kind"] == "ventilation" else "Electrical"
+        if _public_other_update_issue_label(text) == "Laundry machine/card issue":
+            return "Laundry"
     if _public_has_apartment_entry_concern(text):
         if PUBLIC_UNDER_SINK_LEAK_RE.search(text):
             return "Leaks / water damage / Security / access"
@@ -2817,6 +2916,14 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
     if semantic_override is not None:
         return semantic_override.summary
     text = _clean_text(getattr(raw, "text", ""))
+    if incident.category == "elevator":
+        observation = elevator_observation_presentation(text)
+        if observation is not None and observation["include"]:
+            return str(observation["summary"])
+    if incident.category == "other":
+        condition = building_condition_presentation(text)
+        if condition:
+            return condition["summary"]
     context_text = _public_update_detection_text(raw)
     if incident.category == "security_access" and PUBLIC_LIMITED_FIRE_EGRESS_RE.search(text):
         return "Only one fire stair was reported functional."
@@ -3366,9 +3473,9 @@ def sync_public_updates_to_sheets():
 
     values.append(["", "", "", "", "", "", "", "", "", ""])
     incidents_title_row = len(values) + 1
-    values.append(["Public update log", "", "", "", "", "", "", "", "", ""])
+    values.append([PUBLIC_LOG_SECTION] + [""] * (PUBLIC_LAYOUT_COLUMNS - 1))
     incidents_header_row = len(values) + 1
-    values.append(["Updated", "Issue", "Category", "311 follow-up", "Preview", "Open evidence", "Summary", "", "", ""])
+    values.append(list(PUBLIC_LOG_HEADERS))
 
     if update_rows:
         values.extend(update_rows)
@@ -3400,6 +3507,7 @@ def sync_public_updates_to_sheets():
     else:
         values.append(["", "No 311 cases yet", "", "", "", "", "Verified 311 case activity will appear here automatically when a filing exists.", "", "", ""])
 
+    values = public_log_values(values)
     _unmerge_tab_range(svc, sheet_id, tab, row_count=len(values), column_count=PUBLIC_LAYOUT_COLUMNS)
     _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
     _apply_tab_layout(
@@ -3635,10 +3743,7 @@ def sync_311_queue_to_sheets():
     _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="queue311")
 
 
-def sync_project_status_to_sheets():
-    svc = _service()
-    sheet_id = _watchdog_sheet_id()
-    tab = _tab("SHEETS_PROJECT_STATUS_TAB", default="ProjectStatus")
+def _project_status_values():
     with get_session() as session:
         state = project_state(session)
         session.commit()
@@ -3646,24 +3751,27 @@ def sync_project_status_to_sheets():
     project = state["project"]
     official_records = state["official_records"]
     registered_owners = state.get("registered_owners") or []
-    open_actions = [row for row in state["actions"] if row.get("status") == "open"]
+    open_actions = [row for row in state["actions"] if row.get("status") in {"open", "pending", "failed"}]
     records_needing_verification = [row for row in official_records if row.get("needs_human_verification")]
     machine_verified_records = [row for row in official_records if row.get("machine_verified_at")]
-    last_record_sync = max((row.get("last_seen_at") or "" for row in official_records), default="")
+    monitoring = state.get("monitoring") or {}
+    last_record_sync = monitoring.get("last_success_at") or ""
     severity_rank = {"critical": 0, "yellow": 1, "watch": 2, "info": 3}
     next_action = sorted(open_actions, key=lambda row: (severity_rank.get(row.get("severity"), 9), row.get("due_at") or ""))[0] if open_actions else {}
-    values = [["section", "item", "status", "detail", "source", "updated_at"]]
+    values = [list(OPERATOR_HEADERS["ProjectStatus"])]
     values.extend(
         [
             ["summary", "last_public_record_sync", "", last_record_sync, "watchdog", project.get("updated_at") or ""],
+            ["summary", "monitoring_coverage", monitoring.get("state") or "unknown", "All source checks are fresh." if monitoring.get("ok") else "Some source checks are missing, stale, or failing. See ElevatorWatch monitoring coverage.", "per-source fetch receipts", monitoring.get("last_attempt_at") or ""],
             ["summary", "official_records_total", len(official_records), "Trusted elevator/replacement records shown in PublicRecords.", "watchdog", project.get("updated_at") or ""],
             ["summary", "machine_verified_records", len(machine_verified_records), "Official-source matches accepted automatically from NYC/DOB/Open Data identifiers.", "watchdog", project.get("updated_at") or ""],
-            ["summary", "records_needing_review", len(records_needing_verification), "Tenant-visible records needing manual review.", "watchdog", project.get("updated_at") or ""],
+            ["summary", "records_needing_review", (state.get("verification") or {}).get("needs_human_verification", len(records_needing_verification)), "Elevator-related records awaiting identity review; unverified details are excluded from tenant facts.", "watchdog", project.get("updated_at") or ""],
             ["summary", "open_actions", len(open_actions), "Tenant actions currently shown in ActionQueue.", "watchdog", project.get("updated_at") or ""],
             ["summary", "next_action", next_action.get("severity") or "", next_action.get("title") or "No open watchdog action.", "watchdog", project.get("updated_at") or ""],
             ["project", "title", project.get("phase") or "", project.get("title") or "", "management/public-record watchdog", project.get("updated_at") or ""],
             ["project", "risk_level", project.get("risk_level") or "", project.get("current_bottleneck") or "", "watchdog", project.get("updated_at") or ""],
             ["project", "next_expected_record", "", project.get("next_expected_record") or "", "watchdog", project.get("updated_at") or ""],
+            ["project", "current_milestone", project.get("phase") or "", project.get("current_milestone") or "", "DOB elevator application", project.get("official_status_checked_at") or ""],
             ["management_claim", "summary", "claimed", project.get("management_summary") or "", "management_pdf", project.get("updated_at") or ""],
         ]
     )
@@ -3690,18 +3798,19 @@ def sync_project_status_to_sheets():
             milestone.get("source_type") or "",
             "",
         ])
-    _ensure_tab_exists(svc, sheet_id, tab)
-    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
-    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+    return values
 
 
-def sync_elevator_watch_public_view_to_sheets():
-    svc = _service()
-    sheet_id = _watchdog_sheet_id()
-    tab = _tab("SHEETS_ELEVATOR_WATCH_TAB", default="ElevatorWatch")
+
+def sync_project_status_to_sheets():
+    values = _project_status_values()
+    _write_watchdog_table("ProjectStatus", "SHEETS_PROJECT_STATUS_TAB", values)
+
+
+def _elevator_watch_public_view_values():
     with get_session() as session:
         items = public_elevator_watch_items(session)
-    values = [["What people need to know", "Current clear answer", "Why it matters", "Checked by", "Last checked", "Human needed", "Source"]]
+    values = [list(OPERATOR_HEADERS["ElevatorWatch"])]
     for item in items:
         values.append([
             item.get("topic") or "",
@@ -3712,9 +3821,14 @@ def sync_elevator_watch_public_view_to_sheets():
             item.get("human_needed") or "",
             item.get("source_url") or "",
         ])
-    _ensure_tab_exists(svc, sheet_id, tab)
-    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
-    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+    return values
+
+
+
+def sync_elevator_watch_public_view_to_sheets():
+    values = _elevator_watch_public_view_values()
+    _write_watchdog_outputs("ElevatorWatch", "SHEETS_ELEVATOR_WATCH_TAB", values,
+        lambda: public_watchdog_values(values, _project_status_values(), _watchdog_checks_values(), _watchdog_actions_values()))
 
 
 def _public_record_sheet_sort_key(row: PublicRecordWatch) -> tuple[int, int, int, str]:
@@ -3727,6 +3841,7 @@ def _public_record_sheet_sort_key(row: PublicRecordWatch) -> tuple[int, int, int
         status_rank = 2
     type_rank = {
         "elevator_permit_application": 0,
+        "electrical_permit_application": 0,
         "dob_ecb_violation": 1,
         "dob_violation": 2,
         "dob_complaint": 3,
@@ -3745,22 +3860,21 @@ def _public_record_sheet_sort_key(row: PublicRecordWatch) -> tuple[int, int, int
     return (status_rank, type_rank, -epoch, row.record_key or "")
 
 
-def sync_public_records_to_sheets():
-    svc = _service()
-    sheet_id = _watchdog_sheet_id()
-    tab = _tab("SHEETS_PUBLIC_RECORDS_TAB", default="PublicRecords")
+def _public_records_values():
     with get_session() as session:
         records = session.query(PublicRecordWatch).all()
-    values = [[
-        "source_system", "record_type", "record_key", "verification_status", "machine_confidence",
-        "verification_summary", "status", "status_detail", "filed_at", "approved_at", "permit_issued_at",
-        "inspection_date", "expires_at", "needs_human_verification", "machine_verified_at",
-        "human_verified_at", "human_verified_by", "source_url", "bbl", "bin", "job_number",
-        "permit_number", "device_number",
-    ]]
+    values = [list(OPERATOR_HEADERS["PublicRecords"])]
     for row in sorted(records, key=_public_record_sheet_sort_key):
         if not public_record_is_tenant_trusted(row):
             continue
+        payload = public_record_payload(row, related_records=records)
+        absent = payload.get("source_presence_status") == "not_seen"
+        detail = "; ".join(part for part in [
+            row.status_detail or "",
+            payload.get("public_context") or "",
+            (f"Absent from latest source check; last observed {normalize_timestamp(row.last_seen_at) or 'unknown'}. "
+             "Current status is unconfirmed; absence does not prove correction or resolution.") if absent else "",
+        ] if part)
         values.append([
             row.source_system,
             row.record_type,
@@ -3768,8 +3882,8 @@ def sync_public_records_to_sheets():
             row.machine_verification_status or "needs_review",
             row.machine_confidence if row.machine_confidence is not None else "",
             (row.machine_verification_summary or "")[:500],
-            row.status or "",
-            (row.status_detail or "")[:500],
+            f"LAST OBSERVED: {row.status or 'unknown'}" if absent else row.status or "",
+            detail,
             normalize_timestamp(row.filed_at) or "",
             normalize_timestamp(row.approved_at) or "",
             normalize_timestamp(row.permit_issued_at) or "",
@@ -3786,18 +3900,20 @@ def sync_public_records_to_sheets():
             row.permit_number or "",
             row.device_number or "",
         ])
-    _ensure_tab_exists(svc, sheet_id, tab)
-    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
-    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+    return values
 
 
-def sync_watchdog_checks_to_sheets():
-    svc = _service()
-    sheet_id = _watchdog_sheet_id()
-    tab = _tab("SHEETS_WATCHDOG_CHECKS_TAB", default="WatchdogChecks")
+
+def sync_public_records_to_sheets():
+    values = _public_records_values()
+    _write_watchdog_outputs("PublicRecords", "SHEETS_PUBLIC_RECORDS_TAB", values,
+        lambda: [list(PUBLIC_WATCHDOG_HEADERS["PublicRecords"])] + [public_record_values(row) for row in values[1:]])
+
+
+def _watchdog_checks_values():
     with get_session() as session:
         checks = session.query(ComplianceCheck).all()
-    values = [["check_type", "status", "checked_at", "checked_by", "photo_url", "source_url", "notes"]]
+    values = [list(OPERATOR_HEADERS["WatchdogChecks"])]
     for row in sorted(checks, key=lambda item: item.checked_at or "", reverse=True):
         values.append([
             row.check_type,
@@ -3808,37 +3924,35 @@ def sync_watchdog_checks_to_sheets():
             row.source_url or "",
             (row.notes or "")[:500],
         ])
-    _ensure_tab_exists(svc, sheet_id, tab)
-    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
-    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+    return values
 
 
-def sync_watchdog_actions_to_sheets():
-    svc = _service()
-    sheet_id = _watchdog_sheet_id()
-    tab = _tab("SHEETS_WATCHDOG_ACTIONS_TAB", default="ActionQueue")
+
+def sync_watchdog_checks_to_sheets():
+    values = _watchdog_checks_values()
+    _write_watchdog_table("WatchdogChecks", "SHEETS_WATCHDOG_CHECKS_TAB", values)
+
+
+def _watchdog_actions_values():
     with get_session() as session:
         actions = [
             row
             for row in session.query(WatchdogAction).filter(WatchdogAction.status.in_(["open", "pending", "failed"])).all()
             if action_is_tenant_visible(row)
         ]
-    values = [[
-        "severity", "action_type", "title", "detail", "due_at", "owner_role", "status",
-        "source_record_id", "related_incident_id", "draft_message", "created_at", "completed_at",
-    ]]
+    values = [list(OPERATOR_HEADERS["ActionQueue"])]
     for row in sorted(actions, key=lambda item: (item.status != "open", item.due_at or "", item.created_at or "")):
         values.append([
             row.severity,
             row.action_type,
             row.title,
-            (row.detail or "")[:500],
+            row.detail or "",
             normalize_timestamp(row.due_at) or "",
             row.owner_role or "",
             row.status,
             row.source_record_id or "",
             row.related_incident_id or "",
-            (row.draft_message or "")[:500],
+            row.draft_message or "",
             normalize_timestamp(row.created_at) or "",
             normalize_timestamp(row.completed_at) or "",
         ])
@@ -3857,57 +3971,59 @@ def sync_watchdog_actions_to_sheets():
             "",
             "",
         ])
-    _ensure_tab_exists(svc, sheet_id, tab)
-    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
-    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+    return values
 
 
-def sync_weekly_digest_to_sheets():
-    svc = _service()
-    sheet_id = _watchdog_sheet_id()
-    tab = _tab("SHEETS_WEEKLY_DIGEST_TAB", default="WeeklyDigest")
+
+def sync_watchdog_actions_to_sheets():
+    values = _watchdog_actions_values()
+    _write_watchdog_table("ActionQueue", "SHEETS_WATCHDOG_ACTIONS_TAB", values)
+
+
+def _weekly_digest_values():
     with get_session() as session:
         digests = session.query(WeeklyDigest).all()
-        tenant_actions = [
-            row
-            for row in session.query(WatchdogAction).filter(WatchdogAction.status.in_(["open", "pending", "failed"])).all()
-            if action_is_tenant_visible(row)
-        ]
-    if tenant_actions:
-        action_needed = "; ".join((row.title or row.action_type or "Tenant action needed") for row in tenant_actions[:3])
-    else:
-        action_needed = "No tenant action needed"
-    values = [[
-        "period_start",
-        "period_end",
-        "tenant_update",
-        "watchdog_status",
-        "tenant_action_needed",
-        "generated_at",
-        "used_llm",
-    ]]
+    values = [list(OPERATOR_HEADERS["WeeklyDigest"])]
     for row in sorted(digests, key=lambda item: item.generated_at or "", reverse=True):
+        try:
+            snapshot = json.loads(row.tenant_actions_json) if row.tenant_actions_json is not None else None
+        except (TypeError, ValueError):
+            snapshot = None
+        if isinstance(snapshot, list):
+            action_needed = "; ".join(str(action.get("title") or action.get("action_type") or "Tenant action needed")
+                                      for action in snapshot if isinstance(action, dict)) or "No tenant action needed at generation time"
+        else:
+            action_needed = "Historical action snapshot unavailable; see current ActionQueue."
         values.append([
             normalize_timestamp(row.period_start) or "",
             normalize_timestamp(row.period_end) or "",
             row.tenant_update_draft or row.public_summary or "",
-            "DOB/NYC record checks run automatically. Management follow-up drafts are internal.",
+            "Historical snapshot from the generation date. Current source health appears in ElevatorWatch.",
             action_needed,
             normalize_timestamp(row.generated_at) or "",
             "YES" if row.used_llm else "",
         ])
-    _ensure_tab_exists(svc, sheet_id, tab)
-    _replace_tab_values(svc, sheet_id, tab, values, value_input_option="USER_ENTERED")
-    _apply_tab_layout(svc, sheet_id, tab, row_count=len(values), column_count=len(values[0]), layout="watchdog")
+    return values
+
+
+
+def sync_weekly_digest_to_sheets():
+    values = _weekly_digest_values()
+    _write_watchdog_outputs("WeeklyDigest", "SHEETS_WEEKLY_DIGEST_TAB", values,
+        lambda: [list(PUBLIC_WATCHDOG_HEADERS["WeeklyDigest"])] + [public_digest_values(row) for row in values[1:]])
 
 
 def sync_replacement_watchdog_to_sheets():
-    sync_elevator_watch_public_view_to_sheets()
-    sync_project_status_to_sheets()
-    sync_public_records_to_sheets()
-    sync_watchdog_checks_to_sheets()
-    sync_watchdog_actions_to_sheets()
-    sync_weekly_digest_to_sheets()
+    errors = []
+    for sync in (sync_elevator_watch_public_view_to_sheets, sync_project_status_to_sheets,
+                 sync_public_records_to_sheets, sync_watchdog_checks_to_sheets,
+                 sync_watchdog_actions_to_sheets, sync_weekly_digest_to_sheets):
+        try:
+            sync()
+        except Exception as exc:
+            errors.append(f"{sync.__name__}: {exc}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 def sync_decisions_to_sheets():

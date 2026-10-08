@@ -8,21 +8,29 @@ This module adds a sheet-first tracking layer for the 455 Ocean Parkway elevator
 - Official records: NYC Open Data rows imported from DOB/NYC sources. Rows are labeled as `official_*` machine matches when the building identifiers and record keys are strong enough; weaker or conflicting rows stay internal and are not shown on tenant-facing tabs.
 - Tenant reality: existing incident, 311, and report-form records from residents.
 
-## Sheet Tabs
+## Public views
 
 - `ElevatorWatch`: first public-facing view. Plain-language answers only: whether a current replacement permit exists, whether an active official elevator violation exists, what tenant reports say, and exactly when a resident photo/check is needed.
-- `ProjectStatus`: management timeline, current bottleneck, next expected official record.
 - `PublicRecords`: tenant-visible trusted elevator/replacement-relevant NYC/DOB/311 rows only. Weak, conflicting, or unrelated records stay out of this tab.
-- `WatchdogChecks`: volunteer checks for posted permits, TPP, SCBR, emergency contacts, work hours, interruption notices, barricades, and elevator notices.
-- `ActionQueue`: deterministic next actions from public-record changes and tenant-observed outages.
 - `WeeklyDigest`: weekly tenant-safe status only. Management follow-up drafts stay internal and are not shown on tenant-facing sheet tabs.
+
+The resident workbook also includes `Tenant Log` for incident history and 311 follow-up. These four views are the public output.
+
+## Private operator views
+
+- `ProjectStatus`: management timeline, current bottleneck, next expected official record, and supporting provenance.
+- `WatchdogChecks`: checks for posted permits, TPP, SCBR, emergency contacts, work hours, interruption notices, barricades, and elevator notices.
+- `ActionQueue`: deterministic next actions, deadlines, and follow-up tracking from public-record changes and tenant-observed outages.
+- Full public-record and weekly-digest detail, including operator follow-up drafts.
 - `AccessNeeds_Private`: optional private tab only when `ENABLE_PRIVATE_ACCESS_NEEDS_SHEET=1`. Do not publish it.
+
+These views remain in the separate operator workbook. Hiding a tab in a public workbook does not make its contents private.
 
 ## Volunteer Workflow
 
 1. Run `POST /admin/sync_public_records`.
 2. Start with `ElevatorWatch`; this is the public view residents should read.
-3. Treat the first imported rows for each source as baseline history unless `ElevatorWatch` or `ActionQueue` flags a current risk.
+3. Treat the first imported rows for each source as baseline history unless `ElevatorWatch` or the private `ActionQueue` flags a current risk.
 4. Do not ask residents to check DOB/ECB/BIS when the system already imported the official record.
 5. Tenants should not see or work review-needed official-record rows. If an internal operator reviews one, mark it human-verified with `POST /admin/verify_public_record/{id}` so it can become tenant-visible.
 6. Machine-accepted rows are not called human-verified. They are marked with `machine_verified_at`, `machine_confidence`, and an official-source reason.
@@ -37,7 +45,7 @@ When nobody can manually verify records, the watchdog uses only official NYC/DOB
 - Elevator-specific datasets, `unit=ELEVR`, DOB elevator violation codes, elevator complaint types, or device numbers raise confidence.
 - Cross-source joins by DOB NOW job filing number, elevator device number, permit number, ECB ticket, or OATH ticket raise confidence further.
 - Records at or above `PUBLIC_RECORD_AUTO_VERIFY_MIN_CONFIDENCE` default `80` are machine-accepted and no longer create a volunteer verification task.
-- Conflicts or weak matches remain internal and do not appear in tenant-facing `PublicRecords`, `ProjectStatus`, or `/api/project` output. The system does not silently turn them into verified facts.
+- Conflicts or weak matches remain internal and do not appear in the public `PublicRecords` view or accepted-record `/api/project` output. The system does not silently turn them into verified facts.
 
 ## Portal Cadence
 
@@ -48,7 +56,7 @@ When nobody can manually verify records, the watchdog uses only official NYC/DOB
 - Lobby posting check: only when `ElevatorWatch` says a current permit-issued signal exists and a resident photo/check is needed.
 - The automation loop isolates scheduled steps, so a temporary 311 lookup failure does not prevent the replacement-watchdog sync from running.
 - `WeeklyDigest` is generated automatically when no digest exists for the last seven days.
-- `ActionQueue` is tenant-facing and only shows human-only tenant tasks: resident physical checks, or a tenant-association management request when official records do not show a current replacement filing. Internal operator/system monitoring is handled automatically and kept out of the tenant queue.
+- `ActionQueue` stays in the private operator workbook. Resident-facing views surface actionable resident checks or requests in context, while preserving detailed task tracking and deadlines privately.
 - Management follow-up drafts are stored for operators, but `WeeklyDigest` sync publishes only tenant update, watchdog status, and tenant action needed columns.
 
 ## Escalation Rules

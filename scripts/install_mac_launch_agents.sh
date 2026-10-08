@@ -9,6 +9,14 @@ PYTHON_BIN="$(mac_service_runtime_python)"
 STAGING_BASE="$HOME/.local/share/tenant-issue-os"
 RUNTIME_ROOT="$STAGING_BASE/runtime"
 INSTALL_LOCK_DIR="$(mac_service_install_lock_path)"
+RUNTIME_BACKUP_ROOT=""
+RUNTIME_COPY_STARTED=0
+RUNTIME_QUIESCED=0
+# Every service definition this installer may replace or remove must take part
+# in backup, quiescing and rollback, including the runtime-backed tunnel wrapper.
+RUNTIME_CONSUMERS=(api automation whatsapp_capture chat_export_sync tunnel watchdog)
+PREVIOUS_LOADED_SERVICES=()
+PREVIOUS_MANUAL_SERVICES=()
 
 usage() {
   cat <<'EOF'
@@ -61,9 +69,15 @@ if [[ ! -f "$RUNTIME_ROOT/.env" ]]; then
 fi
 chmod 600 "$RUNTIME_ROOT/.env"
 
-stage_runtime_copy() {
+# Verify correction preservation before staging code or touching any service.
+"$(mac_service_runtime_python)" "$REPO_ROOT/scripts/check_runtime_migration.py" --runtime-root "$RUNTIME_ROOT" --source-root "$REPO_ROOT"
+
+copy_runtime_tree() {
+  local source_root="$1" destination_root="$2"
   rsync -a --delete \
     --exclude '.git/' \
+    --exclude '.git' \
+    --exclude '.wrangler/' \
     --exclude '.DS_Store' \
     --exclude '.pytest_cache/' \
     --exclude '.test_audit/' \
@@ -84,7 +98,12 @@ stage_runtime_copy() {
     --exclude 'test_app.sqlite3' \
     --exclude 'local.db' \
     --exclude 'WhatsApp Chat - *.zip' \
-    "$REPO_ROOT/" "$RUNTIME_ROOT/"
+    "$source_root/" "$destination_root/"
+}
+
+stage_runtime_copy() {
+  RUNTIME_COPY_STARTED=1
+  copy_runtime_tree "$REPO_ROOT" "$RUNTIME_ROOT"
 }
 
 render_template() {
@@ -164,8 +183,89 @@ print_agent_summary() {
   '
 }
 
+prepare_runtime_backup() {
+  local name plist
+  RUNTIME_BACKUP_ROOT="$(mktemp -d "$STAGING_BASE/runtime-install.XXXXXX")"
+  mkdir -p "$RUNTIME_BACKUP_ROOT/runtime" "$RUNTIME_BACKUP_ROOT/plists"
+  copy_runtime_tree "$RUNTIME_ROOT" "$RUNTIME_BACKUP_ROOT/runtime"
+  for name in "${RUNTIME_CONSUMERS[@]}"; do
+    plist="$(mac_service_service_plist_path "$name")"
+    if [[ -f "$plist" ]]; then
+      cp -p "$plist" "$RUNTIME_BACKUP_ROOT/plists/$name.plist"
+    fi
+  done
+}
+
+stop_runtime_consumers() {
+  local name
+  mac_service_bootout_launch_agent watchdog
+  for name in "${RUNTIME_CONSUMERS[@]}"; do
+    [[ "$name" == "watchdog" ]] && continue
+    mac_service_bootout_launch_agent "$name"
+    mac_service_stop_manual_service "$name"
+    mac_service_stop_residual_processes "$name"
+  done
+}
+
+quiesce_runtime_consumers() {
+  local name pid
+  for name in "${RUNTIME_CONSUMERS[@]}"; do
+    if mac_service_launchd_loaded "$name"; then
+      PREVIOUS_LOADED_SERVICES+=("$name")
+    else
+      pid="$(mac_service_service_pid "$name" 2>/dev/null || true)"
+      if mac_service_pid_alive "$pid"; then
+        PREVIOUS_MANUAL_SERVICES+=("$name")
+      fi
+    fi
+  done
+  RUNTIME_QUIESCED=1
+  stop_runtime_consumers
+}
+
+restore_prior_runtime() {
+  local name plist
+  if [[ "$RUNTIME_COPY_STARTED" -eq 1 ]]; then
+    if ! copy_runtime_tree "$RUNTIME_BACKUP_ROOT/runtime" "$RUNTIME_ROOT"; then
+      echo "Runtime restore failed; consumers remain stopped. Recovery copy: $RUNTIME_BACKUP_ROOT" >&2
+      return 1
+    fi
+    for name in "${RUNTIME_CONSUMERS[@]}"; do
+      plist="$(mac_service_service_plist_path "$name")"
+      if [[ -f "$RUNTIME_BACKUP_ROOT/plists/$name.plist" ]]; then
+        cp -p "$RUNTIME_BACKUP_ROOT/plists/$name.plist" "$plist" || return 1
+      else
+        # This install created the plist; no previous service definition existed.
+        rm -f "$plist"
+      fi
+    done
+  fi
+  # macOS Bash 3.2 treats an empty array as unset under nounset.
+  for name in ${PREVIOUS_LOADED_SERVICES[@]+"${PREVIOUS_LOADED_SERVICES[@]}"}; do
+    bootstrap_agent "$name" || return 1
+  done
+  for name in ${PREVIOUS_MANUAL_SERVICES[@]+"${PREVIOUS_MANUAL_SERVICES[@]}"}; do
+    mac_service_start_manual_service "$name" || return 1
+  done
+}
+
+finish_install() {
+  local exit_status=$?
+  trap - EXIT
+  if [[ "$exit_status" -ne 0 && "$RUNTIME_QUIESCED" -eq 1 ]]; then
+    set +e
+    echo "Install failed; restoring the prior runtime and service definitions." >&2
+    stop_runtime_consumers
+    restore_prior_runtime || echo "Some previous services could not be restored; recovery copy: $RUNTIME_BACKUP_ROOT" >&2
+  fi
+  rmdir "$INSTALL_LOCK_DIR" >/dev/null 2>&1 || true
+  exit "$exit_status"
+}
+
+trap finish_install EXIT
+prepare_runtime_backup
+quiesce_runtime_consumers
 echo "Staging launchd runtime copy at $RUNTIME_ROOT"
-mac_service_bootout_launch_agent watchdog
 stage_runtime_copy
 
 render_template "tenant-issue-os.api.plist.template" "$(mac_service_service_plist_path api)"
@@ -174,6 +274,18 @@ render_template "tenant-issue-os.watchdog.plist.template" "$(mac_service_service
 
 bootstrap_agent api
 bootstrap_agent automation
+
+# This separately installed periodic importer also consumes runtime Python.
+for service in ${PREVIOUS_LOADED_SERVICES[@]+"${PREVIOUS_LOADED_SERVICES[@]}"}; do
+  if [[ "$service" == "chat_export_sync" ]]; then
+    bootstrap_agent chat_export_sync
+  fi
+done
+for service in ${PREVIOUS_MANUAL_SERVICES[@]+"${PREVIOUS_MANUAL_SERVICES[@]}"}; do
+  if [[ "$service" == "chat_export_sync" ]]; then
+    mac_service_start_manual_service chat_export_sync
+  fi
+done
 
 if mac_service_whatsapp_capture_configured; then
   render_template "tenant-issue-os.whatsapp_capture.plist.template" "$(mac_service_service_plist_path whatsapp_capture)"
@@ -204,6 +316,7 @@ if mac_service_tunnel_configured; then
   print_agent_summary tunnel
 fi
 print_agent_summary watchdog
+echo "Previous runtime source and service definitions retained at $RUNTIME_BACKUP_ROOT"
 
 echo "Watchdog logs:"
 echo "  stdout: $(mac_service_service_stdout_log watchdog)"

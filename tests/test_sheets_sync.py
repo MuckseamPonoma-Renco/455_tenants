@@ -1075,8 +1075,8 @@ def test_public_update_recognizes_no_side_elevator_and_floor_service_restore():
         source="whatsapp_web",
     )
     assert sheets_sync._public_should_include_update(one_out_incident, both_context_restore_raw) is True
-    assert sheets_sync._public_event_issue_label(one_out_incident, both_context_restore_raw) == "Both elevators working"
-    assert sheets_sync._public_event_summary(one_out_incident, both_context_restore_raw) == "Both elevators were reported working."
+    assert sheets_sync._public_event_issue_label(one_out_incident, both_context_restore_raw) == "Both elevators tentatively reported working"
+    assert sheets_sync._public_event_summary(one_out_incident, both_context_restore_raw) == "A tenant reported that both elevators appeared to be working."
 
     back_to_one_raw = RawMessage(
         message_id="msg-back-to-one",
@@ -1761,7 +1761,8 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert "tenant-facing" not in values[1][0]
     assert "internal workflow" not in values[1][0]
     assert values[2][0] == "At a glance"
-    assert values[3] == ["Item", "Count / detail", "What this means", "", "", "", "", "", "", ""]
+    assert values[3] == ["Item", "Count / detail", "What this means", "", "", "", ""]
+    assert all(len(row) == 7 for row in values)
     metrics = {row[0]: row[1] for row in values if row and row[0] in {"Incidents", "311 filings", "Most common issue type", "Latest update"}}
     assert metrics == {
         "Incidents": 2,
@@ -1770,10 +1771,10 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
         "Latest update": "South elevator",
     }
     assert values[10][0] == "Category snapshot"
-    assert values[11] == ["Category", "Incidents", "311 filings", "Latest update", "Latest issue", "", "", "", "", ""]
+    assert values[11] == ["Category", "Incidents", "311 filings", "Latest update", "Latest issue", "", ""]
 
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
-    assert values[all_incidents_row + 1] == ["Updated", "Issue", "Category", "311 follow-up", "Preview", "Open evidence", "Summary", "", "", ""]
+    assert values[all_incidents_row + 1] == ["Updated", "Issue", "Category", "311 follow-up", "Preview", "Open evidence", "Summary"]
     incident_rows = values[all_incidents_row + 2:]
     public_issue_row = next(row for row in incident_rows if len(row) >= 7 and row[1] == "South elevator")
     assert public_issue_row[2] == "Elevator"
@@ -1787,8 +1788,8 @@ def test_sync_public_updates_to_sheets_writes_clean_resident_rows(client, monkey
     assert old_issue_row[6] == "A building access or security condition was reported."
 
     case_watch_row = next(idx for idx, row in enumerate(values) if row[0] == "311 case watch")
-    assert values[case_watch_row + 1] == ["Case", "NYC status", "Complaint", "Related issue", "Submitted", "NYC lookup", "Notes", "", "", ""]
-    public_case_row = next(row for row in values if len(row) >= 8 and row[0] == "311-12345678")
+    assert values[case_watch_row + 1] == ["Case", "NYC status", "Complaint", "Related issue", "Submitted", "NYC lookup", "Notes"]
+    public_case_row = next(row for row in values if len(row) >= 7 and row[0] == "311-12345678")
     assert public_case_row[0] == "311-12345678"
     assert public_case_row[1] == "Submitted"
     assert public_case_row[2] == "Elevator or Escalator Complaint"
@@ -2127,8 +2128,8 @@ def test_sync_public_updates_uses_decision_messages_beyond_capped_proof_refs(cli
     assert no_elevators_row[6] == "Both elevators were reported as out."
 
     no_mechanic_row = next(row for row in rows if row[0] == "2026-06-04 07:44 AM")
-    assert no_mechanic_row[1] == "Elevator repair not completed"
-    assert no_mechanic_row[6] == "Elevator repair was reported not completed yet."
+    assert no_mechanic_row[1] == "Elevator mechanic presence unconfirmed"
+    assert no_mechanic_row[6] == "A tenant thought no elevator mechanic was on site; this was not confirmed."
 
 
 def test_sync_public_updates_shows_rough_elevator_ride_and_same_confirmation(client, monkeypatch):
@@ -2523,7 +2524,7 @@ def test_sync_public_updates_filters_stale_bad_decisions_and_preserves_real_upda
     assert "repair people were expected" in dead_row[6]
     assert "Jacek" not in dead_row[6]
 
-    working_row = next(row for row in rows if row[1] == "Both elevators working normally")
+    working_row = next(row for row in rows if row[1] == "Both elevators tentatively reported working")
     assert working_row[3] == ""
     assert "without floor-by-floor service" in working_row[6]
 
@@ -2726,7 +2727,7 @@ def test_sync_public_updates_uses_real_media_instead_of_bubble_screenshot(client
 
     values = next(kwargs["body"]["values"] for kind, kwargs in service.calls if kind == "update")
     all_incidents_row = next(idx for idx, row in enumerate(values) if row[0] == "Public update log")
-    row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 8 and row[1] == "Photo evidence")
+    row = next(row for row in values[all_incidents_row + 2:] if len(row) >= 7 and row[1] == "Photo evidence")
     assert "/media/whatsapp/msg-photo/1?v=" in row[4]
     assert row[5].startswith("https://tenant.example/media/whatsapp/msg-photo/1?v=")
     assert "msg-photo/0" not in row[4]

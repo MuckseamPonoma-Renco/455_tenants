@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Certify the exact unchanged and deferred decisions from the full archive audit.
 
-The committed ledger is a closed-world record of decisions which were
+The explicitly supplied private ledger is a closed-world record of decisions which were
 individually reviewed on 2026-09-05.  The default mode is a read-only plan.
 ``--apply`` first verifies every raw-text digest and every stored decision,
 then updates review provenance for the complete ledger in one transaction.
@@ -42,7 +42,6 @@ CERTIFICATION_ID = "2026-09-05-full-archive-manual-review-v1"
 REVIEWED_BY = "codex:2026-09-05-full-archive-manual-audit"
 REVIEW_KIND = "codex_full_archive_manual_audit"
 CHOSEN_SOURCE = "review_codex_full_archive_manual_audit"
-LEDGER_PATH = Path(__file__).with_name("full_archive_review_ledger_20260905.json")
 EXPECTED_OUTCOME_COUNTS = {
     "unchanged_correct": 199,
     "deferred_missing_evidence": 7,
@@ -70,7 +69,7 @@ _DECISION_FIELDS = frozenset(
 
 
 class ReviewLedgerError(RuntimeError):
-    """The committed manual-review ledger is malformed or incomplete."""
+    """The private manual-review ledger is malformed or incomplete."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +196,9 @@ def _parse_entry(payload: object, *, index: int) -> ReviewEntry:
 
 
 def load_review_ledger(path: str | Path | None = None) -> ReviewLedger:
-    selected = Path(path) if path is not None else LEDGER_PATH
+    if path is None:
+        raise ReviewLedgerError("an explicit private review ledger path is required")
+    selected = Path(path).expanduser()
     try:
         raw_bytes = selected.read_bytes()
         payload = json.loads(raw_bytes.decode("utf-8"))
@@ -500,8 +501,9 @@ def main() -> int:
         action="store_true",
         help="Apply one all-or-nothing provenance transaction; default is read-only.",
     )
+    parser.add_argument("--ledger", required=True, type=Path, help="Private reviewed ledger JSON; never inferred from repository data.")
     args = parser.parse_args()
-    result = certify(apply=args.apply)
+    result = certify(apply=args.apply, ledger_path=args.ledger)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 1 if result["errors"] else 0
 

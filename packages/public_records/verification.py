@@ -10,7 +10,8 @@ from sqlalchemy import select
 
 from packages.db import PublicRecordWatch, WatchdogAction
 from packages.project_watch.rules import now_iso
-from packages.public_records.config import building_address, building_bbl_compact, building_bin, source_configs
+from packages.public_records.config import building_address_aliases, building_bbl_compact, building_bin, source_configs
+from packages.public_records.source_queries import electrical_device_references, normalize_ticket_reference
 
 
 AUTO_VERIFIER = "auto:official_open_data"
@@ -65,7 +66,7 @@ def _bbl_parts() -> tuple[str, str]:
 
 
 def _address_matches(record: PublicRecordWatch, raw: dict) -> bool:
-    expected = _normalize_text(building_address())
+    expected = {_normalize_text(address) for address in building_address_aliases()}
     candidates = [
         record.address,
         raw.get("incident_address"),
@@ -92,10 +93,20 @@ def _address_matches(record: PublicRecordWatch, raw: dict) -> bool:
     if house_fields and street_fields:
         candidates.append(f"{house_fields} {street_fields}")
     normalized_candidates = {_normalize_text(candidate) for candidate in candidates if candidate}
-    return expected in normalized_candidates
+    return bool(expected.intersection(normalized_candidates))
+
+
+def _borough_conflicts(raw: dict) -> bool:
+    value = _normalize_text(raw.get("boro") or raw.get("borough") or raw.get("violation_location_borough"))
+    boroughs = {"MANHATTAN": "1", "BRONX": "2", "BROOKLYN": "3", "QUEENS": "4", "STATEN ISLAND": "5"}
+    code = boroughs.get(value, value if value in {"1", "2", "3", "4", "5"} else None)
+    expected = _digits(building_bbl_compact())[:1]
+    return bool(code and expected and code != expected)
 
 
 def _block_lot_matches(raw: dict) -> bool:
+    if _borough_conflicts(raw):
+        return False
     expected_block, expected_lot = _bbl_parts()
     block = _digits(raw.get("block") or raw.get("violation_location_block_no"))
     lot = _digits(raw.get("lot") or raw.get("violation_location_lot_no"))
@@ -103,6 +114,8 @@ def _block_lot_matches(raw: dict) -> bool:
 
 
 def _explicit_identity_conflict(record: PublicRecordWatch, raw: dict) -> bool:
+    if _borough_conflicts(raw):
+        return True
     bbl = _digits(record.bbl)
     bin_value = _digits(record.bin)
     if bbl and bbl != _digits(building_bbl_compact()):
@@ -155,6 +168,8 @@ def _elevator_signal(record: PublicRecordWatch, raw: dict) -> tuple[bool, str | 
             raw.get("violation_details"),
             raw.get("novdescription"),
             raw.get("description"),
+            raw.get("job_description"),
+            raw.get("category_work_list"),
         )
         if value
     )
@@ -172,12 +187,16 @@ def _record_refs(record: PublicRecordWatch, raw: dict | None = None) -> set[str]
         "job": [record.job_number, raw.get("job_filing_number"), raw.get("job_number"), raw.get("job__")],
         "permit": [record.permit_number, raw.get("work_permit"), raw.get("permit_number")],
         "device": [record.device_number, raw.get("device_id"), raw.get("bis_nyc_device_id"), raw.get("device_number")],
-        "ticket": [record.record_key, raw.get("ticket_number"), raw.get("ecb_violation_number"), raw.get("ecb_number")],
+        "ticket": [raw.get("ticket_number"), raw.get("ecb_violation_number"), raw.get("ecb_number")],
         "registration": [raw.get("registrationid")],
     }
+    if record.source_system in {"oath_hearings", "dob_ecb_violations"}:
+        fields["ticket"].append(record.record_key)
+    if record.source_system == "dob_now_electrical_applications":
+        fields["device"].extend(sorted(electrical_device_references(raw)))
     for prefix, values in fields.items():
         for value in values:
-            clean = _normalize_text(value)
+            clean = normalize_ticket_reference(value) if prefix == "ticket" else _normalize_text(value)
             if clean:
                 refs.add(f"{prefix}:{clean}")
     return refs

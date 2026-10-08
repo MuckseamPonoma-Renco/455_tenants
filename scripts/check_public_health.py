@@ -9,8 +9,15 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Both modules are stdlib-only, so the scheduled check needs no app dependency install.
+from packages.automation_status import watchdog_max_age_seconds, watchdog_source_receipts_complete
 
 ACTIVE_CHAT_EXPORT_STATES = {
     'ready',
@@ -53,6 +60,7 @@ def validate_health(
     max_import_age_seconds: int,
     require_cloud_export_receiver: bool = False,
     allow_blocked_model_review: bool = False,
+    max_watchdog_age_seconds: int | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
     details: dict[str, Any] = {}
@@ -92,6 +100,42 @@ def validate_health(
             failures.append('automation has no valid last_cycle_at timestamp')
         elif automation_age > max_automation_age_seconds:
             failures.append(f'automation is stale ({automation_age}s old)')
+
+    watchdog = payload.get('watchdog')
+    maximum_watchdog_age = max_watchdog_age_seconds if max_watchdog_age_seconds is not None else watchdog_max_age_seconds()
+    details['watchdog_max_age_seconds'] = maximum_watchdog_age
+    if not isinstance(watchdog, dict):
+        failures.append('watchdog health is missing')
+    else:
+        state = watchdog.get('state')
+        details['watchdog_state'] = state
+        interval = watchdog.get('interval_seconds')
+        if not isinstance(interval, int) or interval <= 0:
+            failures.append('watchdog sync cadence is missing or disabled')
+        else:
+            maximum_watchdog_age = min(maximum_watchdog_age, watchdog_max_age_seconds(interval))
+            details['watchdog_max_age_seconds'] = maximum_watchdog_age
+        if state not in {'ready', 'working'}:
+            failures.append(f"watchdog is {state or 'unknown'}")
+        if watchdog.get('has_error') is not False:
+            failures.append('watchdog success has not been confirmed')
+        if watchdog.get('source_errors') != 0:
+            failures.append('watchdog has failed or unverified source queries')
+        if watchdog.get('sheet_errors') != 0 or watchdog.get('sheet_readback_ok') is not True:
+            failures.append('watchdog has failed or unverified Sheet sync')
+        checked_at = _parse_timestamp(watchdog.get('last_success_at'))
+        age = (now - checked_at).total_seconds() if checked_at else None
+        details['watchdog_age_seconds'] = int(age) if age is not None else None
+        if age is None:
+            failures.append('watchdog has no valid last_success_at timestamp')
+        elif age < 0:
+            failures.append('watchdog last_success_at is in the future')
+        elif age > maximum_watchdog_age:
+            failures.append(f'watchdog is stale ({int(age)}s old)')
+        sources = watchdog.get('sources')
+        details['watchdog_source_count'] = len(sources) if isinstance(sources, list) else 0
+        if not watchdog_source_receipts_complete(sources, now=now, max_age_seconds=maximum_watchdog_age):
+            failures.append('watchdog per-source completion evidence is incomplete, failed, or stale')
 
     nyc311_status = payload.get('nyc311_status')
     if isinstance(nyc311_status, dict):
@@ -178,6 +222,8 @@ def main() -> int:
     parser.add_argument('--max-capture-age-seconds', type=int, default=600)
     parser.add_argument('--max-automation-age-seconds', type=int, default=1200)
     parser.add_argument('--max-import-age-seconds', type=int, default=3600)
+    parser.add_argument('--max-watchdog-age-seconds', type=int, default=None,
+                        help='Official-source freshness; defaults to six hours plus 30 minutes grace, independently of heartbeat age.')
     parser.add_argument('--require-cloud-export-receiver', action='store_true')
     parser.add_argument(
         '--allow-blocked-model-review',
@@ -196,6 +242,7 @@ def main() -> int:
             max_import_age_seconds=max(1, args.max_import_age_seconds),
             require_cloud_export_receiver=args.require_cloud_export_receiver,
             allow_blocked_model_review=args.allow_blocked_model_review,
+            max_watchdog_age_seconds=max(1, args.max_watchdog_age_seconds) if args.max_watchdog_age_seconds is not None else None,
         )
     except (OSError, RuntimeError, urllib.error.URLError, json.JSONDecodeError) as exc:
         print(json.dumps({'ok': False, 'failures': [str(exc)]}, sort_keys=True))

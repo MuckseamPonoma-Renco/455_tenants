@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from packages.incident.building_conditions import building_condition_presentation
 
 
 NEWS_DATELINE_RE = re.compile(
@@ -127,6 +128,8 @@ def nonreporting_content_reason(text: str | None) -> str | None:
         return "counterexample"
 
     if HISTORICAL_CONTEXT_RE.search(clean):
+        if re.search(r"\b(?:but|now|ever\s+since)\b", clean, re.I) and building_condition_presentation(clean):
+            return None
         return "historical_reference"
 
     if CONDITIONAL_BUILDING_SCENARIO_RE.search(clean):

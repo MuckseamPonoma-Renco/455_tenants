@@ -21,11 +21,13 @@ from packages.local_env import load_local_env_file
 load_local_env_file(ROOT / ".env")
 
 from packages.db import SessionLocal
+from packages.automation_status import watchdog_max_age_seconds
 from packages.sheets import sync as sheets_sync
-from scripts.init_sheet import PUBLIC_WATCHDOG_TABS
+from packages.sheets.schema import PUBLIC_WATCHDOG_HEADERS, OPERATOR_WATCHDOG_HEADERS, WATCHDOG_TAB_ENV
 
 
-DEFAULT_MAX_LAST_CHECKED_AGE_MINUTES = 90.0
+DEFAULT_MAX_LAST_CHECKED_AGE_MINUTES = watchdog_max_age_seconds() / 60.0
+DEFAULT_MAX_SYSTEM_CHECKED_AGE_MINUTES = 90.0
 DEFAULT_MAX_LAST_CHECKED_DRIFT_MINUTES = 90.0
 DEFAULT_RETRIES = 3
 DEFAULT_RETRY_SLEEP_SECONDS = 5.0
@@ -35,14 +37,7 @@ LOBBY_POSTING_EVIDENCE_TOPIC = "Lobby posting / start-date notice"
 HUMAN_ONLY_PHYSICAL_CHECK = "Human-only physical check"
 SYSTEM_WATCHDOG_FRESHNESS_TOPIC = "What residents should do"
 
-TAB_ENV_VARS = {
-    "ElevatorWatch": "SHEETS_ELEVATOR_WATCH_TAB",
-    "ProjectStatus": "SHEETS_PROJECT_STATUS_TAB",
-    "PublicRecords": "SHEETS_PUBLIC_RECORDS_TAB",
-    "WatchdogChecks": "SHEETS_WATCHDOG_CHECKS_TAB",
-    "ActionQueue": "SHEETS_WATCHDOG_ACTIONS_TAB",
-    "WeeklyDigest": "SHEETS_WEEKLY_DIGEST_TAB",
-}
+TAB_ENV_VARS = WATCHDOG_TAB_ENV
 
 DATE_HEADERS = {
     "ElevatorWatch": {"Last checked"},
@@ -58,7 +53,7 @@ DATE_HEADERS = {
     },
     "WatchdogChecks": {"checked_at"},
     "ActionQueue": {"due_at", "created_at", "completed_at"},
-    "WeeklyDigest": {"period_start", "period_end", "generated_at"},
+    "WeeklyDigest": {"period_start", "period_end", "generated_at", "Period start", "Period end", "Generated"},
 }
 
 
@@ -98,9 +93,10 @@ class ParsedDateCell:
     precision: str
 
 
-def _resolved_tab_specs() -> tuple[TabSpec, ...]:
+def _resolved_tab_specs(audience: str = "public") -> tuple[TabSpec, ...]:
     specs: list[TabSpec] = []
-    for logical_name, headers in PUBLIC_WATCHDOG_TABS.items():
+    headers_by_tab = OPERATOR_WATCHDOG_HEADERS if audience == "operator" else PUBLIC_WATCHDOG_HEADERS
+    for logical_name, headers in headers_by_tab.items():
         title = sheets_sync._tab(TAB_ENV_VARS[logical_name], default=logical_name)
         header_tuple = tuple(headers)
         date_columns = frozenset(
@@ -215,6 +211,7 @@ def _capture_expected_values(
     specs: tuple[TabSpec, ...],
     *,
     renderer: Callable[[], object] | None = None,
+    audience: str = "public",
 ) -> dict[str, ExpectedTab]:
     """Run the normal renderer against a no-op service and capture its payloads."""
 
@@ -222,20 +219,27 @@ def _capture_expected_values(
     original_service = sheets_sync._service
     original_watchdog_sheet_id = sheets_sync._watchdog_sheet_id
     original_get_session = sheets_sync.get_session
+    original_public_sheet_id = sheets_sync._public_sheet_id
+    original_configured_public_sheet_id = sheets_sync._configured_public_sheet_id
     try:
         sheets_sync._service = lambda: capture
-        sheets_sync._watchdog_sheet_id = lambda: sheet_id
+        sheets_sync._watchdog_sheet_id = lambda: sheet_id if audience == "operator" or renderer else "__operator_capture__"
+        sheets_sync._public_sheet_id = lambda: sheet_id if audience == "public" else "__public_capture__"
+        sheets_sync._configured_public_sheet_id = lambda: "__public_capture__"
         sheets_sync.get_session = _noncommitting_get_session
         (renderer or sheets_sync.sync_replacement_watchdog_to_sheets)()
     finally:
         sheets_sync._service = original_service
         sheets_sync._watchdog_sheet_id = original_watchdog_sheet_id
         sheets_sync.get_session = original_get_session
+        sheets_sync._public_sheet_id = original_public_sheet_id
+        sheets_sync._configured_public_sheet_id = original_configured_public_sheet_id
 
     captured: dict[str, ExpectedTab] = {}
     for spec in specs:
         matching = [
-            update for update in capture.updates if update.get("range") == _expected_update_range(spec.title)
+            update for update in capture.updates
+            if update.get("spreadsheetId") == sheet_id and update.get("range") == _expected_update_range(spec.title)
         ]
         if len(matching) != 1:
             raise RuntimeError(
@@ -660,6 +664,7 @@ def _audit_tab(
     max_age_seconds: float,
     max_drift_seconds: float,
     limit: int,
+    max_system_age_seconds: float = DEFAULT_MAX_SYSTEM_CHECKED_AGE_MINUTES * 60.0,
 ) -> dict[str, object]:
     contract_headers = list(spec.headers)
     expected_rows = expected.values
@@ -676,11 +681,12 @@ def _audit_tab(
     mismatches: list[dict[str, object]] = []
     volatile_checks: list[dict[str, object]] = []
     mismatch_count = 0
+    detail_start = next((index for index, row in enumerate(expected_rows) if row and row[0] == "Project and timeline"), len(expected_rows))
     for row_index in range(expected_row_count):
         for column_index in range(expected_columns):
             expected_value = _cell(expected_rows, row_index, column_index)
             live_value = _cell(live.display_values, row_index, column_index)
-            if row_index > 0 and column_index == spec.volatile_timestamp_column:
+            if 0 < row_index < detail_start and column_index == spec.volatile_timestamp_column:
                 topic = _cell_text(_cell(expected_rows, row_index, 0))
                 # The issued-permit branch asks a resident to inspect the lobby.
                 # A machine refresh cannot claim this physical observation was
@@ -707,7 +713,7 @@ def _audit_tab(
                         live_value,
                         workbook_tz=workbook_tz,
                         now=now,
-                        max_age_seconds=max_age_seconds,
+                        max_age_seconds=(max_system_age_seconds if topic == spec.system_freshness_topic else max_age_seconds),
                         max_drift_seconds=max_drift_seconds,
                     )
                 timestamp_result.update(
@@ -843,7 +849,7 @@ def _audit_tab(
     }
 
 
-def _audit_workbook_metadata(metadata: dict[str, object], specs: tuple[TabSpec, ...]) -> dict[str, object]:
+def _audit_workbook_metadata(metadata: dict[str, object], specs: tuple[TabSpec, ...], *, audience: str = "public") -> dict[str, object]:
     properties = metadata.get("properties")
     properties = properties if isinstance(properties, dict) else {}
     workbook_title = str(properties.get("title") or "")
@@ -882,7 +888,7 @@ def _audit_workbook_metadata(metadata: dict[str, object], specs: tuple[TabSpec, 
         ({"title": title, "hidden": hidden} for title, hidden in title_to_hidden.items() if title not in expected_titles),
         key=lambda item: str(item["title"]),
     )
-    title_ok = workbook_title == sheets_sync.PUBLIC_WORKBOOK_TITLE
+    title_ok = audience == "operator" or workbook_title == sheets_sync.PUBLIC_WORKBOOK_TITLE
     expected_tabs_visible_ok = not missing and not hidden_expected
     stale_qa_visibility_ok = not visible_stale_qa
     return {
@@ -914,22 +920,28 @@ def _workbook_timezone(metadata_audit: dict[str, object]) -> ZoneInfo:
 def run_audit(
     *,
     resync: bool = False,
+    audience: str = "public",
     retries: int = DEFAULT_RETRIES,
     retry_sleep: float = DEFAULT_RETRY_SLEEP_SECONDS,
     post_resync_wait: float = 2.0,
-    max_last_checked_age_minutes: float = DEFAULT_MAX_LAST_CHECKED_AGE_MINUTES,
+    max_last_checked_age_minutes: float | None = None,
+    max_system_checked_age_minutes: float = DEFAULT_MAX_SYSTEM_CHECKED_AGE_MINUTES,
     max_last_checked_drift_minutes: float = DEFAULT_MAX_LAST_CHECKED_DRIFT_MINUTES,
     limit: int = 20,
     now: datetime | None = None,
     service_factory: Callable[[], object] | None = None,
 ) -> dict[str, object]:
+    if max_last_checked_age_minutes is None:
+        max_last_checked_age_minutes = watchdog_max_age_seconds() / 60.0
     result: dict[str, object] = {
         "ok": False,
         "read_only": not resync,
+        "audience": audience,
         "resync_requested": resync,
         "resynced": False,
         "bounds": {
             "max_last_checked_age_minutes": max_last_checked_age_minutes,
+            "max_system_checked_age_minutes": max_system_checked_age_minutes,
             "max_last_checked_drift_minutes": max_last_checked_drift_minutes,
         },
         "workbook": {},
@@ -941,13 +953,15 @@ def run_audit(
     if retries < 1 or retry_sleep < 0 or post_resync_wait < 0 or limit < 1:
         result["renderer_error"] = "retry, wait, and limit arguments are invalid"
         return result
-    if max_last_checked_age_minutes < 0 or max_last_checked_drift_minutes < 0:
+    if min(max_last_checked_age_minutes, max_system_checked_age_minutes, max_last_checked_drift_minutes) < 0:
         result["renderer_error"] = "freshness and drift bounds must be non-negative"
         return result
 
     try:
-        specs = _resolved_tab_specs()
-        sheet_id = sheets_sync._watchdog_sheet_id()
+        if audience not in {"public", "operator"}:
+            raise ValueError("audience must be public or operator")
+        specs = _resolved_tab_specs(audience)
+        sheet_id = sheets_sync._watchdog_sheet_id() if audience == "operator" else sheets_sync._public_sheet_id()
         result["spreadsheet_id"] = sheet_id
     except Exception as exc:
         result["renderer_error"] = str(exc)
@@ -964,7 +978,7 @@ def run_audit(
 
     expected: dict[str, ExpectedTab] = {}
     try:
-        expected = _capture_expected_values(sheet_id, specs)
+        expected = _capture_expected_values(sheet_id, specs, audience=audience)
     except Exception as exc:
         result["renderer_error"] = str(exc)
 
@@ -987,7 +1001,7 @@ def run_audit(
     if live_workbook is None:
         return result
 
-    metadata_audit = _audit_workbook_metadata(live_workbook.metadata, specs)
+    metadata_audit = _audit_workbook_metadata(live_workbook.metadata, specs, audience=audience)
     result["workbook"] = metadata_audit
     try:
         workbook_tz = _workbook_timezone(metadata_audit)
@@ -1023,6 +1037,7 @@ def run_audit(
             now=checked_now,
             max_age_seconds=max_age_seconds,
             max_drift_seconds=max_drift_seconds,
+            max_system_age_seconds=max_system_checked_age_minutes * 60.0,
             limit=limit,
         )
     result["tabs"] = tab_results
@@ -1039,8 +1054,9 @@ def run_audit(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Read back and audit all six public replacement-watchdog Google Sheet tabs."
+        description="Read back and audit the public watchdog views or complete operator tables."
     )
+    parser.add_argument("--audience", choices=("public", "operator"), default="public")
     parser.add_argument(
         "--resync",
         action="store_true",
@@ -1062,11 +1078,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--max-last-checked-age-minutes",
         type=float,
-        default=DEFAULT_MAX_LAST_CHECKED_AGE_MINUTES,
+        default=None,
         help=(
-            "Maximum age of automatic-check timestamps in ElevatorWatch. "
+            "Maximum age of official-source timestamps in ElevatorWatch; defaults to the configured "
+            "public-record sync interval plus 30 minutes of grace. "
             "Tenant-evidence timestamps must match the renderer but may legitimately be older."
         ),
+    )
+    parser.add_argument(
+        "--max-system-checked-age-minutes", type=float,
+        default=DEFAULT_MAX_SYSTEM_CHECKED_AGE_MINUTES,
+        help="Maximum age of the separate system-policy heartbeat (default: 90 minutes).",
     )
     parser.add_argument(
         "--max-last-checked-drift-minutes",
@@ -1081,10 +1103,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = run_audit(
         resync=args.resync,
+        audience=args.audience,
         retries=args.retries,
         retry_sleep=args.retry_sleep,
         post_resync_wait=args.post_resync_wait,
         max_last_checked_age_minutes=args.max_last_checked_age_minutes,
+        max_system_checked_age_minutes=args.max_system_checked_age_minutes,
         max_last_checked_drift_minutes=args.max_last_checked_drift_minutes,
         limit=args.limit,
     )

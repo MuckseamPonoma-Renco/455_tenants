@@ -1,8 +1,12 @@
 import datetime as dt
 import json
+from types import SimpleNamespace
+
+import pytest
 
 import scripts.run_cloud_recovery_cycle as recovery
 from scripts.run_cloud_recovery_cycle import CloudRecoveryOperations, _compact_cloud_result, config_errors, run_cycle
+from packages.public_records.config import source_configs
 
 
 def test_config_errors_requires_all_cloud_recovery_inputs(tmp_path):
@@ -27,6 +31,7 @@ def test_full_cycle_runs_exports_and_maintenance_without_portal_filing():
     operations = CloudRecoveryOperations(
         receiver_config=lambda: receiver,
         sync_cloud_exports=lambda config: calls.append(("exports", config)) or {
+            "ok": True,
             "action": "processed",
             "processed": [{"key": "pending/one"}],
             "pending_exports": 2,
@@ -34,13 +39,20 @@ def test_full_cycle_runs_exports_and_maintenance_without_portal_filing():
             "recovered_cloud_receipts": 1,
         },
         sync_311_statuses=lambda: calls.append(("status", None)) or {"ok": True, "updated": 2},
-        sync_replacement_watchdog=lambda: calls.append(("watchdog", None)) or {"ok": True, "actions_open": 1},
+        sync_replacement_watchdog=lambda: calls.append(("watchdog", None)) or {
+            "ok": True, "source_errors": 0, "sheet_errors": 0, "sheet_readback_ok": True, "actions_open": 1,
+            "source_health": {"ok": True, "sources": [
+                {"source_key": source.key, "state": "ready", "source_errors": 0, "last_success_at": dt.datetime.now(dt.UTC).isoformat()}
+                for source in source_configs()
+            ]},
+        },
         audit_public_tenant_log=lambda: calls.append(("audit", None)) or {"ok": True, "live_recent_rows": 14},
     )
 
-    result = run_cycle("full", operations=operations, primary_healthy=lambda: False)
+    result = run_cycle("full", operations=operations, primary_healthy=lambda: False, primary_watchdog_healthy=lambda: False)
 
     assert calls == [("exports", receiver), ("status", None), ("watchdog", None), ("audit", None)]
+    assert result["ok"] is True
     assert result["cloud_exports"] == {
         "action": "processed",
         "processed_exports": 1,
@@ -87,7 +99,7 @@ def test_status_cycle_skips_when_core_is_healthy_despite_export_degradation():
     assert result == {"ok": True, "mode": "status", "action": "skipped_primary_healthy"}
 
 
-def test_watchdog_cycle_skips_when_core_is_healthy_despite_export_degradation():
+def test_watchdog_cycle_skips_when_watchdog_is_healthy_despite_export_degradation():
     operations = CloudRecoveryOperations(
         receiver_config=lambda: (_ for _ in ()).throw(AssertionError("receiver should not be used")),
         sync_cloud_exports=lambda _config: (_ for _ in ()).throw(AssertionError("exports should not be synced")),
@@ -101,6 +113,7 @@ def test_watchdog_cycle_skips_when_core_is_healthy_despite_export_degradation():
         operations=operations,
         primary_healthy=lambda: False,
         primary_core_healthy=lambda: True,
+        primary_watchdog_healthy=lambda: True,
     )
 
     assert result == {"ok": True, "mode": "watchdog", "action": "skipped_primary_healthy"}
@@ -112,6 +125,7 @@ def test_full_cycle_runs_only_exports_when_core_is_healthy():
     operations = CloudRecoveryOperations(
         receiver_config=lambda: receiver,
         sync_cloud_exports=lambda config: calls.append(("exports", config)) or {
+            "ok": True,
             "action": "unchanged_skip",
             "processed": [],
             "pending_exports": 0,
@@ -126,6 +140,7 @@ def test_full_cycle_runs_only_exports_when_core_is_healthy():
         operations=operations,
         primary_healthy=lambda: False,
         primary_core_healthy=lambda: True,
+        primary_watchdog_healthy=lambda: True,
     )
 
     assert calls == [("exports", receiver)]
@@ -136,7 +151,7 @@ def test_full_cycle_runs_only_exports_when_core_is_healthy():
 
 
 def test_cycle_skips_without_loading_runtime_operations_when_primary_is_healthy():
-    result = run_cycle("full", primary_healthy=lambda: True)
+    result = run_cycle("full", primary_healthy=lambda: True, primary_watchdog_healthy=lambda: True)
 
     assert result == {"ok": True, "mode": "full", "action": "skipped_primary_healthy"}
 
@@ -215,3 +230,116 @@ def test_compact_cloud_result_excludes_local_paths_and_audit_content():
         "recovered_acknowledgements": 0,
         "recovered_cloud_receipts": 0,
     }
+
+
+def _successful_watchdog_result():
+    return {
+        "ok": True, "source_errors": 0, "sheet_errors": 0, "sheet_readback_ok": True,
+        "source_health": {"ok": True, "sources": [
+            {"source_key": source.key, "state": "ready", "source_errors": 0,
+             "last_success_at": dt.datetime.now(dt.UTC).isoformat()}
+            for source in source_configs()
+        ]},
+    }
+
+
+@pytest.mark.parametrize("failed_step", ["cloud_exports", "status_sync", "replacement_watchdog", "public_tenant_log_qa"])
+def test_one_recovery_exception_does_not_skip_independent_steps_or_expose_details(failed_step):
+    calls = []
+
+    def operation(name, result):
+        def run(*_args):
+            calls.append(name)
+            if name == failed_step:
+                raise RuntimeError("private fixture path and message content must not be emitted")
+            return result
+        return run
+
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: object(),
+        sync_cloud_exports=operation("cloud_exports", {"ok": True, "action": "unchanged_skip"}),
+        sync_311_statuses=operation("status_sync", {"ok": True}),
+        sync_replacement_watchdog=operation("replacement_watchdog", _successful_watchdog_result()),
+        audit_public_tenant_log=operation("public_tenant_log_qa", {"ok": True}),
+    )
+    result = run_cycle("full", operations=operations, force=True)
+    assert calls == ["cloud_exports", "status_sync", "replacement_watchdog", "public_tenant_log_qa"]
+    assert result["ok"] is False
+    assert result["failed_steps"] == [failed_step]
+    assert result[failed_step] == {"ok": False, "error": "recovery_step_failed"}
+    assert "private fixture" not in json.dumps(result)
+
+
+def test_missing_receiver_does_not_block_full_cycle_maintenance():
+    calls = []
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: None,
+        sync_cloud_exports=lambda _config: pytest.fail("not configured"),
+        sync_311_statuses=lambda: calls.append("status") or {"ok": True},
+        sync_replacement_watchdog=lambda: calls.append("watchdog") or _successful_watchdog_result(),
+        audit_public_tenant_log=lambda: calls.append("audit") or {"ok": True},
+    )
+    result = run_cycle("full", operations=operations, force=True)
+    assert calls == ["status", "watchdog", "audit"]
+    assert result["ok"] is False
+    assert result["failed_steps"] == ["cloud_exports"]
+
+
+@pytest.mark.parametrize("export_result", [{}, {"ok": False}, None])
+def test_export_result_requires_explicit_success(export_result):
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: object(), sync_cloud_exports=lambda _config: export_result,
+        sync_311_statuses=lambda: pytest.fail("wrong mode"),
+        sync_replacement_watchdog=lambda: pytest.fail("wrong mode"),
+        audit_public_tenant_log=lambda: pytest.fail("wrong mode"),
+    )
+    result = run_cycle("exports", operations=operations, force=True)
+    assert result["ok"] is False
+    assert result["failed_steps"] == ["cloud_exports"]
+
+
+def test_primary_health_exception_does_not_abort_other_capabilities():
+    calls = []
+
+    def failed_primary_health():
+        raise ValueError("invalid health endpoint fixture")
+
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: object(),
+        sync_cloud_exports=lambda _config: calls.append("exports") or {"ok": True, "action": "unchanged_skip"},
+        sync_311_statuses=lambda: pytest.fail("healthy status capability must remain primary-owned"),
+        sync_replacement_watchdog=lambda: calls.append("watchdog") or _successful_watchdog_result(),
+        audit_public_tenant_log=lambda: calls.append("audit") or {"ok": True},
+    )
+    result = run_cycle("full", operations=operations, primary_healthy=failed_primary_health,
+                       primary_core_healthy=lambda: True, primary_watchdog_healthy=failed_primary_health)
+    assert calls == ["exports", "watchdog", "audit"]
+    assert result["ok"] is True
+    assert result["action"] == "partial_recovery_run"
+
+
+@pytest.mark.parametrize("mode,check_config,expected_exit", [
+    ("status", False, 0), ("watchdog", False, 0), ("full", False, 0),
+    ("status", True, 0), ("watchdog", True, 0), ("full", True, 2), ("exports", False, 2),
+])
+def test_entrypoint_validates_only_required_capabilities(tmp_path, monkeypatch, mode, check_config, expected_exit):
+    # main intentionally sets these for its own process. Register their prior
+    # state with monkeypatch so that entrypoint calls cannot alter later tests.
+    monkeypatch.setenv("AUTO_FILE_ENABLED", "1")
+    monkeypatch.setenv("PROCESS_INLINE", "1")
+    monkeypatch.setenv("DISABLE_SHEETS_SYNC", "0")
+    credentials = tmp_path / "fixture-credentials.json"
+    credentials.write_text("{}")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credentials))
+    monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "fixture-sheet")
+    monkeypatch.delenv("CLOUD_EXPORT_RECEIVER_URL", raising=False)
+    monkeypatch.delenv("CLOUD_EXPORT_RECEIVER_PULL_TOKEN", raising=False)
+    monkeypatch.setattr(recovery, "parse_args", lambda: SimpleNamespace(
+        env_file=None, mode=mode, check_config=check_config, force=False,
+    ))
+    monkeypatch.setattr(recovery, "load_local_env_file", lambda _path: None)
+    calls = []
+    monkeypatch.setattr(recovery, "run_cycle", lambda selected_mode, **_kwargs: calls.append(selected_mode) or {"ok": True})
+    assert recovery.main() == expected_exit
+    assert calls == ([mode] if not check_config and expected_exit == 0 else [])

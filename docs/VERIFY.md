@@ -1,6 +1,6 @@
 # Verification
 
-Use the [README local setup](../README.md#local-setup) in a fresh checkout without live `.env`, credentials, exports, or browser sessions. Keep local application checks separate from deployment checks.
+Use the [local setup](OPERATIONS.md#local-setup) in a fresh checkout without live `.env`, credentials, exports, or browser sessions. Keep local application checks separate from deployment checks.
 
 ## Automated checks
 
@@ -12,6 +12,8 @@ node --test cloudflare/chat_export_receiver/worker.test.mjs
 The Python fixtures recreate `test_app.sqlite3` in the checkout, use inline processing, disable Sheets and LLM calls, and enable filing for mocked eligibility/lifecycle tests. Do not run this suite in an operational checkout containing data you need to preserve. The receiver suite uses Node's test runner and Web APIs.
 
 These checks cover code paths and regression fixtures. They do not verify external credentials, live capture, public-record freshness, portal availability, or successful live filing.
+
+The retained regressions cover explicit outage/context handling, closed portal pages, request-identity matching, fair status-check rotation, verified freshness, submission uncertainty, receipt conflicts, and manual evidence timestamps. Building-specific one-off repair scripts and their exclusive tests are preserved in a private recovery archive rather than shipped as recurring operations. General classification, filing, and reconciliation tests remain in the public suite.
 
 For an optional syntax check limited to source directories:
 
@@ -44,7 +46,7 @@ The existing smoke script inserts a synthetic message into its configured databa
 
 Inspect the printed HTTP statuses and response bodies; the script does not turn every failed response into a failing exit code. Intake should succeed and no filing job should be claimed. The smoke script exercises the retained Tasker compatibility endpoint; the regression suite also exercises the current WhatsApp routes.
 
-The review-local status paths prevent a local demo from displaying another installation's heartbeat files. They can also be exported for the README's local API session.
+The review-local status paths prevent a local demo from displaying another installation's heartbeat files. They can also be exported for the local API session.
 
 ## Read-only checks for a configured deployment
 
@@ -118,4 +120,4 @@ Case closure is not proof that the underlying building issue was repaired. Check
 
 For Sheets/watchdog output, compare stored records with rendered rows, inspect source errors and freshness, then read back the actual destination workbook. A running heartbeat or successful sync request alone does not prove current, correct public output. Export the chronology bundle only from the intended dataset and review its contents before sharing.
 
-The [fictional resident-view example](TENANT_LOG_EXAMPLE.md) is the portfolio preview; it is not live service evidence.
+The [fictional resident-view example](TENANT_LOG_EXAMPLE.md) supports offline review without real incident data; it is not live service evidence.

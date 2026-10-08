@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
 from packages.sheets.public_semantic_overrides import (
+    DEFAULT_OVERRIDE_PATH,
+    OVERRIDE_PATH_ENV,
     PublicSemanticOverrideError,
     PublicSemanticOverrideHashMismatch,
     get_public_semantic_override,
@@ -13,10 +16,13 @@ from packages.sheets.public_semantic_overrides import (
 )
 
 
-RESTORE_MESSAGE_ID = "a1f33f3c5ea919e042d082a0a25768ffafe85230ce57490f155c16b1971086be"
-TRANSIT_MESSAGE_ID = "d2abe256aac02ed84ffd4a7926ae5f8c500fdf7562cd14d842a3799275cf5c38"
-LITTER_MESSAGE_ID = "4ddabad9aedeb1e362ad048e14fb6978f38cf71d7d2755535aad59b58ba793cc"
-MOUSE_MESSAGE_ID = "9a29f78e3fab730079ae60903db277fa3d59f138fbb14845be2149db2e385f03"
+SYNTHETIC_MESSAGE_ID = "a" * 64
+SYNTHETIC_SOURCE = "The fictional north elevator is working again."
+
+
+@pytest.fixture(autouse=True)
+def isolated_override_configuration(monkeypatch):
+    monkeypatch.delenv(OVERRIDE_PATH_ENV, raising=False)
 
 
 def _entry(**updates):
@@ -42,86 +48,76 @@ def _write_manifest(tmp_path, entries, **root_updates):
     return path
 
 
-def test_default_manifest_is_complete_and_privacy_conservative():
-    overrides = load_public_semantic_overrides()
-
-    assert len(overrides) == 136
-    assert sum(item.include for item in overrides.values()) == 99
-    assert sum(not item.include for item in overrides.values()) == 37
-
-    restore = overrides[RESTORE_MESSAGE_ID]
-    assert restore.include is True
-    assert restore.issue_label == "Both elevators working"
-    assert restore.summary == "Both elevators were reported working."
-
-    transit = overrides[TRANSIT_MESSAGE_ID]
-    assert transit.include is False
-    assert transit.show_evidence is False
-    assert transit.summary == ""
-
-    # Rescue photos show residents, and the garage photo contains readable
-    # vehicle plates, so neither may be linked from the public sheet.
-    assert overrides[
-        "82830e6f0ecb201ad6a3cad9c125647047b69a05a5d382885bdba08821679b36"
-    ].show_evidence is False
-    assert overrides[
-        "5e14fe204def6391e047d33a647802b5a6bb1251d8e01e67b4f38018a68839c9"
-    ].show_evidence is False
-
-    litter = overrides[LITTER_MESSAGE_ID]
-    assert litter.include is True
-    assert litter.summary == (
-        "Stair landing/common-area litter and debris were reported left uncleaned."
-    )
-    assert litter.show_evidence is False
-
-    mouse = overrides[MOUSE_MESSAGE_ID]
-    assert mouse.include is True
-    assert mouse.summary == "A dead mouse was reported at a common-area building threshold."
-    assert mouse.show_evidence is False
+def test_bundled_default_contains_no_operational_records():
+    assert dict(load_public_semantic_overrides(DEFAULT_OVERRIDE_PATH)) == {}
+    assert dict(load_public_semantic_overrides()) == {}
 
 
-def test_exact_message_id_and_raw_text_resolve_audited_override():
-    override = get_public_semantic_override(RESTORE_MESSAGE_ID, "Both currently working")
+def test_explicit_private_file_preserves_exact_source_binding(tmp_path, monkeypatch):
+    entry = _entry(raw_text_sha256=raw_text_sha256(SYNTHETIC_SOURCE))
+    path = _write_manifest(tmp_path, [entry])
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(path))
 
+    override = get_public_semantic_override(SYNTHETIC_MESSAGE_ID, SYNTHETIC_SOURCE)
     assert override is not None
-    assert override.include is True
-    assert override.summary == "Both elevators were reported working."
-
-
-@pytest.mark.parametrize(
-    ("message_id", "raw_text", "expected_summary"),
-    [
-        (
-            LITTER_MESSAGE_ID,
-            "Our flr. I haven't clean it up yet, cuz a little challenging with a dog with me. <This message was edited>",
-            "Stair landing/common-area litter and debris were reported left uncleaned.",
-        ),
-        (
-            MOUSE_MESSAGE_ID,
-            "this building.",
-            "A dead mouse was reported at a common-area building threshold.",
-        ),
-    ],
-)
-def test_media_backed_overrides_are_hash_locked_and_hide_photos(
-    message_id, raw_text, expected_summary
-):
-    override = get_public_semantic_override(message_id, raw_text)
-
-    assert override is not None
-    assert override.include is True
-    assert override.summary == expected_summary
+    assert override.summary == entry["summary"]
     assert override.show_evidence is False
+    with pytest.raises(PublicSemanticOverrideHashMismatch, match=SYNTHETIC_MESSAGE_ID):
+        get_public_semantic_override(SYNTHETIC_MESSAGE_ID, SYNTHETIC_SOURCE + " Changed.")
+    assert get_public_semantic_override("f" * 64, "Unrelated fictional message") is None
 
 
-def test_unknown_message_id_has_no_override():
-    assert get_public_semantic_override("f" * 64, "anything") is None
+def test_private_exclusion_remains_excluded(tmp_path, monkeypatch):
+    entry = _entry(include=False, issue_label="", category_label="", summary="", show_evidence=False)
+    path = _write_manifest(tmp_path, [entry])
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(path))
+    override = get_public_semantic_override(SYNTHETIC_MESSAGE_ID, "source text")
+    assert override is not None and not override.include and not override.show_evidence
 
 
-def test_known_message_id_with_changed_text_fails_closed():
-    with pytest.raises(PublicSemanticOverrideHashMismatch, match=RESTORE_MESSAGE_ID):
-        get_public_semantic_override(RESTORE_MESSAGE_ID, "Both currently working.")
+def test_missing_configured_file_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(tmp_path / "missing.json"))
+    with pytest.raises(PublicSemanticOverrideError, match="unable to load"):
+        load_public_semantic_overrides()
+    with pytest.raises(PublicSemanticOverrideError, match="unable to load"):
+        get_public_semantic_override(SYNTHETIC_MESSAGE_ID, SYNTHETIC_SOURCE)
+
+
+def test_invalid_configured_file_fails_closed(tmp_path, monkeypatch):
+    path = tmp_path / "invalid.json"
+    path.write_text("not JSON", encoding="utf-8")
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(path))
+    with pytest.raises(PublicSemanticOverrideError, match="unable to load"):
+        load_public_semantic_overrides()
+
+
+def test_explicit_argument_takes_precedence_over_configuration(tmp_path, monkeypatch):
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(tmp_path / "missing.json"))
+    path = _write_manifest(tmp_path, [_entry()])
+    assert list(load_public_semantic_overrides(path)) == [SYNTHETIC_MESSAGE_ID]
+
+
+def test_configuration_change_is_not_hidden_by_cache(tmp_path, monkeypatch):
+    assert not load_public_semantic_overrides()
+    path = _write_manifest(tmp_path, [_entry()])
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(path))
+    assert SYNTHETIC_MESSAGE_ID in load_public_semantic_overrides()
+    monkeypatch.delenv(OVERRIDE_PATH_ENV)
+    assert not load_public_semantic_overrides()
+
+
+def test_private_file_replacement_or_removal_does_not_use_stale_cache(tmp_path, monkeypatch):
+    path = _write_manifest(tmp_path, [_entry()])
+    monkeypatch.setenv(OVERRIDE_PATH_ENV, str(path))
+    assert SYNTHETIC_MESSAGE_ID in load_public_semantic_overrides()
+    previous = path.stat()
+    path.write_text(json.dumps({"schema_version": 1, "overrides": []}), encoding="utf-8")
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
+    assert not load_public_semantic_overrides()
+    path.unlink()
+    with pytest.raises(PublicSemanticOverrideError, match="unable to load"):
+        load_public_semantic_overrides()
+
 
 
 def test_loader_rejects_duplicate_message_ids(tmp_path):

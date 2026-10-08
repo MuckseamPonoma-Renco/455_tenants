@@ -1,6 +1,7 @@
 import re
 
 from packages.incident.content_guardrails import nonreporting_content_reason
+from packages.incident.building_conditions import building_condition_presentation
 
 ELEVATOR = re.compile(r"\b(elevator|elevators|lift|lifts)\b", re.I)
 ELEVATOR_SIDE_REFERENCE = re.compile(r"\b(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\b", re.I)
@@ -419,6 +420,16 @@ def classify_rules(text: str) -> dict:
             "kind": "issue",
             "preserve_issue": True,
             "preserve_event_type": True,
+        }
+
+    building_condition = building_condition_presentation(t)
+    if building_condition:
+        return {
+            "is_issue": True, "category": "other", "asset": None,
+            "event_type": building_condition.get("event_type", "new_issue"),
+            "severity": 4 if building_condition["kind"] == "electrical" and building_condition.get("event_type") != "status_update" else 2,
+            "title": building_condition["label"], "summary": building_condition["summary"],
+            "kind": "issue", "preserve_issue": True, "preserve_event_type": True,
         }
 
     if QUESTION_ONLY.search(t) and DISCUSSION_QUESTION.search(t):

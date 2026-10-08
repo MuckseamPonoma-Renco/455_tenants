@@ -1,20 +1,21 @@
+# All case numbers and chat identities in these regression fixtures are fictional.
 from packages.nyc311.portal import _extract_lookup_status, _lookup_matches
 from packages.db import get_session, MessageDecision, Incident
 from packages.nyc311.planner import incident_is_auto_eligible
 
 
 def test_closed_dob_page_without_status_label_is_closed():
-    text = ('SR Number\n311-28759855\nUpdated On\n09/09/2026, 07:18 AM\n'
+    text = ('SR Number\n311-00000001\nUpdated On\n09/09/2026, 07:18 AM\n'
             'Date Closed\n09/08/2026, 12:00 AM\nProblem\nElevator')
     assert _extract_lookup_status(text) == 'Closed'
-    assert _lookup_matches(text, '311-28759855')
-    assert not _lookup_matches(text, '311-28951783')
+    assert _lookup_matches(text, '311-00000001')
+    assert not _lookup_matches(text, '311-00000002')
 
 
 def test_lookup_does_not_accept_navigation_or_unlabeled_number():
     assert _extract_lookup_status('Service Request Status\nSign In | Sign Up') is None
     assert _extract_lookup_status('Status\nProblem\nElevator') is None
-    assert not _lookup_matches('Searching for 311-28759855', '311-28759855')
+    assert not _lookup_matches('Searching for 311-00000001', '311-00000001')
     assert _extract_lookup_status('Date Closed\n-\nSR Status\nIn Progress') == 'In Progress'
     assert _extract_lookup_status('Date Closed\n09/08/2026, 12:00 AM\nSR Status\nIn Progress') == 'In Progress'
 
@@ -39,7 +40,7 @@ def test_explicit_outage_after_agreement_is_not_downgraded(client):
     base = 1789408800
     for offset, text in enumerate(('Only one working at 2:20.', 'Yeah. South lift is out.', 'Mechanic is here.')):
         response = client.post('/ingest/tasker', headers=headers, json={
-            'chat_name': '455 Tenants', 'sender': 'Test Resident',
+            'chat_name': 'Test Building', 'sender': 'Test Resident',
             'text': text, 'ts_epoch': base + offset * 60,
         })
         assert response.status_code == 200
@@ -57,7 +58,7 @@ def test_only_one_working_with_elevator_context_is_actionable(client):
     with get_session() as session, unittest.mock.patch(
         'packages.incident.extractor._has_recent_same_chat_elevator_context', return_value=True
     ):
-        row = RawMessage(message_id='context-fragment', chat_name='455 Tenants',
+        row = RawMessage(message_id='context-fragment', chat_name='Test Building',
                          ts_epoch=1789408800, text='Only one working at 2:20.')
         choice = _contextual_elevator_followup_choice(session, row, {})
         assert choice['event_type'] == 'outage'
