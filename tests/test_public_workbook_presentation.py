@@ -69,7 +69,7 @@ def test_tenant_summary_layout_uses_only_trailing_blank_cells(monkeypatch):
             requests.extend(kwargs["body"]["requests"])
             return Request()
 
-    monkeypatch.setattr(sync, "_sheet_title_to_id_map", lambda *args: {"Tenant Log": 1})
+    monkeypatch.setattr(sync, "_sheet_properties_by_title", lambda *args: {"Tenant Log": {"sheetId": 1}})
     sync._apply_tab_layout(Service(), "public", "Tenant Log", row_count=30, column_count=7,
         layout="public_updates", layout_meta={"section_rows": [3, 11, 16, 25], "header_rows": [4, 12, 17, 26]})
     merges = [request["mergeCells"]["range"] for request in requests if "mergeCells" in request]
@@ -78,6 +78,56 @@ def test_tenant_summary_layout_uses_only_trailing_blank_cells(monkeypatch):
         [(row, 2, 7) for row in range(3, 9)] + [(row, 4, 7) for row in range(11, 14)]
     )
     assert not any(cell["startRowIndex"] >= 16 for cell in summary)
+
+
+def test_public_layout_hides_empty_columns_and_reopens_a_wider_schema():
+    hidden = [False] * 26
+    hidden_rows = [False] * 1000
+    batches = []
+    reads = []
+
+    class Request:
+        def __init__(self, response=None):
+            self.response = response or {}
+
+        def execute(self):
+            return self.response
+
+    class Service:
+        def spreadsheets(self):
+            return self
+
+        def get(self, **kwargs):
+            reads.append(kwargs)
+            return Request({"sheets": [{"properties": {
+                "title": "Resident view", "sheetId": 0,
+                "gridProperties": {"rowCount": 1000, "columnCount": 26},
+            }}]})
+
+        def batchUpdate(self, **kwargs):
+            requests = kwargs["body"]["requests"]
+            batches.append(requests)
+            assert not any("deleteDimension" in request or "deleteSheet" in request for request in requests)
+            for request in requests:
+                change = request.get("updateDimensionProperties", {})
+                if change.get("fields") == "hiddenByUser":
+                    assert change["range"]["sheetId"] == 0
+                    visibility = hidden if change["range"]["dimension"] == "COLUMNS" else hidden_rows
+                    for index in range(change["range"]["startIndex"], change["range"]["endIndex"]):
+                        visibility[index] = change["properties"]["hiddenByUser"]
+            return Request()
+
+    service = Service()
+    sync._apply_tab_layout(service, "public", "Resident view", row_count=20, column_count=7, layout="public_watchdog")
+    assert hidden == [False] * 7 + [True] * 19
+    assert hidden_rows == [False] * 20 + [True] * 980
+    sync._apply_tab_layout(service, "public", "Resident view", row_count=25, column_count=8, layout="public_watchdog")
+    assert hidden == [False] * 8 + [True] * 18
+    assert hidden_rows == [False] * 25 + [True] * 975
+    # Operator detail remains fully independent of the public viewport rule.
+    sync._apply_tab_layout(service, "operator", "Resident view", row_count=20, column_count=23, layout="watchdog")
+    assert not any(request.get("updateDimensionProperties", {}).get("fields") == "hiddenByUser" for request in batches[-1])
+    assert len(reads) == 3  # Reuse the existing single metadata read per layout.
 
 
 def test_watchdog_consolidation_preserves_timeline_photos_and_action_draft():
