@@ -27,6 +27,8 @@ DEFAULT_SINCE = "2026-06-05"
 EXPORT_EXTENSIONS = {".zip", ".txt"}
 STAGE_COPY_ATTEMPTS = 5
 STAGE_COPY_RETRY_SECONDS = 2.0
+EXPORT_RETRY_INITIAL_SECONDS = 60 * 60
+EXPORT_RETRY_MAX_SECONDS = 24 * 60 * 60
 TRANSIENT_ICLOUD_COPY_ERRNOS = frozenset(
     error_number
     for error_number in (
@@ -216,7 +218,35 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 def _clear_failure_state(state: dict[str, Any]) -> None:
     state.pop("last_attempt_at", None)
     state.pop("last_failed_at", None)
+    state.pop("last_failed_fingerprint", None)
+    state.pop("last_failed_since", None)
+    state.pop("export_retry", None)
     state["last_error"] = ""
+
+
+def retry_is_deferred(retry: Any, *, now: dt.datetime) -> bool:
+    if not isinstance(retry, dict):
+        return False
+    try:
+        next_attempt = dt.datetime.fromisoformat(str(retry["next_retry_at"]).replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError):
+        return False
+    # Never let a corrupt/stale timestamp suppress recovery indefinitely.
+    return next_attempt.tzinfo is not None and dt.timedelta(0) < next_attempt - now <= dt.timedelta(seconds=EXPORT_RETRY_MAX_SECONDS)
+
+
+def next_export_retry(previous: Any, *, now: dt.datetime) -> dict[str, Any]:
+    try:
+        attempts = max(0, int(previous.get("attempts", 0))) if isinstance(previous, dict) else 0
+    except (TypeError, ValueError):
+        attempts = 0
+    attempts = min(attempts + 1, 32)
+    delay = min(EXPORT_RETRY_INITIAL_SECONDS * (2 ** (attempts - 1)), EXPORT_RETRY_MAX_SECONDS)
+    return {
+        "attempts": attempts,
+        "last_failed_at": now.isoformat().replace("+00:00", "Z"),
+        "next_retry_at": (now + dt.timedelta(seconds=delay)).isoformat().replace("+00:00", "Z"),
+    }
 
 
 def _safe_destination(dest_dir: Path, source: Path) -> Path:
@@ -412,13 +442,31 @@ def _sync_once_unlocked(
             "state_path": str(state_path),
         }
 
+    same_failed_export = (
+        _same_export_identity(state.get("last_failed_fingerprint"), fingerprint)
+        and state.get("last_failed_since") == since
+    )
+    if not force and same_failed_export and retry_is_deferred(state.get("export_retry"), now=dt.datetime.now(dt.UTC)):
+        save_state(state_path, state)
+        return {
+            "ok": False,
+            "action": "retry_deferred",
+            "source": str(source),
+            "next_retry_at": state["export_retry"]["next_retry_at"],
+            "state_path": str(state_path),
+        }
+
     try:
         staged = stage_export(source, dest_dir)
         result = run_import_and_audit(staged, since=since)
     except Exception as exc:
-        failed_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        retry = next_export_retry(state.get("export_retry") if same_failed_export else None, now=dt.datetime.now(dt.UTC))
+        failed_at = retry["last_failed_at"]
         state["last_attempt_at"] = failed_at
         state["last_failed_at"] = failed_at
+        state["last_failed_fingerprint"] = fingerprint
+        state["last_failed_since"] = since
+        state["export_retry"] = retry
         state["last_error"] = str(exc)[:1000]
         save_state(state_path, state)
         raise
@@ -473,7 +521,7 @@ def main() -> None:
     parser.add_argument("--dest-dir", default=str(LOCAL_CHAT_EXPORT_DIR), help="Local repo inbox where exports are staged.")
     parser.add_argument("--state-path", default=str(DEFAULT_STATE_PATH), help="State file used to skip unchanged exports.")
     parser.add_argument("--since", default=DEFAULT_SINCE, help=f"Audit cutoff timestamp. Default: {DEFAULT_SINCE}")
-    parser.add_argument("--force", action="store_true", help="Process the newest export even if it matches the last processed fingerprint.")
+    parser.add_argument("--force", action="store_true", help="Process the newest export immediately, bypassing unchanged checks and retry backoff.")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be processed without copying/importing/auditing.")
     args = parser.parse_args()
 
@@ -487,6 +535,8 @@ def main() -> None:
         dry_run=args.dry_run,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
+    if result.get("ok") is False:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

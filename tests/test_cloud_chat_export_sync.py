@@ -1,4 +1,5 @@
 import io
+import datetime as dt
 import json
 import stat
 import sys
@@ -511,7 +512,7 @@ def test_certify_legacy_receipt_cli_accepts_an_exact_receipt_key(monkeypatch, ca
     assert captured["dest_dir"] == cloud_sync.Path("/tmp/test-cloud-exports")
 
 
-def test_run_once_keeps_quota_blocked_export_pending_without_failing(tmp_path, monkeypatch):
+def test_run_once_keeps_quota_blocked_export_pending_and_visibly_incomplete(tmp_path, monkeypatch):
     payload = _zip_bytes()
     record = _record(payload)
     acknowledgements = []
@@ -551,7 +552,7 @@ def test_run_once_keeps_quota_blocked_export_pending_without_failing(tmp_path, m
         client=_client(handler),
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
     assert result["action"] == "blocked_model_review"
     assert result["pending_exports"] == 1
     assert result["blocked_exports"][0]["reason"] == "insufficient_quota"
@@ -607,6 +608,18 @@ def test_run_once_persists_failed_acknowledgement_as_a_retryable_receipt(tmp_pat
     assert receipt["stages"]["sheet_sync"]["state"] == "complete"
     assert receipt["stages"]["sheet_readback"]["state"] == "complete"
     assert receipt["stages"]["acknowledgement"]["state"] == "error"
+    # A fresh runner receives only cached retry metadata. It must not redo the
+    # completed database audit immediately after losing its local ack receipt.
+    retry_path = state_path.with_name("state-retries.json")
+    monkeypatch.setattr(cloud_sync, "run_import_and_audit", lambda *_args, **_kwargs: pytest.fail("unexpected repeated audit"))
+    deferred = cloud_sync.run_once(
+        cloud_sync.ReceiverConfig("https://uploads.example.test", "pull-token"),
+        dest_dir=tmp_path / "fresh-runner", state_path=tmp_path / "fresh-state.json",
+        retry_state_path=retry_path, client=_client(handler),
+    )
+    assert deferred["ok"] is False
+    assert deferred["action"] == "retry_deferred"
+    assert deferred["deferred_exports"] == 1
 
 
 def test_run_once_preserves_audit_success_when_sheet_sync_fails(tmp_path, monkeypatch):
@@ -781,7 +794,7 @@ def test_run_once_checks_newest_export_first_and_continues_after_quota_block(tmp
         max_exports=2,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
     assert result["action"] == "blocked_model_review"
     assert len(audited) == 2
     assert audited[0].endswith(str(newer["filename"]))
@@ -953,3 +966,117 @@ def test_probe_checks_public_health_and_authenticated_listing():
 def test_receiver_config_rejects_non_origin_urls(url):
     with pytest.raises(cloud_sync.CloudReceiverError):
         cloud_sync.receiver_config(url, "pull-token")
+
+def test_blocked_export_backoff_survives_state_reload_and_does_not_block_fresh_exports(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    blocked = _record(payload)
+    fresh = {**blocked, "key": str(blocked["key"]).replace("12.zip", "13.zip"), "filename": "WhatsApp Chat - 455 Tenants 13.zip"}
+    records = [blocked]
+    attempts = []
+    acknowledged = []
+
+    def handler(request):
+        if request.url.path == "/v1/exports":
+            return httpx.Response(200, json={"exports": records})
+        if request.url.host == "signed.example.test":
+            return httpx.Response(200, content=payload)
+        if request.url.path == "/v1/exports/ack":
+            acknowledged.append(json.loads(request.content)["key"])
+            return httpx.Response(200, json={"acknowledged": True})
+        raise AssertionError(str(request.url))
+
+    def audit(path, *, since):
+        attempts.append(path.name)
+        if path.name.endswith("12.zip"):
+            raise cloud_sync.ModelReviewIncompleteError({"error": "private message text", "llm_review_retry": {"error": "insufficient_quota"}})
+        return {"audit_summary": {"parsed_messages": 1}}
+
+    monkeypatch.setattr(cloud_sync, "run_import_and_audit", audit)
+    config = cloud_sync.ReceiverConfig("https://uploads.example.test", "private-token")
+    kwargs = {"dest_dir": tmp_path / "incoming", "state_path": tmp_path / "state.json", "retry_state_path": tmp_path / "retries.json"}
+    first = cloud_sync.run_once(config, client=_client(handler), **kwargs)
+    assert first["ok"] is False
+    assert len(first["blocked_exports"]) == 1
+    assert first["next_retry_at"]
+    assert acknowledged == []
+
+    records.append(fresh)
+    second = cloud_sync.run_once(config, client=_client(handler), **kwargs)
+    assert second["ok"] is False  # A deferred blocker stays visible.
+    assert second["deferred_exports"] == 1
+    assert len(second["processed"]) == 1
+    assert len(attempts) == 2
+    assert acknowledged == [fresh["key"]]
+    retry_text = (tmp_path / "retries.json").read_text()
+    assert "private" not in retry_text and "WhatsApp" not in retry_text and "https" not in retry_text
+    retries = json.loads(retry_text)
+    assert all(len(key) == 64 for key in retries)
+
+    # Once due, normal automatic recovery retries without a manual action.
+    for retry in retries.values():
+        retry["next_retry_at"] = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    (tmp_path / "retries.json").write_text(json.dumps(retries))
+    records[:] = [blocked]
+    third = cloud_sync.run_once(config, client=_client(handler), **kwargs)
+    assert len(third["blocked_exports"]) == 1
+    assert len(attempts) == 3
+    assert next(iter(json.loads((tmp_path / "retries.json").read_text()).values()))["attempts"] == 2
+    monkeypatch.setattr(cloud_sync, "run_import_and_audit", lambda *_args, **_kwargs: {"audit_summary": _successful_certification_summary()})
+    recovered = cloud_sync.run_once(config, client=_client(handler), force=True, **kwargs)
+    assert recovered["ok"] is True
+    assert recovered["action"] == "processed"
+    assert recovered["blocked_exports"] == []
+    receipt = json.loads((tmp_path / "state.json").read_text())["receipts"][blocked["key"]]
+    assert receipt["status"] == "ready"
+    assert "next_retry_at" not in receipt
+
+
+def test_force_retries_blocked_export_and_success_clears_retry_state(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    record = _record(payload)
+
+    def handler(request):
+        if request.url.path == "/v1/exports":
+            return httpx.Response(200, json={"exports": [record]})
+        if request.url.path == "/v1/exports/ack":
+            return httpx.Response(200, json={"acknowledged": True})
+        return httpx.Response(200, content=payload)
+
+    config = cloud_sync.ReceiverConfig("https://uploads.example.test", "token")
+    retry_path = tmp_path / "retries.json"
+    key = cloud_sync._retry_key(config, record, cloud_sync.DEFAULT_SINCE)
+    retry_path.write_text(json.dumps({key: cloud_sync.next_export_retry(None, now=dt.datetime.now(dt.UTC))}))
+    monkeypatch.setattr(cloud_sync, "run_import_and_audit", lambda *_args, **_kwargs: {"audit_summary": {"parsed_messages": 1}})
+
+    result = cloud_sync.run_once(config, dest_dir=tmp_path / "incoming", state_path=tmp_path / "state.json", retry_state_path=retry_path, client=_client(handler), force=True)
+
+    assert result["ok"] is True
+    assert len(result["processed"]) == 1
+    assert json.loads(retry_path.read_text()) == {}
+
+
+def test_saved_failed_ack_does_not_block_a_fresh_export(tmp_path, monkeypatch):
+    payload = _zip_bytes()
+    previous = _record(payload)
+    fresh = {**previous, "key": str(previous["key"]).replace("12.zip", "13.zip"), "filename": "WhatsApp Chat - 455 Tenants 13.zip"}
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"pending_acknowledgements": {previous["key"]: {"key": previous["key"], "sha256": "a" * 64, "audit": {"parsed_messages": 1}}}}))
+    imported = []
+
+    def handler(request):
+        if request.url.path == "/v1/exports":
+            return httpx.Response(200, json={"exports": [previous, fresh]})
+        if request.url.path == "/v1/exports/ack":
+            if json.loads(request.content)["key"] == previous["key"]:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"acknowledged": True})
+        return httpx.Response(200, content=payload)
+
+    monkeypatch.setattr(cloud_sync, "run_import_and_audit", lambda path, **_kwargs: imported.append(path.name) or {"audit_summary": _successful_certification_summary()})
+    with pytest.raises(cloud_sync.CloudReceiverError, match="503"):
+        cloud_sync.run_once(cloud_sync.ReceiverConfig("https://uploads.example.test", "token"), dest_dir=tmp_path / "incoming", state_path=state_path, client=_client(handler))
+
+    assert len(imported) == 1 and imported[0].endswith("13.zip")
+    state = json.loads(state_path.read_text())
+    assert list(state["pending_acknowledgements"]) == [previous["key"]]
+    assert state["receipts"][fresh["key"]]["status"] == "ready"

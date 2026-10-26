@@ -83,6 +83,21 @@ not acknowledge a new export after such a failure, so it can retry after API acc
 is restored. A successful ZIP download or database import is not proof that every
 message received model review.
 
+Automatic retries remain enabled. After an import/audit failure, the same export
+waits 1 hour before another attempt; repeated failures increase that delay to 2,
+4, 8, 16, then at most 24 hours. Inbox checks continue on their existing schedule,
+and a fresh export is eligible immediately. Deferred work remains visibly blocked
+and is never acknowledged as completed. Local retry state survives process
+restarts; cloud recovery caches only hashed export identities, attempt counters,
+and retry times between GitHub runs. It does not cache archives, filenames,
+credentials, audit payloads, or error text. If the cache is lost, the next check
+attempts the work again.
+
+After resolving the blocker, an operator can use `--force` on the relevant export
+sync script to retry immediately. The cloud recovery workflow also exposes a
+manual `force` input; it bypasses the healthy-primary skip and export retry delay,
+but preserves the existing import, review, and acknowledgement checks.
+
 Weekly exports and all historical reprocessing run with filing creation disabled.
 They may correct incidents, decisions, rosters, and Sheets, but cannot enqueue or
 submit a new NYC311 complaint.
@@ -169,7 +184,7 @@ This does not replace live capture. If the Mac-side WhatsApp watcher is stalled,
 
 ## Independent Availability Monitor
 
-`.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and on manual request. It validates that the API is reachable, Neon accepts a live query, the automation loop has a recent heartbeat, the database and Sheets are configured, host free storage is above the 10 GiB safety threshold, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. It sends no chat export, message text, file name, or spreadsheet data to GitHub.
+`.github/workflows/public-service-health.yml` independently checks the public API on each `main` update and on manual request. It validates that the API is reachable, the automation loop has a recent heartbeat, the database and Sheets are configured, host free storage is above the 10 GiB safety threshold, WhatsApp capture is fresh, and the iCloud import heartbeat is fresh. Routine `/health` is database-free: `database_ready: null` with `database_check: "not_requested"` means database reachability was not tested. An operator can request `/health?check_database=true` for a live diagnostic. The availability workflow sends no chat export, message text, file name, or spreadsheet data to GitHub.
 
 This check is intentionally not scheduled because the endpoint depends on the Mac and Cloudflare tunnel. Scheduled Mac-off recovery and monitoring belong to `.github/workflows/cloud-recovery.yml`; treating an expected powered-off Mac as a GitHub failure creates noisy failure notifications without recovering anything. Push and manual checks remain strict, so deployment regressions still fail visibly.
 
@@ -188,6 +203,11 @@ That command verifies Mac LaunchAgents, public `/health`, strict Mac-off intake,
 `.github/workflows/cloud-recovery.yml` is intentionally disabled until all private configuration is present. Once enabled, it downloads pending R2 exports to an ephemeral GitHub-hosted runner, imports and audits them, refreshes 311 status and replacement-watchdog data on their normal schedules, and writes the same Tenant Log outputs. It never uploads a chat archive as an artifact or logs chat text. The runner forces `AUTO_FILE_ENABLED=0`, so it cannot submit a new NYC311 filing.
 
 It is a failover path, not a second primary worker: a scheduled run exits before reading or writing data when the Mac's public automation heartbeat is fresh. It runs only after that heartbeat is missing, unhealthy, or older than 20 minutes. A manual `--force` run is available only to a repository operator for a deliberate recovery.
+
+Export-only recovery lists the receiver and checks retry eligibility before
+loading any database-dependent work. Empty inboxes and deferred retries do not
+query Neon. Status and watchdog recovery retain their existing schedules, and a
+blocked export does not prevent those independent steps in a full recovery run.
 
 Enable it only after the private Cloudflare receiver is deployed and these GitHub Actions secrets are configured:
 

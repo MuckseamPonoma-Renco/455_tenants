@@ -59,7 +59,8 @@ def test_health_includes_safe_whatsapp_and_chat_sync_status(client, monkeypatch,
     }
     assert payload["storage"] == {"state": "ready", "low_disk": False}
     assert payload["cloud_export_receiver"] == {"state": "not_configured", "configured": False}
-    assert payload["database_ready"] is True
+    assert payload["database_ready"] is None
+    assert payload["database_check"] == "not_requested"
     assert payload["automation"] == {
         "state": "ready",
         "last_cycle_at": "2026-07-20T01:55:00Z",
@@ -277,7 +278,8 @@ def test_cloud_receipt_reconciles_legacy_staged_export_as_unverified(client, mon
     assert sync["latest_export"]["status"] == "legacy_unverified"
 
 
-def test_pending_hard_failure_precedes_newer_quota_block(client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("last_error", ["one pending export failed", "one or more exports await automatic retry"])
+def test_pending_hard_failure_precedes_newer_quota_block(client, monkeypatch, tmp_path, last_error):
     cloud_path = tmp_path / "cloud-chat-export-sync.json"
     monkeypatch.setenv("CHAT_EXPORT_SYNC_STATE_PATH", str(tmp_path / "missing-icloud.json"))
     monkeypatch.setenv("CLOUD_CHAT_EXPORT_SYNC_STATE_PATH", str(cloud_path))
@@ -302,7 +304,7 @@ def test_pending_hard_failure_precedes_newer_quota_block(client, monkeypatch, tm
         json.dumps(
             {
                 "last_checked_at": "2026-07-20T01:59:30Z",
-                "last_error": "one pending export failed",
+                "last_error": last_error,
                 # Deliberately stale: health must determine latest by export time.
                 "latest_receipt_key": failed_key,
                 "pending_export_keys": [failed_key, blocked_key],
@@ -401,7 +403,108 @@ def test_health_reports_low_storage_without_public_capacity_details(client, monk
 def test_health_reports_unreachable_database_without_error_detail(client, monkeypatch):
     monkeypatch.setattr(health_router, "database_is_ready", lambda: False)
 
-    response = client.get("/health")
+    response = client.get("/health?check_database=true")
 
     assert response.status_code == 200
     assert response.json()["database_ready"] is False
+    assert response.json()["database_check"] == "performed"
+
+
+def test_routine_health_never_probes_the_database(client, monkeypatch):
+    def unexpected_probe():
+        raise AssertionError("routine health must not open a database connection")
+
+    monkeypatch.setattr(health_router, "database_is_ready", unexpected_probe)
+
+    for url in ("/health", "/health?check_database=false"):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.json()["database_configured"] is True
+        assert response.json()["database_ready"] is None
+        assert response.json()["database_check"] == "not_requested"
+
+
+def test_explicit_health_probe_reports_database_result(client, monkeypatch):
+    probes = []
+    monkeypatch.setattr(health_router, "database_is_ready", lambda: probes.append(True) or True)
+
+    response = client.get("/health?check_database=true")
+
+    assert probes == [True]
+    assert response.json()["database_ready"] is True
+    assert response.json()["database_check"] == "performed"
+
+
+def test_explicit_health_probe_does_not_claim_unconfigured_database_ready(client, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL")
+    monkeypatch.setattr(health_router, "database_is_ready", lambda: True)
+
+    response = client.get("/health?check_database=true")
+
+    assert response.json()["database_configured"] is False
+    assert response.json()["database_ready"] is False
+
+
+@pytest.mark.parametrize(
+    ("after_quota", "expected_state"),
+    [("deferred", "blocked_model_review"), ("receiver_error", "cloud_error"), ("unknown_cached_retry", "cloud_error")],
+)
+def test_export_retry_state_preserves_known_blockers_without_masking_other_failures(
+    client, monkeypatch, tmp_path, after_quota, expected_state,
+):
+    import scripts.sync_cloud_chat_export_inbox as cloud_sync
+
+    state_path = tmp_path / "cloud-state.json"
+    retry_path = tmp_path / "retry-state.json"
+    monkeypatch.setenv("CHAT_EXPORT_SYNC_STATE_PATH", str(tmp_path / "icloud-state.json"))
+    monkeypatch.setenv("CLOUD_CHAT_EXPORT_SYNC_STATE_PATH", str(state_path))
+    monkeypatch.setenv("CLOUD_EXPORT_RECEIVER_URL", "https://uploads.example.test")
+    monkeypatch.setenv("CLOUD_EXPORT_RECEIVER_PULL_TOKEN", "test-token")
+    record = {
+        "key": "pending/quota-blocked",
+        "filename": "export.txt",
+        "size_bytes": 12,
+        "uploaded_at": dt.datetime.now(dt.UTC).isoformat(),
+    }
+    records = [record]
+    staged = tmp_path / "export.txt"
+    staged.write_text("test export")
+    audits = []
+
+    def audit(*_args, **_kwargs):
+        audits.append(True)
+        raise cloud_sync.ModelReviewIncompleteError({"llm_review_retry": {"error": "insufficient_quota"}})
+
+    monkeypatch.setattr(cloud_sync, "completed_receipts", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cloud_sync, "pending_exports", lambda *_args, **_kwargs: records)
+    monkeypatch.setattr(cloud_sync, "download_export", lambda *_args, **_kwargs: staged)
+    monkeypatch.setattr(cloud_sync, "run_import_and_audit", audit)
+    config = cloud_sync.ReceiverConfig("https://uploads.example.test", "test-token")
+    kwargs = {
+        "state_path": state_path, "retry_state_path": retry_path,
+        "dest_dir": tmp_path / "incoming", "client": object(),
+    }
+    assert cloud_sync.run_once(config, **kwargs)["ok"] is False
+
+    if after_quota == "receiver_error":
+        def unavailable(*_args, **_kwargs):
+            raise cloud_sync.CloudReceiverError("receiver unavailable")
+        monkeypatch.setattr(cloud_sync, "pending_exports", unavailable)
+        with pytest.raises(cloud_sync.CloudReceiverError):
+            cloud_sync.run_once(config, **kwargs)
+    else:
+        if after_quota == "unknown_cached_retry":
+            unknown = {**record, "key": "pending/unknown-failure"}
+            records.append(unknown)
+            retries = json.loads(retry_path.read_text())
+            retries[cloud_sync._retry_key(config, unknown, cloud_sync.DEFAULT_SINCE)] = cloud_sync.next_export_retry(None, now=dt.datetime.now(dt.UTC))
+            retry_path.write_text(json.dumps(retries))
+        deferred = cloud_sync.run_once(config, **kwargs)
+        assert deferred["ok"] is False
+        assert deferred["deferred_exports"] == len(records)
+
+    sync = client.get("/health").json()["chat_export_sync"]
+    assert sync["state"] == expected_state
+    assert sync["has_error"] is True
+    assert sync["blocked_cloud_exports"] == 1
+    assert audits == [True]

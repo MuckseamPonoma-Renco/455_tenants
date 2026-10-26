@@ -28,6 +28,8 @@ from scripts.sync_chat_export_inbox import (
     DEFAULT_SINCE,
     ModelReviewIncompleteError,
     _is_ready_export,
+    next_export_retry,
+    retry_is_deferred,
     run_import_and_audit,
 )
 
@@ -1031,6 +1033,21 @@ def certify_legacy_receipt(
         )
 
 
+def _retry_key(config: ReceiverConfig, record: dict[str, Any], since: str) -> str:
+    # Shared runner caches hold only hashed identities and retry times/counters.
+    identity = json.dumps([config.base_url, record["key"], record["size_bytes"], since])
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _load_retries(path: Path) -> dict[str, dict[str, Any]]:
+    retries: dict[str, dict[str, Any]] = {}
+    for key, value in _load_state(path).items():
+        if len(key) != 64 or any(character not in "0123456789abcdef" for character in key) or not isinstance(value, dict):
+            continue
+        retries[key] = {field: value[field] for field in ("attempts", "last_failed_at", "next_retry_at") if field in value}
+    return retries
+
+
 def _run_once_unlocked(
     config: ReceiverConfig,
     *,
@@ -1040,6 +1057,8 @@ def _run_once_unlocked(
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_exports: int = DEFAULT_MAX_EXPORTS,
     client: httpx.Client | None = None,
+    retry_state_path: Path | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     if max_bytes <= 0 or max_exports <= 0:
         raise ValueError("max_bytes and max_exports must be positive")
@@ -1048,6 +1067,8 @@ def _run_once_unlocked(
     state["receipts"] = _receipts(state)
     state["last_checked_at"] = _now()
     state["pending_acknowledgements"] = _pending_acknowledgements(state)
+    retry_state_path = retry_state_path or Path(os.environ.get("CLOUD_EXPORT_RETRY_STATE_PATH") or state_path.with_name(state_path.stem + "-retries.json"))
+    retries = _load_retries(retry_state_path)
     _reconstruct_staged_legacy_receipt(state, dest_dir)
     owns_client = client is None
     if client is None:
@@ -1057,12 +1078,15 @@ def _run_once_unlocked(
         recovered_cloud_receipts = _merge_completed_receipts(state, remote_receipts)
         state["last_remote_receipt_sync_at"] = _now()
         recovered_acks = 0
+        failed_acks = 0
+        first_error: Exception | None = None
         for key in list(state["pending_acknowledgements"]):
             receipt = state["receipts"].get(key)
             stages = receipt.get("stages") if isinstance(receipt, dict) else None
             acknowledgement_stage = stages.get("acknowledgement") if isinstance(stages, dict) else None
             if isinstance(acknowledgement_stage, dict) and acknowledgement_stage.get("state") == "complete":
                 del state["pending_acknowledgements"][key]
+                receipt.pop("next_retry_at", None)
                 recovered_acks += 1
         _save_cloud_state(state_path, state)
         for key, acknowledgement in list(state["pending_acknowledgements"].items()):
@@ -1075,16 +1099,27 @@ def _run_once_unlocked(
             _save_cloud_state(state_path, state)
             try:
                 acknowledge_export(client, config, acknowledgement)
-            except Exception:
+            except Exception as exc:
                 _set_receipt_stage(receipt, "acknowledgement", "error", at=_now())
                 _save_cloud_state(state_path, state)
-                raise
+                failed_acks += 1
+                first_error = first_error or exc
+                continue
             del state["pending_acknowledgements"][key]
+            receipt.pop("next_retry_at", None)
             _set_receipt_stage(receipt, "acknowledgement", "complete", at=_now())
             recovered_acks += 1
             _save_cloud_state(state_path, state)
 
         records = pending_exports(client, config, max_bytes=max_bytes)
+        keys = {_retry_key(config, record, since) for record in records}
+        retries = {key: value for key, value in retries.items() if key in keys}
+        now = dt.datetime.now(dt.UTC)
+        unaudited = [record for record in reversed(records) if record["key"] not in state["pending_acknowledgements"]]
+        eligible = [record for record in unaudited if force or not retry_is_deferred(retries.get(_retry_key(config, record, since)), now=now)]
+        # Preserve newest-first order within fresh/retry groups and let fresh
+        # uploads through before old failed exports consume the run budget.
+        eligible.sort(key=lambda record: _retry_key(config, record, since) in retries)
         state["pending_export_keys"] = [str(record["key"]) for record in records]
         discovered_at = _now()
         for record in records:
@@ -1092,17 +1127,35 @@ def _run_once_unlocked(
         _save_cloud_state(state_path, state)
         processed: list[dict[str, Any]] = []
         blocked: list[dict[str, Any]] = []
+        failed_exports = 0
+        for record in unaudited:
+            retry = retries.get(_retry_key(config, record, since))
+            receipt = state["receipts"][str(record["key"])]
+            if not force and retry and retry_is_deferred(retry, now=now):
+                receipt["next_retry_at"] = retry.get("next_retry_at")
+                if receipt.get("status") == "blocked_model_review":
+                    blocked.append({"key": record["key"], "reason": str(receipt.get("last_error") or "model_review_incomplete"), "audit": compact_audit(receipt.get("audit") or {})})
+
+        def schedule_retry(record: dict[str, Any]) -> None:
+            retry_key = _retry_key(config, record, since)
+            retries[retry_key] = next_export_retry(retries.get(retry_key), now=dt.datetime.now(dt.UTC))
+            state["receipts"][str(record["key"])]["next_retry_at"] = retries[retry_key]["next_retry_at"]
+            _save_state(retry_state_path, retries)
+
         # A stale blocked export must not prevent a newer iPhone upload from
         # reaching the database. Receiver acknowledgement still waits for a
         # complete model review.
-        for record in list(reversed(records))[:max_exports]:
+        for record in eligible[:max_exports]:
             receipt = state["receipts"][str(record["key"])]
             try:
                 staged = download_export(client, record, dest_dir=dest_dir, max_bytes=max_bytes)
-            except Exception:
+            except Exception as exc:
                 _set_receipt_stage(receipt, "download", "error", at=_now())
+                schedule_retry(record)
                 _save_cloud_state(state_path, state)
-                raise
+                failed_exports += 1
+                first_error = first_error or exc
+                continue
             downloaded_at = _now()
             receipt["sha256"] = _sha256_file(staged)
             receipt["staged_export"] = str(staged)
@@ -1113,6 +1166,7 @@ def _run_once_unlocked(
             try:
                 audit = run_import_and_audit(staged, since=since)["audit_summary"]
             except ModelReviewIncompleteError as exc:
+                schedule_retry(record)
                 if exc.reason != "insufficient_quota":
                     failed_at = _now()
                     _set_receipt_stage(receipt, "processing", "error", at=failed_at)
@@ -1120,7 +1174,9 @@ def _run_once_unlocked(
                     receipt["last_error"] = str(exc)[:1000]
                     receipt["audit"] = compact_audit(exc.summary)
                     _save_cloud_state(state_path, state)
-                    raise
+                    failed_exports += 1
+                    first_error = first_error or exc
+                    continue
                 blocked_at = _now()
                 _set_receipt_stage(receipt, "processing", "complete", at=blocked_at)
                 _set_receipt_stage(receipt, "audit", "blocked_model_review", at=blocked_at)
@@ -1136,6 +1192,7 @@ def _run_once_unlocked(
                 )
                 continue
             except AuditPipelineError as exc:
+                schedule_retry(record)
                 failed_at = _now()
                 receipt["last_error"] = str(exc)[:1000]
                 receipt["audit"] = compact_audit(exc.summary)
@@ -1154,14 +1211,19 @@ def _run_once_unlocked(
                     _set_receipt_stage(receipt, "sheet_sync", "not_started", at=failed_at)
                     _set_receipt_stage(receipt, "sheet_readback", "not_reported", at=failed_at)
                 _save_cloud_state(state_path, state)
-                raise
+                failed_exports += 1
+                first_error = first_error or exc
+                continue
             except Exception as exc:
+                schedule_retry(record)
                 failed_at = _now()
                 _set_receipt_stage(receipt, "processing", "error", at=failed_at)
                 _set_receipt_stage(receipt, "audit", "error", at=failed_at)
                 receipt["last_error"] = str(exc)[:1000]
                 _save_cloud_state(state_path, state)
-                raise
+                failed_exports += 1
+                first_error = first_error or exc
+                continue
             completed_at = _now()
             receipt.pop("last_error", None)
             receipt["audit"] = compact_audit(audit)
@@ -1179,10 +1241,16 @@ def _run_once_unlocked(
             _save_cloud_state(state_path, state)
             try:
                 acknowledge_export(client, config, acknowledgement)
-            except Exception:
+            except Exception as exc:
                 _set_receipt_stage(receipt, "acknowledgement", "error", at=_now())
+                schedule_retry(record)
                 _save_cloud_state(state_path, state)
-                raise
+                failed_acks += 1
+                first_error = first_error or exc
+                continue
+            retries.pop(_retry_key(config, record, since), None)
+            receipt.pop("next_retry_at", None)
+            _save_state(retry_state_path, retries)
             del state["pending_acknowledgements"][record["key"]]
             state["pending_export_keys"] = [
                 key for key in state.get("pending_export_keys", []) if key != str(record["key"])
@@ -1191,19 +1259,31 @@ def _run_once_unlocked(
             _save_cloud_state(state_path, state)
             processed.append({"key": record["key"], "staged_export": str(staged), "audit": compact_audit(audit)})
 
-        state["last_error"] = ""
+        deferred_exports = len(unaudited) - len(eligible)
+        incomplete = bool(retries or failed_acks)
+        state["last_error"] = "one or more exports await automatic retry" if incomplete else ""
         state["last_blocked_model_review"] = blocked
-        state["last_success_at"] = _now()
+        if not incomplete:
+            state["last_success_at"] = _now()
+        _save_state(retry_state_path, retries)
         _save_cloud_state(state_path, state)
+        if first_error is not None:
+            raise first_error
         action = "processed" if processed else "unchanged_skip"
         if blocked:
             action = "processed_with_blocked_model_review" if processed else "blocked_model_review"
+        elif incomplete and not processed:
+            action = "retry_deferred"
         return {
-            "ok": True,
+            "ok": not incomplete,
             "action": action,
             "processed": processed,
             "blocked_exports": blocked,
             "pending_exports": max(0, len(records) - len(processed)),
+            "deferred_exports": deferred_exports,
+            "failed_exports": failed_exports,
+            "failed_acknowledgements": failed_acks,
+            "next_retry_at": min((str(value["next_retry_at"]) for value in retries.values() if value.get("next_retry_at")), default=None),
             "recovered_acknowledgements": recovered_acks,
             "recovered_cloud_receipts": recovered_cloud_receipts,
             "state_path": str(state_path),
@@ -1226,6 +1306,8 @@ def run_once(
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_exports: int = DEFAULT_MAX_EXPORTS,
     client: httpx.Client | None = None,
+    retry_state_path: Path | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     lock_path = state_path.parent / "chat-export-pipeline.lock"
     with try_file_lock(lock_path) as acquired:
@@ -1247,6 +1329,8 @@ def run_once(
             max_bytes=max_bytes,
             max_exports=max_exports,
             client=client,
+            retry_state_path=retry_state_path,
+            force=force,
         )
 
 
@@ -1284,6 +1368,7 @@ def main() -> None:
     parser.add_argument("--since", default=DEFAULT_SINCE, help=f"Audit cutoff timestamp. Default: {DEFAULT_SINCE}")
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help="Reject exports larger than this many bytes.")
     parser.add_argument("--max-exports", type=int, default=DEFAULT_MAX_EXPORTS, help="Maximum cloud exports to process in one run.")
+    parser.add_argument("--force", action="store_true", help="Retry pending exports immediately, bypassing automatic retry backoff.")
     action = parser.add_mutually_exclusive_group()
     action.add_argument(
         "--probe",
@@ -1330,8 +1415,11 @@ def main() -> None:
             since=args.since,
             max_bytes=args.max_bytes,
             max_exports=args.max_exports,
+            force=args.force,
         )
     print(json.dumps(result, indent=2, sort_keys=True))
+    if result.get("ok") is False:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

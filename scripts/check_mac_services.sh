@@ -116,6 +116,13 @@ if payload.get("database_ready") is True:
     print("true")
 elif payload.get("database_ready") is False:
     print("false")
+elif (
+    payload.get("database_configured") is True
+    and payload.get("database_check") == "not_requested"
+    and "database_ready" in payload
+    and payload["database_ready"] is None
+):
+    print("not_requested")
 else:
     print("unknown")
 PY
@@ -547,7 +554,10 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("pending_expo
       if [[ "$running" == "true" && "$LOCAL_API_HEALTHY" -eq 1 && "$DATABASE_READY" == "true" ]]; then
         state="healthy"
         reason="local /health returned 200 and database is reachable"
-      elif [[ "$LOCAL_API_HEALTHY" -eq 1 && "$DATABASE_READY" != "true" ]]; then
+      elif [[ "$running" == "true" && "$LOCAL_API_HEALTHY" -eq 1 && "$DATABASE_READY" == "not_requested" ]]; then
+        state="healthy"
+        reason="local /health returned 200; database configured, reachability not probed"
+      elif [[ "$LOCAL_API_HEALTHY" -eq 1 && "$DATABASE_READY" != "true" && "$DATABASE_READY" != "not_requested" ]]; then
         state="blocked"
         reason="local /health returned 200 but database health is ${DATABASE_READY:-unknown}"
       elif [[ "$running" == "false" && "$LOCAL_API_HEALTHY" -eq 1 ]]; then
@@ -569,7 +579,7 @@ print("\t".join((str(payload.get("action") or ""), str(payload.get("pending_expo
       ;;
     automation)
       if [[ "$running" == "true" ]]; then
-        if [[ "$DATABASE_READY" != "true" ]]; then
+        if [[ "$DATABASE_READY" != "true" && "$DATABASE_READY" != "not_requested" ]]; then
           state="blocked"
           reason="automation is waiting for database health=${DATABASE_READY:-unknown}"
         elif [[ "$STORAGE_STATE" == "low_disk" || "$STORAGE_LOW_DISK" == "true" ]]; then

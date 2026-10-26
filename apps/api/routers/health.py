@@ -440,8 +440,24 @@ def _public_chat_export_sync_status() -> dict[str, Any]:
             (candidate for candidate in hard_failure_states if candidate in pending_statuses),
             None,
         )
+        retry_statuses = []
+        receipts = cloud_state.get('receipts')
+        pending_keys = cloud_state.get('pending_export_keys')
+        if isinstance(receipts, dict) and isinstance(pending_keys, list):
+            for key in pending_keys:
+                pending_receipt = receipts.get(str(key))
+                if isinstance(pending_receipt, dict) and pending_receipt.get('next_retry_at'):
+                    retry_statuses.append(_cloud_receipt_status(pending_receipt, _cloud_receipt_stage_states(pending_receipt)))
+        # Backoff is not a new outage. Preserve a known model-review blocker
+        # without hiding receiver errors or cached retries whose cause is unknown.
+        retry_state = (
+            'blocked_model_review'
+            if cloud_error == 'one or more exports await automatic retry'
+            and retry_statuses and all(status == 'blocked_model_review' for status in retry_statuses)
+            else None
+        )
         return {
-            'state': pending_failure or (latest_status if latest_status in hard_failure_states else 'cloud_error'),
+            'state': pending_failure or retry_state or (latest_status if latest_status in hard_failure_states else 'cloud_error'),
             'last_checked_at': cloud_checked_at,
             'last_processed_at': icloud_status.get('last_processed_at'),
             'has_error': True,
@@ -510,11 +526,14 @@ def _public_cloud_export_receiver_status() -> dict[str, Any]:
 
 
 @router.get('/health')
-def health():
+def health(check_database: bool = False):
     whatsapp_capture = _public_capture_status(read_capture_status())
     automation = read_automation_status()
     watchdog = _public_watchdog_status(automation)
     database_configured = bool((os.environ.get('DATABASE_URL') or '').strip())
+    # Routine liveness probes must not wake a sleeping database. A caller can
+    # explicitly request a diagnostic probe; null means reachability is unknown.
+    database_ready = database_configured and database_is_ready() if check_database else None
     return {
         'ok': True,
         'watchdog_operational_state': 'degraded' if watchdog['has_error'] else 'ready',
@@ -522,7 +541,8 @@ def health():
         'llm_enabled': llm_enabled(),
         'sheets_disabled': _truthy('DISABLE_SHEETS_SYNC'),
         'database_configured': database_configured,
-        'database_ready': database_configured and database_is_ready(),
+        'database_ready': database_ready,
+        'database_check': 'performed' if check_database else 'not_requested',
         'redis_configured': bool((os.environ.get('REDIS_URL') or '').strip()),
         'sheets_configured': bool((os.environ.get('GOOGLE_SHEETS_SPREADSHEET_ID') or '').strip()) and _sheets_creds_present(),
         'whatsapp_capture': whatsapp_capture,
