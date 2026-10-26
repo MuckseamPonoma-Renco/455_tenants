@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import builtins
 from types import SimpleNamespace
 
 import pytest
@@ -212,6 +213,38 @@ def test_primary_automation_health_tolerates_invalid_maximum_age(monkeypatch):
     assert recovery._primary_maximum_age_seconds() == 1200
 
 
+def test_primary_automation_health_accepts_explicit_database_free_health(monkeypatch):
+    now = dt.datetime(2026, 10, 25, tzinfo=dt.UTC)
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    payload = {
+        "ok": True, "database_configured": True,
+        "database_ready": None, "database_check": "not_requested",
+        "storage": {"state": "ready", "low_disk": False},
+        "automation": {"state": "ready", "has_error": False, "last_cycle_at": now.isoformat()},
+        "chat_export_sync": {"state": "ready", "has_error": False},
+    }
+    monkeypatch.setattr(recovery.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(recovery.json, "load", lambda _response: payload)
+    assert recovery.primary_automation_healthy(now=now) is True
+    payload["database_ready"] = False
+    assert recovery.primary_automation_healthy(now=now) is False
+    payload["database_ready"] = None
+    payload["database_configured"] = False
+    assert recovery.primary_automation_healthy(now=now) is False
+    payload["database_configured"] = True
+    del payload["database_ready"]
+    assert recovery.primary_automation_healthy(now=now) is False
+
+
 def test_compact_cloud_result_excludes_local_paths_and_audit_content():
     result = _compact_cloud_result(
         {
@@ -343,3 +376,42 @@ def test_entrypoint_validates_only_required_capabilities(tmp_path, monkeypatch, 
     monkeypatch.setattr(recovery, "run_cycle", lambda selected_mode, **_kwargs: calls.append(selected_mode) or {"ok": True})
     assert recovery.main() == expected_exit
     assert calls == ([mode] if not check_config and expected_exit == 0 else [])
+
+def test_empty_export_recovery_does_not_load_database_runtime(tmp_path, monkeypatch):
+    import scripts.sync_cloud_chat_export_inbox as cloud
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name in {"packages.db", "packages.worker_jobs", "scripts.run_automation_daemon"}:
+            raise AssertionError(f"empty export recovery loaded {name}")
+        return original_import(name, *args, **kwargs)
+
+    real_run_once = cloud.run_once
+    monkeypatch.setattr(cloud, "receiver_config", lambda: cloud.ReceiverConfig("https://uploads.example.test", "token"))
+    monkeypatch.setattr(cloud, "pending_exports", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cloud, "completed_receipts", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(cloud, "run_import_and_audit", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected import")))
+    monkeypatch.setattr(cloud, "run_once", lambda config, **kwargs: real_run_once(config, state_path=tmp_path / "state.json", **kwargs))
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    result = run_cycle("exports", force=True)
+
+    assert result["ok"] is True
+    assert result["cloud_exports"]["action"] == "unchanged_skip"
+
+
+def test_deferred_exports_remain_visible_as_an_incomplete_recovery():
+    operations = CloudRecoveryOperations(
+        receiver_config=lambda: object(),
+        sync_cloud_exports=lambda _config: {"ok": False, "action": "retry_deferred", "deferred_exports": 1, "next_retry_at": "2026-10-26T00:00:00Z"},
+        sync_311_statuses=lambda: {},
+        sync_replacement_watchdog=lambda: {},
+        audit_public_tenant_log=lambda: {},
+    )
+
+    result = run_cycle("exports", operations=operations, primary_healthy=lambda: False)
+
+    assert result["ok"] is False
+    assert result["cloud_exports"]["deferred_exports"] == 1
+    assert result["cloud_exports"]["next_retry_at"] == "2026-10-26T00:00:00Z"

@@ -170,7 +170,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Tenant Issue OS automation loop.")
     parser.add_argument("--headful", action="store_true", help="Run Playwright with a visible browser window.")
     parser.add_argument("--skip-lookup", action="store_true", help="Skip portal status lookup after successful submissions.")
-    parser.add_argument("--poll-seconds", type=int, help="Idle sleep between automation cycles.")
+    parser.add_argument("--poll-seconds", type=int, help="Heartbeat and scheduler interval between automation cycles.")
+    parser.add_argument("--filing-idle-seconds", type=int, help="Time between filing scans after an empty queue (default: 900).")
     parser.add_argument("--error-sleep-seconds", type=int, help="Sleep after an unexpected automation error.")
     parser.add_argument("--status-sync-seconds", type=int, help="How often to run NYC311 case-status sync. Use 0 to disable.")
     parser.add_argument("--public-record-sync-seconds", type=int, help="How often to run replacement-watchdog public-record sync. Use 0 to disable.")
@@ -188,6 +189,7 @@ def main() -> None:
     headless = not args.headful
     verify_lookup = not args.skip_lookup
     poll_seconds = max(10, args.poll_seconds or _env_int("AUTOMATION_POLL_SECONDS", 60))
+    filing_idle_seconds = max(poll_seconds, args.filing_idle_seconds or _env_int("AUTOMATION_FILING_IDLE_SECONDS", 900))
     error_sleep_seconds = max(10, args.error_sleep_seconds or _env_int("AUTOMATION_ERROR_SLEEP_SECONDS", 30))
     status_sync_seconds = max(0, args.status_sync_seconds if args.status_sync_seconds is not None else _env_int("AUTOMATION_STATUS_SYNC_SECONDS", 3600))
     public_record_interval_seconds = max(
@@ -211,6 +213,7 @@ def main() -> None:
     _log(
         "automation loop starting "
         f"headless={headless} verify_lookup={verify_lookup} poll_seconds={poll_seconds} "
+        f"filing_idle_seconds={filing_idle_seconds} "
         f"status_sync_seconds={status_sync_seconds} public_record_sync_seconds={public_record_interval_seconds} "
         f"public_tenant_log_audit_seconds={public_tenant_log_audit_seconds} burst_size={burst_size} "
         f"startup_catchup_limit={startup_catchup_limit}"
@@ -222,6 +225,7 @@ def main() -> None:
             "headless": headless,
             "verify_lookup": verify_lookup,
             "poll_seconds": poll_seconds,
+            "filing_idle_seconds": filing_idle_seconds,
             "status_sync_seconds": status_sync_seconds,
             "public_record_sync_seconds": public_record_interval_seconds,
             "public_tenant_log_audit_seconds": public_tenant_log_audit_seconds,
@@ -246,29 +250,36 @@ def main() -> None:
     if public_record_interval_seconds == 0:
         update_watchdog_status(state="disabled", interval_seconds=0)
     next_public_tenant_log_audit_at = time.monotonic() if public_tenant_log_audit_seconds > 0 else None
+    next_filing_poll_at = time.monotonic()
 
     while True:
         did_work = False
         try:
-            processed = 0
-            while processed < burst_size:
-                result = _run_work_step(
-                    "portal filing",
-                    lambda: run_portal_filing_once(headless=headless, verify_lookup=verify_lookup),
-                    poll_seconds=poll_seconds,
-                )
-                if result is None:
-                    break
-                job_meta = result.get("job")
-                if job_meta is None and result.get("job_id") is None:
-                    break
-                processed += 1
-                did_work = True
-                _log(f"portal filing result: {result}")
-                if not result.get("ok"):
-                    break
-                if processed < burst_size and between_jobs_seconds:
-                    time.sleep(between_jobs_seconds)
+            if time.monotonic() >= next_filing_poll_at:
+                processed = 0
+                filing_delay_seconds = poll_seconds
+                while processed < burst_size:
+                    result = _run_work_step(
+                        "portal filing",
+                        lambda: run_portal_filing_once(headless=headless, verify_lookup=verify_lookup),
+                        poll_seconds=poll_seconds,
+                    )
+                    if result is None:
+                        # A failed query is not evidence that the queue is empty.
+                        break
+                    job_meta = result.get("job")
+                    if job_meta is None and result.get("job_id") is None:
+                        filing_delay_seconds = filing_idle_seconds
+                        break
+                    processed += 1
+                    did_work = True
+                    _log(f"portal filing result: {result}")
+                    if not result.get("ok"):
+                        break
+                    filing_delay_seconds = max(5, min(poll_seconds, between_jobs_seconds or poll_seconds))
+                    if processed < burst_size and between_jobs_seconds:
+                        time.sleep(between_jobs_seconds)
+                next_filing_poll_at = time.monotonic() + filing_delay_seconds
 
             now = time.monotonic()
             if next_public_tenant_log_audit_at is not None and now >= next_public_tenant_log_audit_at:
@@ -304,7 +315,10 @@ def main() -> None:
             continue
 
         _write_automation_status(state="ready", poll_seconds=poll_seconds)
-        time.sleep(poll_seconds if not did_work else max(5, min(poll_seconds, between_jobs_seconds or poll_seconds)))
+        sleep_seconds = poll_seconds if not did_work else max(5, min(poll_seconds, between_jobs_seconds or poll_seconds))
+        # Maintenance work can shift heartbeat timing; do not sleep past the
+        # next filing scan or the next active batch.
+        time.sleep(min(sleep_seconds, max(0, next_filing_poll_at - time.monotonic())))
 
 
 if __name__ == "__main__":

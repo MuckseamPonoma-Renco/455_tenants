@@ -71,7 +71,13 @@ def validate_health(
         failures.append('health endpoint did not report ok=true')
     if payload.get('database_configured') is not True:
         failures.append('database is not configured')
-    if payload.get('database_ready') is not True:
+    database_not_checked = (
+        payload.get('database_check') == 'not_requested'
+        and 'database_ready' in payload
+        and payload['database_ready'] is None
+    )
+    details['database_check'] = 'not_requested' if database_not_checked else 'performed'
+    if payload.get('database_ready') is not True and not database_not_checked:
         failures.append('database is not reachable')
     if payload.get('sheets_disabled') is True or payload.get('sheets_configured') is not True:
         failures.append('Google Sheets sync is not configured and enabled')

@@ -14,6 +14,11 @@ on:
           - status
           - watchdog
           - full
+      force:
+        description: Run now and retry blocked exports immediately
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -21,6 +26,7 @@ on:
       - .github/workflows/cloud-recovery.yml
       - scripts/run_cloud_recovery_cycle.py
       - scripts/sync_cloud_chat_export_inbox.py
+      - scripts/sync_chat_export_inbox.py
       - scripts/run_automation_daemon.py
       - packages/**
       - requirements.txt
@@ -49,6 +55,8 @@ jobs:
       CLOUD_RECOVERY_SEMANTIC_OVERRIDES_GZIP_BASE64: ${{ secrets.CLOUD_RECOVERY_SEMANTIC_OVERRIDES_GZIP_BASE64 }}
       EVENT_SCHEDULE: ${{ github.event.schedule }}
       MANUAL_MODE: ${{ inputs.mode }}
+      MANUAL_FORCE: ${{ inputs.force }}
+      CLOUD_EXPORT_RETRY_STATE_PATH: ${{ github.workspace }}/.cloud-export-retries.json
     steps:
       - name: Choose a safe recovery mode
         id: mode
@@ -93,6 +101,16 @@ jobs:
         if: steps.mode.outputs.enabled == 'true'
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
+      - name: Restore automatic export retry schedule
+        # Restore only hashed identities and retry counters/times, never the
+        # private receipt/acknowledgement file, archive contents, or credentials.
+        if: steps.mode.outputs.enabled == 'true' && (steps.mode.outputs.mode == 'exports' || steps.mode.outputs.mode == 'full')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CLOUD_EXPORT_RETRY_STATE_PATH }}
+          key: cloud-export-retries-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: cloud-export-retries-v1-
+
       - name: Run configuration check or recovery cycle
         if: steps.mode.outputs.enabled == 'true'
         env:
@@ -117,5 +135,16 @@ jobs:
               echo "Refusing cloud recovery because main advanced after checkout." >&2
               exit 3
             fi
-            python scripts/run_cloud_recovery_cycle.py --env-file "$env_file" --mode "$MODE"
+            extra_args=()
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$MANUAL_FORCE" == "true" ]]; then
+              extra_args+=(--force)
+            fi
+            python scripts/run_cloud_recovery_cycle.py --env-file "$env_file" --mode "$MODE" "${extra_args[@]}"
           fi
+
+      - name: Save automatic export retry schedule
+        if: always() && steps.mode.outputs.enabled == 'true' && (steps.mode.outputs.mode == 'exports' || steps.mode.outputs.mode == 'full')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CLOUD_EXPORT_RETRY_STATE_PATH }}
+          key: cloud-export-retries-v1-${{ github.run_id }}-${{ github.run_attempt }}

@@ -150,7 +150,7 @@ def check_public_health(runner: Runner, *, require_cloud_receiver: bool) -> dict
         success_detail=(
             "Public health is fresh and the private cloud receiver is configured."
             if require_cloud_receiver
-            else "Public API, automation heartbeat, WhatsApp capture, storage, database, Sheets, and iCloud importer are fresh."
+            else "Public API, automation, WhatsApp capture, storage, and iCloud importer are fresh; database and Sheets configuration is present."
         ),
         failure_detail=(
             "Mac-off intake is not ready because the private cloud receiver is missing or unhealthy."

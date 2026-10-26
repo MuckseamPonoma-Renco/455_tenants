@@ -1,4 +1,5 @@
 import errno
+import datetime as dt
 import json
 import zipfile
 
@@ -348,3 +349,48 @@ def test_sync_once_skips_staged_copy_with_the_same_export_identity(tmp_path, mon
     assert first["action"] == "processed"
     assert second["action"] == "unchanged_skip"
     assert len(calls) == 1
+
+
+def test_failed_export_waits_then_force_or_new_content_retries(tmp_path, monkeypatch):
+    source_dir = tmp_path / "inbox"
+    source_dir.mkdir()
+    source = source_dir / "WhatsApp Chat.txt"
+    source.write_text("first export")
+    attempts = []
+
+    def fail_audit(path, *, since):
+        attempts.append(path)
+        raise RuntimeError("model review incomplete")
+
+    monkeypatch.setattr(inbox_sync, "run_import_and_audit", fail_audit)
+    kwargs = {"source_dirs": [source_dir], "dest_dir": tmp_path / "staged", "state_path": tmp_path / "state.json", "since": "2026-06-05"}
+    with pytest.raises(RuntimeError, match="model review incomplete"):
+        sync_once(**kwargs)
+    result = sync_once(**kwargs)
+    assert result["action"] == "retry_deferred"
+    assert result["ok"] is False
+    assert len(attempts) == 1
+    assert json.loads(kwargs["state_path"].read_text())["last_error"] == "model review incomplete"
+
+    with pytest.raises(RuntimeError):
+        sync_once(**kwargs, force=True)
+    assert len(attempts) == 2
+
+    source.write_text("new export with fresh messages")
+    monkeypatch.setattr(inbox_sync, "run_import_and_audit", lambda *_args, **_kwargs: {"export": str(source)})
+    assert sync_once(**kwargs)["action"] == "processed"
+    assert "export_retry" not in json.loads(kwargs["state_path"].read_text())
+
+
+def test_export_retry_backoff_is_bounded_and_due_times_resume_automatically():
+    now = dt.datetime(2026, 10, 25, tzinfo=dt.UTC)
+    retry = None
+    delays = []
+    for _ in range(8):
+        retry = inbox_sync.next_export_retry(retry, now=now)
+        next_attempt = dt.datetime.fromisoformat(retry["next_retry_at"].replace("Z", "+00:00"))
+        delays.append(int((next_attempt - now).total_seconds()))
+        assert inbox_sync.retry_is_deferred(retry, now=now)
+        assert not inbox_sync.retry_is_deferred(retry, now=next_attempt)
+    assert delays == [3600, 7200, 14400, 28800, 57600, 86400, 86400, 86400]
+    assert not inbox_sync.retry_is_deferred({"next_retry_at": "2029-01-01T00:00:00Z"}, now=now)

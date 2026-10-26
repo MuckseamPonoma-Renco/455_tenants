@@ -122,7 +122,14 @@ def primary_automation_healthy(
 
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         return False
-    if payload.get("database_ready") is not True:
+    database_ok = payload.get("database_ready") is True
+    database_not_probed = (
+        payload.get("database_check") == "not_requested"
+        and payload.get("database_configured") is True
+        and "database_ready" in payload
+        and payload["database_ready"] is None
+    )
+    if not (database_ok or database_not_probed):
         return False
     storage = payload.get("storage")
     if not isinstance(storage, dict) or storage.get("state") != "ready" or storage.get("low_disk") is not False:
@@ -169,24 +176,38 @@ def primary_automation_healthy(
     return True
 
 
-def _runtime_operations() -> CloudRecoveryOperations:
-    from packages.worker_jobs import resync_replacement_watchdog, sync_311_statuses
-    from scripts.run_automation_daemon import _public_tenant_log_qa
+def _runtime_operations(*, force_exports: bool = False) -> CloudRecoveryOperations:
     from scripts.sync_cloud_chat_export_inbox import receiver_config, run_once
+
+    # Receiver listing and retry eligibility do not need the database runtime.
+    def status_sync() -> dict[str, Any]:
+        from packages.worker_jobs import sync_311_statuses
+
+        return sync_311_statuses()
+
+    def watchdog_sync() -> dict[str, Any]:
+        from packages.worker_jobs import resync_replacement_watchdog
+
+        return resync_replacement_watchdog()
+
+    def tenant_log_audit() -> dict[str, Any]:
+        from scripts.run_automation_daemon import _public_tenant_log_qa
+
+        return _public_tenant_log_qa()
 
     return CloudRecoveryOperations(
         receiver_config=receiver_config,
-        sync_cloud_exports=run_once,
-        sync_311_statuses=sync_311_statuses,
-        sync_replacement_watchdog=resync_replacement_watchdog,
-        audit_public_tenant_log=_public_tenant_log_qa,
+        sync_cloud_exports=lambda config: run_once(config, force=force_exports),
+        sync_311_statuses=status_sync,
+        sync_replacement_watchdog=watchdog_sync,
+        audit_public_tenant_log=tenant_log_audit,
     )
 
 
-def _compact_cloud_result(result: dict[str, Any]) -> dict[str, int | str]:
+def _compact_cloud_result(result: dict[str, Any]) -> dict[str, Any]:
     processed = result.get("processed")
     blocked = result.get("blocked_exports")
-    return {
+    compact: dict[str, Any] = {
         "action": str(result.get("action") or "unknown"),
         "processed_exports": len(processed) if isinstance(processed, list) else 0,
         "blocked_model_review_exports": len(blocked) if isinstance(blocked, list) else 0,
@@ -194,6 +215,14 @@ def _compact_cloud_result(result: dict[str, Any]) -> dict[str, int | str]:
         "recovered_acknowledgements": int(result.get("recovered_acknowledgements") or 0),
         "recovered_cloud_receipts": int(result.get("recovered_cloud_receipts") or 0),
     }
+    for key in ("deferred_exports", "failed_exports", "failed_acknowledgements"):
+        if key in result:
+            compact[key] = int(result[key] or 0)
+    if result.get("next_retry_at"):
+        compact["next_retry_at"] = str(result["next_retry_at"])
+    if result.get("ok") is False:
+        compact["ok"] = False
+    return compact
 
 
 def run_cycle(
@@ -235,7 +264,7 @@ def run_cycle(
         if not run_exports and not run_status and not run_watchdog:
             return {"ok": True, "mode": mode, "action": "skipped_primary_healthy"}
 
-    operations = operations or _runtime_operations()
+    operations = operations or _runtime_operations(force_exports=force)
     result: dict[str, Any] = {
         "ok": True,
         "mode": mode,
@@ -266,11 +295,11 @@ def run_cycle(
             if config is None:
                 raise RuntimeError("private cloud export receiver is not configured")
             exported = operations.sync_cloud_exports(config)
-            if not isinstance(exported, dict) or exported.get("ok") is not True:
+            if not isinstance(exported, dict) or not isinstance(exported.get("ok"), bool):
                 raise RuntimeError("cloud export sync did not complete")
             return _compact_cloud_result(exported)
 
-        run_step("cloud_exports", export_step, lambda _value: True)
+        run_step("cloud_exports", export_step, lambda value: value.get("ok") is not False)
 
     if run_status:
         run_step("status_sync", operations.sync_311_statuses, lambda value: value.get("ok") is True)
@@ -290,7 +319,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", help="Optional private environment file to load before starting work.")
     parser.add_argument("--mode", choices=MODES, default="full")
     parser.add_argument("--check-config", action="store_true", help="Validate required configuration without reading or writing remote data.")
-    parser.add_argument("--force", action="store_true", help="Run even when the primary Mac automation health is fresh.")
+    parser.add_argument("--force", action="store_true", help="Run even when the primary Mac is healthy and retry exports immediately.")
     return parser.parse_args()
 
 

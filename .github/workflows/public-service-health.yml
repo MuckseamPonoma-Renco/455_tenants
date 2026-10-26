@@ -18,7 +18,7 @@ jobs:
       REQUIRE_CLOUD_EXPORT_RECEIVER: ${{ vars.REQUIRE_CLOUD_EXPORT_RECEIVER || 'false' }}
     steps:
       - uses: actions/checkout@v7
-      - name: Check public API, Neon, automation, host storage, WhatsApp capture, and iCloud import heartbeat
+      - name: Check public API, database configuration, automation, host storage, WhatsApp capture, and iCloud import heartbeat
         shell: bash
         run: |
           args=(

@@ -55,6 +55,7 @@ def test_validate_health_accepts_fresh_operational_state():
 
     assert failures == []
     assert details == {
+        "database_check": "performed",
         "storage_state": "ready",
         "automation_age_seconds": 0,
         "watchdog_max_age_seconds": 23400,
@@ -318,3 +319,36 @@ def test_public_monitor_rejects_missing_watchdog_field():
     failures, _ = validate_health(payload, now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
         max_capture_age_seconds=600, max_automation_age_seconds=1200, max_import_age_seconds=3600)
     assert "watchdog health is missing" in failures
+
+
+def test_validate_health_accepts_explicitly_unprobed_database_without_claiming_reachability():
+    payload = _payload()
+    payload.update(database_ready=None, database_check="not_requested")
+
+    failures, details = validate_health(
+        payload,
+        now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600,
+        max_automation_age_seconds=1200,
+        max_import_age_seconds=3600,
+    )
+
+    assert failures == []
+    assert details["database_check"] == "not_requested"
+
+
+def test_validate_health_still_requires_configured_database_and_valid_probe_contract():
+    for override in (
+        {"database_ready": None},
+        {"database_ready": False, "database_check": "not_requested"},
+        {"database_ready": None, "database_check": "not_requested", "database_configured": False},
+    ):
+        payload = {**_payload(), **override}
+        failures, _ = validate_health(
+            payload,
+            now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+            max_capture_age_seconds=600,
+            max_automation_age_seconds=1200,
+            max_import_age_seconds=3600,
+        )
+        assert failures

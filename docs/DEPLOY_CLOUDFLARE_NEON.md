@@ -162,7 +162,23 @@ The LaunchAgents are:
 - `tenant-issue-os.tunnel` when tunnel auth is configured
 - `tenant-issue-os.watchdog`, which runs every 5 minutes and calls `check_mac_services.sh --repair --quiet`
 
-This gives you auto-start after login, crash restart via `KeepAlive`, and periodic health-based repair when a process is alive but unhealthy. The watchdog verifies a live Neon query and a recent automation heartbeat rather than treating a running PID as proof that work is progressing. Each repair pass also caps service logs at 24 MiB while retaining the newest 8 MiB in place, so open launchd file descriptors keep writing to the bounded file rather than an orphaned old log. The watchdog treats fewer than 10 GiB of free host storage as unhealthy, reports it locally and through `/health`, and does not automatically delete WhatsApp sessions or evidence to recover space.
+This gives you auto-start after login, crash restart via `KeepAlive`, and periodic health-based repair when a process is alive but unhealthy. Routine `/health` requests inspect configuration, local status files, and a recent automation heartbeat without querying Neon. They report `database_ready: null` and `database_check: "not_requested"`; these fields do not prove database reachability. Use `/health?check_database=true` for an explicit live database diagnostic. Each repair pass also caps service logs at 24 MiB while retaining the newest 8 MiB in place, so open launchd file descriptors keep writing to the bounded file rather than an orphaned old log. The watchdog treats fewer than 10 GiB of free host storage as unhealthy, reports it locally and through `/health`, and does not automatically delete WhatsApp sessions or evidence to recover space.
+
+The automation heartbeat still runs every `AUTOMATION_POLL_SECONDS` (default 60).
+An empty filing queue is scanned every `AUTOMATION_FILING_IDLE_SECONDS` (default
+900), independently of the heartbeat. New filing jobs can therefore wait up
+to 15 minutes to be discovered; active batches retain their short processing
+interval. NYC311 status, public-record updates, and Tenant Log audits keep their
+existing schedules. Coverage reporting aggregates daily counts and timestamp
+bounds in SQL, returning at most the requested number of days without downloading
+message bodies. All services and data remain enabled.
+
+These changes reduce unnecessary database activity but do not guarantee a fixed
+bill: incoming work, audits, and other clients can still keep the compute active.
+Neon's [cost guidance](https://neon.com/docs/introduction/cost-optimization)
+describes how scheduled activity affects automatic sleep. Routine monitoring
+should use `/health`; repeatedly requesting the explicit database diagnostic
+would wake the database again.
 
 `install_mac_launch_agents.sh` also stages a launchd-safe runtime copy under `~/.local/share/tenant-issue-os/runtime` so the agents do not have to execute directly from a Desktop-hosted repo. Re-run the installer after code changes so the staged runtime stays current. The installer deliberately preserves the runtime `.env`, secrets, virtual environment, capture profile, and queued exports; provision `$HOME/.local/share/tenant-issue-os/runtime/.env` once before the first install instead of allowing a code update to replace production configuration.
 
