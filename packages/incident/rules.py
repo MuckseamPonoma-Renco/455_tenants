@@ -28,14 +28,14 @@ FLOOR_SERVICE_NORMAL = re.compile(
 )
 
 OUT = re.compile(
-    r"(out\s+of\s+service|out\s+of\s+order|not\s+in\s+service|not\s+working|broken|stuck|"
+    r"\b(out\s+of\s+service|out\s+of\s+order|not\s+in\s+service|not\s+working|broken|stuck|"
     r"no\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift|one|side)|"
     r"not\s+(?:the\s+)?(?:north|south|left|right)\s+(?:elevator|lift)|"
     r"(?:the\s+)?(?:north|south|left|right)\s+(?:one|side)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down|dead|broken|stuck|not\s+working)|"
     r"(?:elevators?|lifts?|north|south|left|right|they|it)\s+(?:is\s+|are\s+|was\s+|were\s+|still\s+)?(?:out|down)|"
     r"shutdown|shut\s*off|still\s+down|still\s+not\s+working|again\s+down|out\s+again|again\s+out|dead|"
     r"down\s+to\s+1\s+elevator|one\s+elevator\s+again|only\s+1\s+elevator|misbehaving|not\s+arrived|"
-    r"not\s+to\s+cool overnight|both\s+elevators\s+are\s+out|both\s+lifts\s+are\s+out)",
+    r"not\s+to\s+cool overnight|both\s+elevators\s+are\s+out|both\s+lifts\s+are\s+out)\b",
     re.I,
 )
 REDUCED_SERVICE = re.compile(

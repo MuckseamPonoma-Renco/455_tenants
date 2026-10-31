@@ -29,6 +29,19 @@ def enqueue_process_message(message_id: str, *, sync_sheets: bool = True):
     return queue.enqueue(process_message, message_id, sync_sheets=sync_sheets).id
 
 
+def enqueue_process_export_message(message_id: str, *, sync_sheets: bool = True):
+    """Resume export decisions without filing for retained live-source aliases."""
+    from packages.worker_jobs import process_message
+
+    queue = _queue_or_none()
+    if queue is None:
+        process_message(message_id, sync_sheets=sync_sheets, allow_filing_job=False)
+        return f"inline-export-process-{message_id[:8]}"
+    return queue.enqueue(
+        process_message, message_id, sync_sheets=sync_sheets, allow_filing_job=False
+    ).id
+
+
 def enqueue_full_resync():
     from packages.worker_jobs import full_resync_sheets
 

@@ -53,6 +53,7 @@ jobs:
       CLOUD_RECOVERY_ENV: ${{ secrets.CLOUD_RECOVERY_ENV }}
       CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.CLOUD_RECOVERY_GOOGLE_SERVICE_ACCOUNT_JSON }}
       CLOUD_RECOVERY_SEMANTIC_OVERRIDES_GZIP_BASE64: ${{ secrets.CLOUD_RECOVERY_SEMANTIC_OVERRIDES_GZIP_BASE64 }}
+      CLOUD_311_FILING_ENABLED: ${{ vars.CLOUD_311_FILING_ENABLED }}
       EVENT_SCHEDULE: ${{ github.event.schedule }}
       MANUAL_MODE: ${{ inputs.mode }}
       MANUAL_FORCE: ${{ inputs.force }}
@@ -101,6 +102,16 @@ jobs:
         if: steps.mode.outputs.enabled == 'true'
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
+      - name: Install and verify the 311 browser
+        id: browser
+        if: steps.mode.outputs.enabled == 'true' && (steps.mode.outputs.mode == 'status' || steps.mode.outputs.mode == 'full' || (steps.mode.outputs.mode == 'exports' && vars.CLOUD_311_FILING_ENABLED == 'true'))
+        # Browser failure must remain visible without suppressing independent
+        # export ingestion and public-record recovery.
+        continue-on-error: true
+        run: |
+          python -m playwright install --with-deps chromium
+          python scripts/check_portal_browser.py
+
       - name: Restore automatic export retry schedule
         # Restore only hashed identities and retry counters/times, never the
         # private receipt/acknowledgement file, archive contents, or credentials.
@@ -115,6 +126,7 @@ jobs:
         if: steps.mode.outputs.enabled == 'true'
         env:
           MODE: ${{ steps.mode.outputs.mode }}
+          CLOUD_311_BROWSER_READY: ${{ steps.browser.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail

@@ -2,13 +2,33 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Iterable, Iterator
+from typing import Collection, Iterable, Iterator
 
 from packages.audit import compute_message_id
 from packages.whatsapp.parser import ParsedMessage
 
 
 MAX_MESSAGE_ID_LENGTH = 64
+
+
+def archive_timestamp_alias_matches(
+    candidate_id: str,
+    candidate_epoch: int | None,
+    export_epoch: int | None,
+    export_message_ids: Collection[str],
+) -> bool:
+    """Allow one-second export rounding without merging physical occurrences.
+
+    Some historical exports differ by one second for the same message. A row
+    whose exact identity is another occurrence in this archive is never such
+    an alias, even when its sender and text are identical.
+    """
+    return (
+        candidate_id not in export_message_ids
+        and candidate_epoch is not None
+        and export_epoch is not None
+        and abs(candidate_epoch - export_epoch) <= 1
+    )
 
 
 @dataclass(frozen=True)

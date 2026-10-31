@@ -75,6 +75,33 @@ If you want to keep Redis + the separate worker later, the code still supports i
 
 ## 4. Cloudflare Tunnel
 
+### Cloud recovery and filing while the Mac is unavailable
+
+Mac LaunchAgents require a user login after a restart; with FileVault enabled,
+the disk must first be unlocked. Preventing idle sleep does not remove this
+boundary. The Cloudflare receiver accepts uploaded exports independently of
+the Mac. It does not continuously capture the WhatsApp group.
+
+The cloud recovery workflow installs Chromium and verifies a real headless
+browser launch before browser-dependent work. A browser failure blocks 311 work
+while independent export and public-record recovery continues. Automatic cloud filing is a separate
+opt-in: repository variable `CLOUD_311_FILING_ENABLED=true`. Publishing code or
+configuring export recovery does not enable it. Keep it unset until the current
+deployment and activation preview is approved.
+
+When enabled, the exports/full cycle can run a bounded current-incident filing
+step after export recovery. It requires a recent completed cloud receipt,
+complete model review and live Sheet readback, and a fresh empty pending-upload
+listing. It uses reviewed current source evidence, scoped database claims and
+the same final-submit and uncertain-submission fences as the Mac worker.
+Historical imports, retries and audit replays never create filing jobs. A quota
+or missing-decision block stays visible and prevents cloud catch-up filing.
+
+The configured GitHub schedules are best-effort hourly recovery, not a guaranteed
+real-time delivery service. Readiness requires a recent successful filing-cycle
+receipt from the exact deployed revision; flags, a healthy Mac heartbeat, or a
+successful watchdog run alone do not establish unattended filing readiness.
+
 Cloudflare’s current tunnel flow is:
 
 1. Install `cloudflared`

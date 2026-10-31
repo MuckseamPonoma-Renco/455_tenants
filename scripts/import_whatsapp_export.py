@@ -41,7 +41,13 @@ def main() -> None:
             files={'file': (export_path.name, f, 'application/octet-stream')},
         )
     print(resp.status_code)
-    print(resp.json())
+    try:
+        result = resp.json()
+    except ValueError:
+        raise SystemExit("Export import returned an invalid response")
+    print(result)
+    if resp.status_code != 200 or not isinstance(result, dict) or result.get("ok") is not True:
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

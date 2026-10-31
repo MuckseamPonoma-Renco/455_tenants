@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import base64
+import datetime as dt
 import json
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -139,7 +143,7 @@ def check_public_health(runner: Runner, *, require_cloud_receiver: bool) -> dict
         "--max-import-age-seconds",
         "3600",
     ]
-    name = "mac_off_intake_health" if require_cloud_receiver else "public_health"
+    name = "cloud_receiver_configuration" if require_cloud_receiver else "public_health"
     if require_cloud_receiver:
         args.append("--require-cloud-export-receiver")
     return _command_check(
@@ -148,12 +152,12 @@ def check_public_health(runner: Runner, *, require_cloud_receiver: bool) -> dict
         runner=runner,
         timeout_seconds=30,
         success_detail=(
-            "Public health is fresh and the private cloud receiver is configured."
+            "The Mac's public health reports a configured private cloud receiver; this is not a Mac-off execution test."
             if require_cloud_receiver
             else "Public API, automation, WhatsApp capture, storage, and iCloud importer are fresh; database and Sheets configuration is present."
         ),
         failure_detail=(
-            "Mac-off intake is not ready because the private cloud receiver is missing or unhealthy."
+            "The Mac's public health cannot confirm the private cloud receiver configuration."
             if require_cloud_receiver
             else "Public health is stale or unhealthy."
         ),
@@ -231,20 +235,213 @@ def check_filevault_boundary(runner: Runner) -> dict[str, Any]:
             "filevault_boundary",
             status="warn",
             ok=True,
-            detail=f"Could not inspect FileVault status: {exc}",
+            detail=f"Mac LaunchAgents require a logged-in user. Could not inspect FileVault status: {exc}",
+            evidence={
+                "filevault_enabled": None,
+                "mac_services_require_login": True,
+                "mac_after_reboot_without_login_ready": False,
+            },
         )
     status_text = f"{result.stdout} {result.stderr}".strip()
+    enabled = (
+        True if result.returncode == 0 and "FileVault is On" in status_text
+        else False if result.returncode == 0 and "FileVault is Off" in status_text
+        else None
+    )
     return _check(
         "filevault_boundary",
-        status="warn" if "FileVault is On" in status_text else "pass",
+        status="warn",
         ok=True,
         detail=(
-            "FileVault is on, so Mac LaunchAgents cannot run after a reboot until the user unlocks macOS; Mac-off readiness depends on cloud intake/recovery."
-            if "FileVault is On" in status_text
-            else "FileVault does not appear to be blocking post-reboot LaunchAgents."
+            "Mac services are per-user LaunchAgents and require a logged-in user, even when idle sleep is disabled. "
+            + (
+                "FileVault also requires an authorized unlock after reboot."
+                if enabled is True
+                else "FileVault is off; the LaunchAgent login dependency remains."
+                if enabled is False
+                else "FileVault status could not be confirmed."
+            )
         ),
-        evidence={"status": status_text},
+        evidence={
+            "filevault_enabled": enabled,
+            "mac_services_require_login": True,
+            "mac_after_reboot_without_login_ready": False,
+        },
     )
+
+
+def _cloud_capabilities(source: str) -> dict[str, bool | None]:
+    """Read declarations without executing downloaded repository code."""
+    tree = ast.parse(source)
+    capabilities: dict[str, bool | None] = {
+        "automatic_311_filing": None,
+        "live_whatsapp_capture": None,
+    }
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "CLOUD_RECOVERY_CAPABILITIES"
+            for target in node.targets
+        ):
+            continue
+        declared = ast.literal_eval(node.value)
+        if not isinstance(declared, dict):
+            raise ValueError("cloud capability declaration is not an object")
+        for name, value in declared.items():
+            if not isinstance(name, str) or not isinstance(value, bool):
+                raise ValueError("cloud capabilities must be named booleans")
+            capabilities[name] = value
+        return capabilities
+
+    # Existing deployments predate capability declarations and explicitly turn
+    # off new filing. This is negative evidence only, never proof of readiness.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Attribute)
+                and isinstance(target.value.value, ast.Name)
+                and target.value.value.id == "os"
+                and target.value.attr == "environ"
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "AUTO_FILE_ENABLED"
+                and node.value.value == "0"
+            ):
+                capabilities["automatic_311_filing"] = False
+    return capabilities
+
+
+def check_cloud_filing_capability(repo: str, runner: Runner) -> dict[str, Any]:
+    evidence: dict[str, Any] = {"repo": repo, "reference": "main"}
+    failures: list[str] = []
+    try:
+        head = runner(["gh", "api", f"repos/{repo}/commits/main", "--jq", ".sha"], 30)
+        head_sha = head.stdout.strip()
+        if head.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise ValueError("current main commit is unavailable")
+        evidence["head_sha"] = head_sha
+        result = runner([
+            "gh", "api",
+            f"repos/{repo}/contents/scripts/run_cloud_recovery_cycle.py?ref={head_sha}",
+        ], 30)
+        if result.returncode != 0:
+            raise ValueError("current cloud recovery source is unavailable")
+        payload = json.loads(result.stdout)
+        source = base64.b64decode(payload["content"]).decode("utf-8")
+        capabilities = _cloud_capabilities(source)
+        evidence.update({"source_blob_sha": payload.get("sha"), "capabilities": capabilities})
+        if capabilities.get("automatic_311_filing") is not True:
+            failures.append(
+                "Current cloud recovery cannot file new 311 cases while the Mac is unavailable."
+                if capabilities.get("automatic_311_filing") is False
+                else "Current cloud recovery has no verified declaration of automatic 311 filing support."
+            )
+    except (OSError, ValueError, KeyError, TypeError, SyntaxError, subprocess.SubprocessError):
+        failures.append("Could not inspect current cloud 311 filing capability.")
+
+    try:
+        variable = runner(["gh", "variable", "get", "CLOUD_311_FILING_ENABLED", "--repo", repo], 30)
+        enabled = variable.returncode == 0 and variable.stdout.strip().lower() == "true"
+        evidence["cloud_311_filing_enabled"] = enabled
+        if not enabled:
+            failures.append("CLOUD_311_FILING_ENABLED is not true.")
+    except Exception:
+        evidence["cloud_311_filing_enabled"] = None
+        failures.append("Could not inspect the cloud 311 filing enablement gate.")
+
+    return _check(
+        "cloud_311_filing_configuration",
+        status="pass" if not failures else "fail",
+        ok=not failures,
+        detail=(
+            "Current cloud code supports automatic 311 filing and its separate enablement gate is on; execution still requires a recent worker receipt."
+            if not failures else " ".join(failures)
+        ),
+        evidence=evidence,
+    )
+
+
+def _filing_receipt_from_log(log: str) -> dict[str, Any] | None:
+    # GitHub masks the literal secret value "true", even inside JSON. The
+    # separately marked receipt uses integers and contains no private fields.
+    marker = "CLOUD_311_RECEIPT_V1 "
+    fields = {"schema", "ok", "cycle_ok", "submitted", "lookup_verified", "empty", "blocked"}
+    for line in log.splitlines():
+        cleaned = re.sub(
+            r"^.*?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?", "", line,
+        ).strip()
+        if not cleaned.startswith(marker):
+            continue
+        try:
+            payload = json.loads(cleaned[len(marker):])
+        except ValueError:
+            continue
+        if not isinstance(payload, dict) or set(payload) != fields:
+            continue
+        if any(type(value) is not int or value < 0 for value in payload.values()):
+            continue
+        if (payload["schema"], payload["ok"], payload["cycle_ok"], payload["blocked"]) != (1, 1, 1, 0):
+            continue
+        return payload
+    return None
+
+
+def check_cloud_filing_execution(
+    repo: str, configuration: dict[str, Any], runner: Runner,
+    *, now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {"maximum_age_seconds": 7200}
+    detail = "No successful cloud 311 worker receipt at the current main commit was verified within the last two hours."
+    if configuration.get("ok") is not True:
+        return _check(
+            "mac_off_311_filing", status="fail", ok=False,
+            detail="Mac-off 311 filing is unavailable until its code capability and enablement gate are ready.",
+            evidence=evidence,
+        )
+    head_sha = configuration["evidence"]["head_sha"]
+    evidence["head_sha"] = head_sha
+    current_time = now or dt.datetime.now(dt.UTC)
+    try:
+        result = runner([
+            "gh", "run", "list", "--repo", repo, "--workflow", "cloud-recovery.yml",
+            "--branch", "main", "--status", "completed", "--limit", "20",
+            "--json", "databaseId,headSha,conclusion,updatedAt",
+        ], 30)
+        if result.returncode != 0:
+            raise ValueError("cloud run list is unavailable")
+        runs = json.loads(result.stdout)
+        if not isinstance(runs, list):
+            raise ValueError("cloud run list is not a list")
+        inspected = 0
+        for run in runs:
+            if not isinstance(run, dict) or run.get("headSha") != head_sha or run.get("conclusion") != "success":
+                continue
+            try:
+                stamp = dt.datetime.fromisoformat(str(run.get("updatedAt") or "").replace("Z", "+00:00"))
+                age = (current_time - stamp).total_seconds()
+            except (ValueError, TypeError):
+                continue
+            if not 0 <= age <= evidence["maximum_age_seconds"]:
+                continue
+            run_id = str(run.get("databaseId") or "")
+            if not run_id.isdigit():
+                continue
+            logs = runner(["gh", "run", "view", run_id, "--repo", repo, "--log"], 30)
+            inspected += 1
+            receipt = _filing_receipt_from_log(logs.stdout) if logs.returncode == 0 else None
+            if receipt is not None:
+                evidence.update({"run_id": int(run_id), "updated_at": run["updatedAt"], "current_filings": receipt})
+                return _check(
+                    "mac_off_311_filing", status="pass", ok=True,
+                    detail="The enabled cloud 311 worker completed a safe batch at the current main commit within two hours; individual cases still require their own receipts.",
+                    evidence=evidence,
+                )
+            if inspected >= 6:
+                break
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        detail = "Could not verify a recent cloud 311 worker receipt."
+    return _check("mac_off_311_filing", status="fail", ok=False, detail=detail, evidence=evidence)
 
 
 def check_github_cloud_recovery(repo: str, runner: Runner) -> dict[str, Any]:
@@ -310,6 +507,11 @@ def _next_required_action(hard_failures: list[dict[str, Any]]) -> str:
             "Configure the three GitHub cloud-recovery secrets for the private Cloudflare receiver and set "
             "REQUIRE_CLOUD_EXPORT_RECEIVER=true."
         )
+    if any(row.get("name") in {"cloud_311_filing_configuration", "mac_off_311_filing"} for row in hard_failures):
+        actions.append(
+            "Verify the separate cloud 311 worker's support, enablement gate, and a recent successful worker receipt; "
+            "cloud export intake and status updates do not prove new cases can be filed while the Mac is unavailable."
+        )
     if not actions:
         actions.append("Resolve the failed readiness checks shown in this report, then rerun the audit.")
     return " ".join(actions)
@@ -322,7 +524,10 @@ def build_report(args: argparse.Namespace, *, runner: Runner = run_command) -> d
         check_public_health(runner, require_cloud_receiver=True),
         check_filevault_boundary(runner),
         check_github_cloud_recovery(args.repo, runner),
+        check_cloud_filing_capability(args.repo, runner),
     ]
+    cloud_configuration = checks[-1]
+    checks.append(check_cloud_filing_execution(args.repo, cloud_configuration, runner))
     if args.include_public_sheet:
         checks.append(check_public_tenant_log(runner))
     if args.include_watchdog_sync:
@@ -333,6 +538,12 @@ def build_report(args: argparse.Namespace, *, runner: Runner = run_command) -> d
     return {
         "ok": not hard_failures,
         "checks": checks,
+        "capabilities": {
+            "mac_services_require_login": platform.system() == "Darwin",
+            "cloud_311_filing_configured": cloud_configuration["ok"],
+            "mac_off_311_filing_verified": next(row["ok"] for row in checks if row["name"] == "mac_off_311_filing"),
+            "cloud_live_whatsapp_capture_supported": cloud_configuration["evidence"].get("capabilities", {}).get("live_whatsapp_capture"),
+        },
         "next_required_action": _next_required_action(hard_failures),
     }
 
@@ -362,12 +573,16 @@ def compact_report(report: dict[str, Any]) -> dict[str, Any]:
             configured = evidence.get("configured_recovery_secret_names")
             if configured is not None:
                 summary["configured_recovery_secret_names"] = configured
+            for name in ("capabilities", "cloud_311_filing_enabled", "mac_services_require_login", "filevault_enabled", "run_id", "updated_at", "current_filings"):
+                if name in evidence:
+                    summary[name] = evidence[name]
         return summary
 
     failures = [summarize(row) for row in checks if row.get("ok") is not True and row.get("status") != "warn"]
     warnings = [summarize(row) for row in checks if row.get("status") == "warn"]
     return {
         "ok": bool(report.get("ok")),
+        "capabilities": report.get("capabilities") or {},
         "status_counts": status_counts,
         "failed_checks": failures,
         "warnings": warnings,

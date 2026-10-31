@@ -1353,7 +1353,7 @@ def test_export_ingest_schedules_single_resync_after_bulk_processing(client, tmp
         resync_calls.append(True)
         return "resync-job"
 
-    monkeypatch.setattr('apps.api.routers.ingest.enqueue_process_message', fake_enqueue_process_message)
+    monkeypatch.setattr('apps.api.routers.ingest.enqueue_process_export_message', fake_enqueue_process_message)
     monkeypatch.setattr('apps.api.routers.ingest.enqueue_full_resync', fake_enqueue_full_resync)
 
     export_path = tmp_path / 'bulk_chat.txt'
