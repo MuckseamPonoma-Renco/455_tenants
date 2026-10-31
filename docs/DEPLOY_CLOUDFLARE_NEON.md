@@ -102,6 +102,20 @@ real-time delivery service. Readiness requires a recent successful filing-cycle
 receipt from the exact deployed revision; flags, a healthy Mac heartbeat, or a
 successful watchdog run alone do not establish unattended filing readiness.
 
+Cloud and Mac publication must use the same `PUBLIC_BASE_URL`. Locally validated
+attachments carry a bound `public_reference` containing the existing canonical
+URL and cache version. The renderer can preserve that reference on a host that
+does not have the media files; the media-serving route still requires its normal
+allowed local path and file checks. New and resumed message processing records
+these references when the local files are available.
+
+For older, already-published attachments, use
+`scripts/backfill_public_attachment_references.py` with an exact whitelist of
+message IDs, attachment indices and existing URLs. Preview first; apply requires
+the unchanged preview hash. This only adds attachment metadata. After deployment
+and backfill, verify the full Sheet under both local and cloud rendering settings,
+including formulas and media links, rather than comparing recent row counts alone.
+
 Cloudflare’s current tunnel flow is:
 
 1. Install `cloudflared`

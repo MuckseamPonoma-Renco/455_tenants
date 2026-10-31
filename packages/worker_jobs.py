@@ -65,6 +65,9 @@ def process_message(message_id: str, *, sync_sheets: bool = True, allow_filing_j
         raw = session.get(RawMessage, message_id)
         if not raw:
             return {"ok": False, "error": "missing raw message"}
+        from packages.whatsapp.media import enrich_public_attachment_references
+
+        raw.attachments = enrich_public_attachment_references(raw.message_id, raw.attachments)
         previously_decided = session.get(MessageDecision, message_id) is not None
         incident_id = classify_and_upsert_incident(
             session,
@@ -108,6 +111,9 @@ def process_pending_messages(limit: int = 100, *, latest_first: bool = False, re
                 raw = session.get(RawMessage, message_id)
                 if raw is None or session.get(MessageDecision, message_id) is not None:
                     continue
+                from packages.whatsapp.media import enrich_public_attachment_references
+
+                raw.attachments = enrich_public_attachment_references(raw.message_id, raw.attachments)
                 classify_and_upsert_incident(
                     session,
                     raw,

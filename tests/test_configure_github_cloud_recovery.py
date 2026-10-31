@@ -15,6 +15,7 @@ def test_recovery_env_is_allowlisted_and_requires_model_access():
         "CLOUD_EXPORT_RECEIVER_PULL_TOKEN": "pull-token",
         "GOOGLE_SHEETS_SPREADSHEET_ID": "sheet-id",
         "OPENAI_API_KEY": "model-key",
+        "PUBLIC_BASE_URL": "https://tenant.example.test",
         "INGEST_TOKEN": "must-not-leave-the-mac",
         "MOBILE_FILER_TOKEN": "must-not-leave-the-mac",
         "NYC311_CONTACT_EMAIL": "must-not-leave-the-mac@example.test",
@@ -24,6 +25,7 @@ def test_recovery_env_is_allowlisted_and_requires_model_access():
 
     assert "DATABASE_URL=postgresql://db" in rendered
     assert "OPENAI_API_KEY=model-key" in rendered
+    assert "PUBLIC_BASE_URL=https://tenant.example.test" in rendered
     assert "INGEST_TOKEN" not in rendered
     assert "MOBILE_FILER_TOKEN" not in rendered
     assert "NYC311_CONTACT_EMAIL" not in rendered

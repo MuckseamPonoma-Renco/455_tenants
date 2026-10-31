@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from pathlib import Path
 import re
 import struct
+from collections.abc import Collection
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from packages.whatsapp.attachments import attachment_items, parse_attachment_manifest
 
@@ -15,6 +19,8 @@ WHATSAPP_UI_IMAGE_URL_RE = re.compile(
     r"^(?:https?:)?//(?:static\.whatsapp\.net|pps\.whatsapp\.net|web\.whatsapp\.com)/(?:rsrc|.*profile)",
     re.IGNORECASE,
 )
+PUBLIC_REFERENCE_VERSION = 1
+PUBLIC_REFERENCE_KINDS = frozenset({"image", "video", "audio", "voice", "document", "file"})
 
 
 def _clean(value: str | None) -> str:
@@ -153,6 +159,115 @@ def _public_entry_sort_key(item: dict[str, Any]) -> tuple[int, int]:
     return (3, int(item.get("attachment_index") or 0))
 
 
+def _reference_source_hash(message_id: str, index: int, item: dict[str, Any]) -> str:
+    source = {key: value for key, value in item.items() if key != "public_reference"}
+    payload = {"message_id": message_id, "attachment_index": index, "item": source}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _reference_kind_allowed(item: dict[str, Any]) -> bool:
+    kind = _clean(str(item.get("kind") or "")).casefold()
+    return (
+        kind in PUBLIC_REFERENCE_KINDS
+        and _clean(str(item.get("status") or "")).casefold() in {"captured", "downloaded"}
+        and (kind != "image" or attachment_public_image_eligible(item))
+    )
+
+
+def _canonical_reference_url(message_id: str, index: int, url: object, *, base_url: str | None) -> bool:
+    expected = public_attachment_url(message_id, index, base_url=base_url)
+    if (
+        not expected or not isinstance(url, str) or url != url.strip()
+        or any(ord(char) < 32 for char in url)
+        or not re.fullmatch(r"[A-Za-z0-9_~-]{1,128}", message_id)
+    ):
+        return False
+    try:
+        target, canonical = urlsplit(url), urlsplit(expected)
+        query = parse_qsl(target.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return False
+    return (
+        target.scheme == canonical.scheme == "https"
+        and target.netloc == canonical.netloc
+        and target.path == canonical.path
+        and bool(target.hostname)
+        and target.username is None
+        and target.password is None
+        and not target.fragment
+        and not canonical.query
+        and not canonical.fragment
+        and (not query or (len(query) == 1 and query[0][0] == "v" and re.fullmatch(r"[0-9]+", query[0][1]) is not None))
+    )
+
+
+def _valid_public_reference(
+    message_id: str, index: int, item: dict[str, Any], *, base_url: str | None = None,
+) -> dict[str, Any] | None:
+    reference = item.get("public_reference")
+    if not _reference_kind_allowed(item) or not isinstance(reference, dict):
+        return None
+    if (
+        type(reference.get("version")) is not int
+        or reference["version"] != PUBLIC_REFERENCE_VERSION
+        or reference.get("message_id") != message_id
+        or type(reference.get("attachment_index")) is not int
+        or reference["attachment_index"] != index
+        or reference.get("source_sha256") != _reference_source_hash(message_id, index, item)
+        or not isinstance(reference.get("path_key"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", reference["path_key"]) is None
+        or not _canonical_reference_url(message_id, index, reference.get("url"), base_url=base_url)
+    ):
+        return None
+    return reference
+
+
+def enrich_public_attachment_references(
+    message_id: str, raw_attachments: str | None, *, base_url: str | None = None,
+    attachment_indices: Collection[int] | None = None,
+) -> str | None:
+    """Persist stable render metadata only for locally allowed, existing files.
+
+    A reference preserves an already-generated canonical URL; it grants no file
+    access. Serving still requires resolve_allowed_media_path on the API host.
+    Existing noncanonical CDN links are left untouched, without remote fallback.
+    """
+    parsed = parse_attachment_manifest(raw_attachments)
+    items = parsed.get("items") or []
+    changed = False
+    for index, item in enumerate(items):
+        if attachment_indices is not None and index not in attachment_indices:
+            continue
+        if not _reference_kind_allowed(item) or _valid_public_reference(message_id, index, item, base_url=base_url):
+            continue
+        path = resolve_allowed_media_path(item.get("path"))
+        if path is None:
+            continue
+        try:
+            if not path.is_file():
+                continue
+            version = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        url = _clean(str(item.get("sheet_image_url") or item.get("public_url") or ""))
+        if not url:
+            url = public_attachment_url(message_id, index, base_url=base_url, version=version)
+        if not _canonical_reference_url(message_id, index, url, base_url=base_url):
+            continue
+        item["public_reference"] = {
+            "version": PUBLIC_REFERENCE_VERSION,
+            "message_id": message_id,
+            "attachment_index": index,
+            "source_sha256": _reference_source_hash(message_id, index, item),
+            "url": url,
+            "path_key": hashlib.sha256(str(path).encode()).hexdigest(),
+        }
+        changed = True
+    if not changed:
+        return raw_attachments
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True)
+
+
 def public_attachment_entries(
     message_id: str,
     raw_attachments: str | None,
@@ -168,6 +283,19 @@ def public_attachment_entries(
             continue
         if kind == "image" and not attachment_public_image_eligible(item):
             continue
+        reference = _valid_public_reference(message_id, index, item, base_url=base_url)
+        if reference is not None:
+            # Rendering depends on persisted publication metadata, not which
+            # machine currently has the bytes. File serving remains separate.
+            path_key = reference["path_key"]
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
+            row = dict(item)
+            row["attachment_index"] = index
+            row["public_url"] = reference["url"]
+            out.append(row)
+            continue
         path = resolve_allowed_media_path(item.get("path"))
         version = None
         if path is not None:
@@ -180,7 +308,7 @@ def public_attachment_entries(
             url = public_attachment_url(message_id, index, base_url=base_url, version=version)
         if path is None or not url:
             continue
-        path_key = str(path)
+        path_key = hashlib.sha256(str(path).encode()).hexdigest()
         if path_key in seen_paths:
             continue
         seen_paths.add(path_key)
