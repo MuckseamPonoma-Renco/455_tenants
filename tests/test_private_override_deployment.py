@@ -82,6 +82,7 @@ def test_cloud_configuration_preview_never_writes_secrets(tmp_path, monkeypatch,
     env = tmp_path / ".env"
     env.write_text("\n".join([
         "DATABASE_URL=sqlite:///:memory:", "OPENAI_API_KEY=fictional-key",
+        "PUBLIC_BASE_URL=https://tenant.example.test",
         "CLOUD_EXPORT_RECEIVER_URL=https://example.test",
         "CLOUD_EXPORT_RECEIVER_PULL_TOKEN=fictional-token",
         "GOOGLE_SHEETS_SPREADSHEET_ID=fictional-operator",

@@ -14,6 +14,7 @@ def test_config_errors_requires_all_cloud_recovery_inputs(tmp_path):
     credentials_path = tmp_path / "gcp.json"
     credentials_path.write_text("{}", encoding="utf-8")
     configured = {
+        "PUBLIC_BASE_URL": "https://tenant.example.test",
         "DATABASE_URL": "postgresql://example",
         "CLOUD_EXPORT_RECEIVER_URL": "https://uploads.example.test",
         "CLOUD_EXPORT_RECEIVER_PULL_TOKEN": "token",
@@ -24,6 +25,15 @@ def test_config_errors_requires_all_cloud_recovery_inputs(tmp_path):
     assert config_errors(configured) == []
     configured["GOOGLE_APPLICATION_CREDENTIALS"] = str(tmp_path / "missing.json")
     assert config_errors(configured) == ["GOOGLE_APPLICATION_CREDENTIALS file is missing"]
+
+
+def test_configuration_reports_missing_public_base_url(tmp_path):
+    credentials = tmp_path / "gcp.json"
+    credentials.write_text("{}")
+    configured = {name: "configured" for name in recovery.REQUIRED_ENVIRONMENT}
+    configured["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials)
+    configured.pop("PUBLIC_BASE_URL")
+    assert config_errors(configured) == ["PUBLIC_BASE_URL"]
 
 
 def test_full_cycle_runs_exports_and_maintenance_without_portal_filing():
@@ -366,6 +376,7 @@ def test_entrypoint_validates_only_required_capabilities(tmp_path, monkeypatch, 
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credentials))
     monkeypatch.setenv("GOOGLE_SHEETS_SPREADSHEET_ID", "fixture-sheet")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tenant.example.test")
     monkeypatch.delenv("CLOUD_EXPORT_RECEIVER_URL", raising=False)
     monkeypatch.delenv("CLOUD_EXPORT_RECEIVER_PULL_TOKEN", raising=False)
     monkeypatch.setattr(recovery, "parse_args", lambda: SimpleNamespace(
