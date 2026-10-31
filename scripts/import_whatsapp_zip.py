@@ -14,12 +14,12 @@ from packages.local_env import load_local_env_file
 load_local_env_file(ROOT / ".env")
 
 from packages.whatsapp.export import parse_export_path
-from packages.db import get_session, RawMessage
+from packages.db import get_session, MessageDecision, RawMessage
 from packages.audit import sender_hash
 from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate, find_recent_duplicate
 from packages.timeutil import parse_ts_to_epoch
-from packages.whatsapp.identity import iter_physical_message_identities
-from packages.queue import enqueue_full_resync, enqueue_process_message
+from packages.whatsapp.identity import archive_timestamp_alias_matches, iter_physical_message_identities
+from packages.queue import enqueue_full_resync, enqueue_process_export_message as enqueue_process_message
 
 
 def main() -> None:
@@ -42,13 +42,26 @@ def main() -> None:
     queued = 0
     seen_mids: set[str] = set()
     mids_to_queue: list[str] = []
+    scheduled_ids: set[str] = set()
+    resumed = 0
+    identities = list(iter_physical_message_identities(parsed))
+    export_message_ids = {identity.message_id for identity in identities}
     with get_session() as s:
-        for identity in iter_physical_message_identities(parsed):
+        for identity in identities:
             m = identity.message
             ts_epoch = parse_ts_to_epoch(m.ts_iso)
             mid = identity.message_id
-            if mid in seen_mids or s.get(RawMessage, mid):
+            if mid in seen_mids:
                 deduped += 1
+                continue
+            seen_mids.add(mid)
+            existing = s.get(RawMessage, mid)
+            if existing is not None:
+                deduped += 1
+                if mid not in scheduled_ids and s.get(MessageDecision, mid) is None:
+                    mids_to_queue.append(mid)
+                    scheduled_ids.add(mid)
+                    resumed += 1
                 continue
             duplicate = None
             if identity.occurrence == 1:
@@ -60,6 +73,10 @@ def main() -> None:
                     ts_epoch=ts_epoch,
                     require_chat_match=False,
                 )
+                if duplicate is not None and duplicate.source not in LIVE_CAPTURE_SOURCES and not archive_timestamp_alias_matches(
+                    duplicate.message_id, duplicate.ts_epoch, ts_epoch, export_message_ids
+                ):
+                    duplicate = None
                 if duplicate is None:
                     duplicate = find_recent_cross_source_duplicate(
                         s,
@@ -69,8 +86,12 @@ def main() -> None:
                     )
             if duplicate:
                 deduped += 1
+                duplicate_id = duplicate.message_id
+                if duplicate_id not in scheduled_ids and s.get(MessageDecision, duplicate_id) is None:
+                    mids_to_queue.append(duplicate_id)
+                    scheduled_ids.add(duplicate_id)
+                    resumed += 1
                 continue
-            seen_mids.add(mid)
             s.add(RawMessage(
                 message_id=mid,
                 chat_name=m.chat_name,
@@ -84,6 +105,7 @@ def main() -> None:
             ))
             inserted += 1
             mids_to_queue.append(mid)
+            scheduled_ids.add(mid)
         s.commit()
 
     if args.llm_mode:
@@ -100,6 +122,7 @@ def main() -> None:
         'inserted': inserted,
         'deduped': deduped,
         'queued': queued,
+        'resumed': resumed,
         'chat_files': export.chat_files,
     })
 

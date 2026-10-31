@@ -60,7 +60,7 @@ def _allow_filing_job_for_message(raw: RawMessage, *, previously_decided: bool) 
     return not previously_decided and (raw.source or "").casefold() not in ARCHIVE_MESSAGE_SOURCES
 
 
-def process_message(message_id: str, *, sync_sheets: bool = True):
+def process_message(message_id: str, *, sync_sheets: bool = True, allow_filing_job: bool | None = None):
     with get_session() as session:
         raw = session.get(RawMessage, message_id)
         if not raw:
@@ -69,7 +69,10 @@ def process_message(message_id: str, *, sync_sheets: bool = True):
         incident_id = classify_and_upsert_incident(
             session,
             raw,
-            allow_filing_job=_allow_filing_job_for_message(raw, previously_decided=previously_decided),
+            allow_filing_job=(
+                allow_filing_job is not False
+                and _allow_filing_job_for_message(raw, previously_decided=previously_decided)
+            ),
         )
         queued = sum(1 for row in session.new if isinstance(row, FilingJob))
         session.commit()

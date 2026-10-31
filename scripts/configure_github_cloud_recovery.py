@@ -23,6 +23,15 @@ DEFAULT_REPO = "MuckseamPonoma-Renco/455_tenants"
 DEFAULT_RUNTIME_ENV = Path.home() / ".local" / "share" / "tenant-issue-os" / "runtime" / ".env"
 
 RECOVERY_ENV_KEYS = (
+    "AUTO_FILE_MAX_PORTAL_ATTEMPTS",
+    "AUTO_FILE_MIN_WITNESSES",
+    "AUTO_FILE_MIN_REPORTS",
+    "AUTO_FILE_ELEVATOR_ONLY",
+    "AUTO_FILE_MAX_INCIDENT_AGE_HOURS",
+    "AUTO_FILE_MIN_CONFIDENCE",
+    "AUTO_FILE_SKIP_NEEDS_REVIEW",
+    "AUTO_FILE_EQUIVALENT_DUPLICATE_MINUTES",
+    "CLAIM_STALE_MINUTES",
     "DATABASE_URL",
     "CLOUD_EXPORT_RECEIVER_URL",
     "CLOUD_EXPORT_RECEIVER_PULL_TOKEN",
@@ -176,7 +185,8 @@ def preview(*, repo: str, env_path: Path, recovery_env: str) -> dict[str, Any]:
         "secret_names": list(SECRET_NAMES),
         "repository_variable": {"REQUIRE_CLOUD_EXPORT_RECEIVER": "true"},
         "safety": {
-            "auto_file_forced_off_in_workflow": True,
+            "historical_import_filing_disabled": True,
+            "cloud_filing_requires_separate_explicit_enablement": True,
             "chat_archives_uploaded_as_artifacts": False,
             "activation_written_last": True,
         },

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Collection
 from typing import Any
 
 from sqlalchemy import select
@@ -30,16 +31,33 @@ def _append_note(existing: str | None, extra: str) -> str:
     return f"{existing[:available]} | {extra}" if available else extra
 
 
-def _begin_submission(job_id: int) -> bool:
+def _begin_submission(
+    job_id: int,
+    *,
+    incident_ids: Collection[str] | None = None,
+    incident_validator: Callable[[object, Incident], bool] | None = None,
+    before_submit: Callable[[], bool] | None = None,
+) -> bool:
     """Durably fence the final click before any external submission can occur."""
     with get_session() as session:
         job = session.scalar(select(FilingJob).where(FilingJob.job_id == job_id).with_for_update())
         if job is None:
             return False
+        if incident_ids is not None and job.incident_id not in incident_ids:
+            return False
+        incident = None
         if job.incident_id:
-            session.scalar(select(Incident).where(Incident.incident_id == job.incident_id).with_for_update())
+            incident = session.scalar(select(Incident).where(Incident.incident_id == job.incident_id).with_for_update())
         if not claimed_filing_job_is_current(session, job):
             return False
+        if incident_validator is not None and (incident is None or not incident_validator(session, incident)):
+            return False
+        if before_submit is not None:
+            try:
+                if before_submit() is not True:
+                    return False
+            except Exception:
+                return False
         job.state = "submitting"
         job.updated_at = now_iso()
         job.notes = _append_note(job.notes, "final submit armed; receipt reconciliation required before any retry")
@@ -92,9 +110,21 @@ def _submission_failure(job_id: int, exc: Exception, *, receipt=None) -> dict[st
     return {"ok": False, "state": state, "submission_unknown": unknown, **meta}
 
 
-def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True) -> dict[str, Any]:
+def run_portal_filing_once(
+    *,
+    headless: bool = True,
+    verify_lookup: bool = True,
+    incident_ids: Collection[str] | None = None,
+    incident_validator: Callable[[object, Incident], bool] | None = None,
+    before_submit: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    scope = {}
+    if incident_ids is not None:
+        scope["incident_ids"] = incident_ids
+    if incident_validator is not None:
+        scope["incident_validator"] = incident_validator
     with get_session() as session:
-        job, skipped = claim_next_job(session)
+        job, skipped = claim_next_job(session, **scope)
         session.commit()
         if skipped:
             _safe_sync_sheets()
@@ -109,7 +139,7 @@ def run_portal_filing_once(*, headless: bool = True, verify_lookup: bool = True)
             payload,
             headless=headless,
             submit_live=True,
-            before_submit=lambda: _begin_submission(job_id),
+            before_submit=lambda: _begin_submission(job_id, **scope, **({"before_submit": before_submit} if before_submit is not None else {})),
         )
         if not submission.service_request_number:
             raise RuntimeError("Portal submission finished without a service request number")

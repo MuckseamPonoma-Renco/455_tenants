@@ -4,11 +4,13 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable, Collection
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import object_session
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.incident.dedupe import dedupe_open_elevator_continuations
+from packages.incident.rules import classify_rules
 from packages.incident.reconcile import (
     close_superseded_open_elevator_incidents,
     repair_unbounded_elevator_restore_attachments,
@@ -117,7 +119,34 @@ def _classifier_says_actionable_elevator(inc: Incident) -> bool | None:
     decisions = list(session.scalars(query).all())
     if not decisions:
         return None
-    return any((row.event_type or "new_issue") in ACTIONABLE_ELEVATOR_EVENTS for row in decisions)
+    for row in decisions:
+        if (row.event_type or "new_issue") not in ACTIONABLE_ELEVATOR_EVENTS:
+            continue
+        # Queued work can outlive a rule fix. Recheck the original source for
+        # direct rule-derived outages so a corrected false positive cannot be
+        # submitted using its old materialized incident. Context/model-backed
+        # decisions retain their existing evidence path.
+        if row.chosen_source in {"rules", "rules_with_llm_disagreement", "rules_with_llm_disagreement_rule_state"}:
+            try:
+                stored_rules = json.loads(row.rules_json or "{}")
+            except (TypeError, ValueError):
+                stored_rules = {}
+            if (
+                isinstance(stored_rules, dict)
+                and stored_rules.get("is_issue")
+                and stored_rules.get("category") == "elevator"
+                and stored_rules.get("event_type") in ACTIONABLE_ELEVATOR_EVENTS
+            ):
+                raw = session.get(RawMessage, row.message_id)
+                current_rules = classify_rules(raw.text or "") if raw is not None else {}
+                if not (
+                    current_rules.get("is_issue")
+                    and current_rules.get("category") == "elevator"
+                    and current_rules.get("event_type") in ACTIONABLE_ELEVATOR_EVENTS
+                ):
+                    continue
+        return True
+    return False
 
 
 def incident_is_auto_eligible(inc: Incident) -> bool:
@@ -364,8 +393,12 @@ def _retire_ineligible_job(job: FilingJob) -> bool:
     return True
 
 
-def retire_ineligible_filing_jobs(session) -> int:
-    jobs = session.scalars(select(FilingJob).where(FilingJob.state.in_(PRE_SUBMISSION_JOB_STATES))).all()
+def retire_ineligible_filing_jobs(session, *, incident_ids: Collection[str] | None = None) -> int:
+    query = select(FilingJob).where(FilingJob.state.in_(PRE_SUBMISSION_JOB_STATES))
+    if incident_ids is not None:
+        query = query.where(FilingJob.incident_id.in_(incident_ids))
+    # Retirement must never overwrite a concurrently committed submitting fence.
+    jobs = session.scalars(query.with_for_update(skip_locked=True).execution_options(populate_existing=True)).all()
     retired = 0
     for job in jobs:
         incident = session.get(Incident, job.incident_id) if job.incident_id else None
@@ -450,7 +483,10 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
             pending_job = row
             break
 
-    existing_job = pending_job or session.scalar(select(FilingJob).where(FilingJob.dedupe_key == dedupe_key))
+    existing_job = pending_job or session.scalar(
+        select(FilingJob).where(FilingJob.dedupe_key == dedupe_key)
+        .with_for_update().execution_options(populate_existing=True)
+    )
     if not incident_is_auto_eligible(inc):
         if existing_job is not None:
             _retire_ineligible_job(existing_job)
@@ -528,12 +564,31 @@ def ensure_filing_jobs(session) -> list[FilingJob]:
     return jobs
 
 
-def claim_next_job(session) -> tuple[FilingJob | None, int]:
-    skipped = retire_ineligible_filing_jobs(session)
+def claim_next_job(
+    session,
+    *,
+    incident_ids: Collection[str] | None = None,
+    incident_validator: Callable[[object, Incident], bool] | None = None,
+) -> tuple[FilingJob | None, int]:
+    if incident_ids is not None and not incident_ids:
+        return None, 0
+    if session.get_bind().dialect.name == "postgresql":
+        # Different incident IDs can still describe the same observed outage.
+        # Serialize claim decisions across Mac/cloud runners so the equivalent
+        # check sees the preceding committed claim, including scoped scans.
+        if session.scalar(text("SELECT pg_try_advisory_xact_lock(4550311)")) is not True:
+            return None, 0
+
+    def scoped(query):
+        if incident_ids is not None:
+            query = query.where(FilingJob.incident_id.in_(incident_ids))
+        return query.with_for_update(skip_locked=True).execution_options(populate_existing=True)
+
+    skipped = retire_ineligible_filing_jobs(session, incident_ids=incident_ids)
     if skipped:
         session.flush()
     legacy_rows = session.scalars(
-        select(FilingJob).where(FilingJob.state.in_(("awaiting_approval", "approved")))
+        scoped(select(FilingJob).where(FilingJob.state.in_(("awaiting_approval", "approved"))))
     ).all()
     for row in legacy_rows:
         row.state = "pending"
@@ -547,7 +602,7 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
     requeued = False
     if stale_after_min > 0:
         cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=stale_after_min)
-        claimed_rows = session.scalars(select(FilingJob).where(FilingJob.state == "claimed")).all()
+        claimed_rows = session.scalars(scoped(select(FilingJob).where(FilingJob.state == "claimed"))).all()
         for row in claimed_rows:
             claimed_at = _parse_iso(row.claimed_at) or _parse_iso(row.updated_at) or _parse_iso(row.created_at)
             if claimed_at and claimed_at <= cutoff:
@@ -561,10 +616,10 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
         session.flush()
 
     rows = session.scalars(
-        select(FilingJob)
+        scoped(select(FilingJob)
         .where(FilingJob.state.in_(("pending", "failed")))
         .order_by(FilingJob.priority.asc(), FilingJob.created_at.asc())
-        .with_for_update(skip_locked=True)
+        )
     ).all()
     max_attempts = max(1, _env_int("AUTO_FILE_MAX_PORTAL_ATTEMPTS", 3))
     for row in rows:
@@ -581,6 +636,10 @@ def claim_next_job(session) -> tuple[FilingJob | None, int]:
             note = "auto-skipped because incident is no longer auto-eligible"
             row.notes = _append_job_note(row.notes, note)
             skipped += 1
+            continue
+        # A runner-specific scope is a filter, not a reason to retire work
+        # another authorized runner can still evaluate under its own policy.
+        if incident_validator is not None and not incident_validator(session, incident):
             continue
         existing_case = session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == incident.incident_id))
         if existing_case is not None:

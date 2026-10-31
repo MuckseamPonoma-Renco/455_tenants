@@ -9,8 +9,8 @@ from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 from packages.audit import append_audit_event, compute_message_id, sender_hash
 from packages.auth import require_bearer_token
-from packages.db import RawMessage, get_session
-from packages.queue import enqueue_full_resync, enqueue_process_message
+from packages.db import MessageDecision, RawMessage, get_session
+from packages.queue import enqueue_full_resync, enqueue_process_message, enqueue_process_export_message
 from packages.tasker_capture import (
     CROSS_SOURCE_DUPLICATE_SOURCES,
     LIVE_CAPTURE_SOURCES,
@@ -24,7 +24,7 @@ from packages.tasker_capture import (
 from packages.timeutil import epoch_to_iso, parse_ts_to_epoch
 from packages.whatsapp.attachments import merge_attachment_manifests, strip_reply_context_from_text
 from packages.whatsapp.export import parse_export_path
-from packages.whatsapp.identity import iter_physical_message_identities
+from packages.whatsapp.identity import archive_timestamp_alias_matches, iter_physical_message_identities
 
 router = APIRouter()
 EXPORT_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -323,13 +323,26 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
     deduped = 0
     job_ids = []
     seen_mids = set()
+    scheduled_ids = set()
+    resumed = 0
+    identities = list(iter_physical_message_identities(parsed))
+    export_message_ids = {identity.message_id for identity in identities}
     with get_session() as session:
-        for identity in iter_physical_message_identities(parsed):
+        for identity in identities:
             msg = identity.message
             ts_epoch = parse_ts_to_epoch(msg.ts_iso)
             mid = identity.message_id
-            if mid in seen_mids or session.get(RawMessage, mid):
+            if mid in seen_mids:
                 deduped += 1
+                continue
+            seen_mids.add(mid)
+            existing = session.get(RawMessage, mid)
+            if existing is not None:
+                deduped += 1
+                if mid not in scheduled_ids and session.get(MessageDecision, mid) is None:
+                    job_ids.append(mid)
+                    scheduled_ids.add(mid)
+                    resumed += 1
                 continue
             duplicate = None
             if identity.occurrence == 1:
@@ -341,6 +354,10 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
                     ts_epoch=ts_epoch,
                     require_chat_match=False,
                 )
+                if duplicate is not None and duplicate.source not in LIVE_CAPTURE_SOURCES and not archive_timestamp_alias_matches(
+                    duplicate.message_id, duplicate.ts_epoch, ts_epoch, export_message_ids
+                ):
+                    duplicate = None
                 if duplicate is None:
                     duplicate = find_recent_cross_source_duplicate(
                         session,
@@ -350,8 +367,12 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
                     )
             if duplicate:
                 deduped += 1
+                duplicate_id = duplicate.message_id
+                if duplicate_id not in scheduled_ids and session.get(MessageDecision, duplicate_id) is None:
+                    job_ids.append(duplicate_id)
+                    scheduled_ids.add(duplicate_id)
+                    resumed += 1
                 continue
-            seen_mids.add(mid)
             session.add(RawMessage(
                 message_id=mid,
                 chat_name=msg.chat_name,
@@ -365,10 +386,11 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
             ))
             inserted += 1
             job_ids.append(mid)
+            scheduled_ids.add(mid)
         session.commit()
 
     for mid in job_ids:
-        enqueue_process_message(mid, sync_sheets=False)
+        enqueue_process_export_message(mid, sync_sheets=False)
     if job_ids:
         enqueue_full_resync()
 
@@ -376,6 +398,7 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
         'inserted': inserted,
         'parsed': len(parsed),
         'deduped': deduped,
+        'resumed': resumed,
         'zip': bool(export.is_zip),
         'chat_files': export.chat_files,
     })
@@ -384,6 +407,7 @@ async def ingest_export(file: UploadFile = File(...), authorization: str | None 
         'inserted': inserted,
         'parsed': len(parsed),
         'deduped': deduped,
+        'resumed': resumed,
         'zip': bool(export.is_zip),
         'chat_files': export.chat_files,
         'enqueued': len(job_ids),

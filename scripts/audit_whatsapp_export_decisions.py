@@ -22,7 +22,7 @@ from packages.db import MessageDecision, RawMessage, get_session  # noqa: E402
 from packages.incident.rules import classify_rules  # noqa: E402
 from packages.tasker_capture import LIVE_CAPTURE_SOURCES, find_recent_cross_source_duplicate, find_recent_duplicate  # noqa: E402
 from packages.timeutil import parse_ts_to_epoch  # noqa: E402
-from packages.whatsapp.identity import iter_physical_message_identities  # noqa: E402
+from packages.whatsapp.identity import archive_timestamp_alias_matches, iter_physical_message_identities  # noqa: E402
 from packages.whatsapp.parser import is_media_placeholder_text  # noqa: E402
 from packages.whatsapp.export import parse_export_path  # noqa: E402
 
@@ -81,6 +81,7 @@ class ExportMessage:
     ts_epoch: int | None
     text: str
     attachments: str | None
+    export_message_ids: frozenset[str]
 
 
 def iter_export_messages(export_path: Path, *, default_chat_name: str = "Tenants WhatsApp") -> list[ExportMessage]:
@@ -88,7 +89,8 @@ def iter_export_messages(export_path: Path, *, default_chat_name: str = "Tenants
     export = parse_export_path(export_path, default_chat_name=default_chat_name)
     fallback_file = Path(export_path).name
     chat_files = export.chat_files or [fallback_file]
-    identities = iter_physical_message_identities(export.messages)
+    identities = list(iter_physical_message_identities(export.messages))
+    export_message_ids = frozenset(identity.message_id for identity in identities)
     for ordinal, identity in enumerate(identities, start=1):
         item = identity.message
         messages.append(
@@ -104,6 +106,7 @@ def iter_export_messages(export_path: Path, *, default_chat_name: str = "Tenants
                 ts_epoch=parse_ts_to_epoch(item.ts_iso),
                 text=item.text,
                 attachments=item.attachments,
+                export_message_ids=export_message_ids,
             )
         )
     return messages
@@ -253,7 +256,11 @@ def _match_export_message(session, message: ExportMessage) -> tuple[RawMessage |
         ts_epoch=message.ts_epoch,
         require_chat_match=False,
     )
-    if duplicate is not None:
+    if duplicate is not None and (
+        duplicate.source in LIVE_CAPTURE_SOURCES or archive_timestamp_alias_matches(
+            duplicate.message_id, duplicate.ts_epoch, message.ts_epoch, message.export_message_ids
+        )
+    ):
         return duplicate, "near_duplicate", None
 
     return None, "", None

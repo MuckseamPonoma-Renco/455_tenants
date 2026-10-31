@@ -22,6 +22,13 @@ from packages.local_env import load_local_env_file
 from packages.automation_status import watchdog_max_age_seconds, watchdog_result_ok, watchdog_source_receipts_complete
 
 MODES = ("exports", "status", "watchdog", "full")
+CLOUD_RECOVERY_CAPABILITIES = {
+    "export_intake": True,
+    "status_sync": True,
+    "watchdog_sync": True,
+    "automatic_311_filing": True,
+    "live_whatsapp_capture": False,
+}
 PRIMARY_ACTIVE_CHAT_EXPORT_STATES = {
     "ready",
     "no_export",
@@ -50,6 +57,71 @@ class CloudRecoveryOperations:
     sync_311_statuses: Callable[[], dict[str, Any]]
     sync_replacement_watchdog: Callable[[], dict[str, Any]]
     audit_public_tenant_log: Callable[[], dict[str, Any]]
+    file_current_incidents: Callable[[], dict[str, Any]] | None = None
+
+
+def _cloud_filing_enabled() -> bool:
+    return os.environ.get("CLOUD_311_FILING_ENABLED", "").strip().lower() == "true"
+
+
+def _verified_filing_receipt(receipt: Any, *, now: dt.datetime | None = None) -> bool:
+    if not isinstance(receipt, dict) or receipt.get("receipt_version") != 1:
+        return False
+    acknowledged = _parse_timestamp(receipt.get("acknowledged_at"))
+    uploaded = _parse_timestamp(receipt.get("uploaded_at"))
+    current = now or dt.datetime.now(dt.UTC)
+    if any(value is None or not 0 <= (current - value).total_seconds() <= 86400
+           for value in (acknowledged, uploaded)):
+        return False
+    digest = receipt.get("sha256")
+    if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        return False
+    stages = receipt.get("stages")
+    if not isinstance(stages, dict):
+        return False
+    for name in ("upload", "discovery", "download", "processing", "audit", "sheet_sync", "sheet_readback", "acknowledgement"):
+        if not isinstance(stages.get(name), dict) or stages[name].get("state") != "complete":
+            return False
+    audit = receipt.get("audit")
+    if not isinstance(audit, dict):
+        return False
+    names = ("audited_messages", "matched_messages", "missing_db_messages", "missing_decisions",
+             "llm_review_required", "llm_review_completed", "llm_review_missing", "llm_review_failed")
+    if any(type(audit.get(name)) is not int or audit[name] < 0 for name in names):
+        return False
+    return (audit["audited_messages"] > 0
+            and audit["matched_messages"] == audit["audited_messages"]
+            and audit["llm_review_required"] == audit["llm_review_completed"]
+            and not any(audit[name] for name in ("missing_db_messages", "missing_decisions", "llm_review_missing", "llm_review_failed")))
+
+
+def cloud_filing_audit_ready() -> bool:
+    """Require current durable completion evidence, then recheck pending uploads."""
+    import httpx
+    from scripts.sync_cloud_chat_export_inbox import completed_receipts, pending_exports, receiver_config, DEFAULT_MAX_BYTES
+
+    config = receiver_config()
+    if config is None:
+        return False
+    try:
+        with httpx.Client(timeout=15, follow_redirects=False) as client:
+            receipts = completed_receipts(client, config)
+            return (len(receipts) == 1 and _verified_filing_receipt(receipts[0])
+                    and not pending_exports(client, config, max_bytes=DEFAULT_MAX_BYTES))
+    except Exception:
+        return False
+
+
+def file_current_incidents() -> dict[str, Any]:
+    if not _cloud_filing_enabled():
+        return {"ok": False, "blocked": "cloud_filing_disabled"}
+    if os.environ.get("CLOUD_311_BROWSER_READY", "true").lower() != "true":
+        return {"ok": False, "blocked": "browser_unavailable"}
+    if not cloud_filing_audit_ready():
+        return {"ok": False, "blocked": "export_audit_unverified"}
+    from packages.nyc311.cloud_filing import run_current_filings
+
+    return run_current_filings(before_submit=cloud_filing_audit_ready)
 
 
 def config_errors(
@@ -181,6 +253,8 @@ def _runtime_operations(*, force_exports: bool = False) -> CloudRecoveryOperatio
 
     # Receiver listing and retry eligibility do not need the database runtime.
     def status_sync() -> dict[str, Any]:
+        if os.environ.get("CLOUD_311_BROWSER_READY", "true").lower() != "true":
+            return {"ok": False, "error": "browser_unavailable"}
         from packages.worker_jobs import sync_311_statuses
 
         return sync_311_statuses()
@@ -201,6 +275,7 @@ def _runtime_operations(*, force_exports: bool = False) -> CloudRecoveryOperatio
         sync_311_statuses=status_sync,
         sync_replacement_watchdog=watchdog_sync,
         audit_public_tenant_log=tenant_log_audit,
+        file_current_incidents=file_current_incidents,
     )
 
 
@@ -260,7 +335,10 @@ def run_cycle(
         export_healthy = primary_owns(export_health_check) if run_exports else False
         run_status = run_status and not core_healthy
         run_watchdog = run_watchdog and not watchdog_healthy
-        run_exports = run_exports and not export_healthy
+        # A generic Mac heartbeat does not prove that its portal worker can
+        # file. Once explicitly enabled, the independent cloud cycle checks
+        # durable export evidence and scoped claims even while the Mac is up.
+        run_exports = run_exports and (not export_healthy or _cloud_filing_enabled())
         if not run_exports and not run_status and not run_watchdog:
             return {"ok": True, "mode": mode, "action": "skipped_primary_healthy"}
 
@@ -301,6 +379,24 @@ def run_cycle(
 
         run_step("cloud_exports", export_step, lambda value: value.get("ok") is not False)
 
+        if _cloud_filing_enabled():
+            exported = result.get("cloud_exports", {})
+            if (exported.get("ok") is not False
+                    and "cloud_exports" not in result.get("failed_steps", [])
+                    and exported.get("pending_exports") == 0
+                    and exported.get("action") in {"processed", "unchanged_skip"}):
+                operation = operations.file_current_incidents
+                if operation is None:
+                    result["current_filings"] = {"ok": False, "blocked": "filing_operation_missing"}
+                    result["ok"] = False
+                    result.setdefault("failed_steps", []).append("current_filings")
+                else:
+                    run_step("current_filings", operation, lambda value: value.get("ok") is True)
+            else:
+                result["current_filings"] = {"ok": False, "blocked": "export_audit_incomplete"}
+                result["ok"] = False
+                result.setdefault("failed_steps", []).append("current_filings")
+
     if run_status:
         run_step("status_sync", operations.sync_311_statuses, lambda value: value.get("ok") is True)
 
@@ -323,6 +419,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def filing_execution_receipt(result: dict[str, Any]) -> dict[str, int] | None:
+    filing = result.get("current_filings")
+    if not isinstance(filing, dict):
+        return None
+    counts = {}
+    for name in ("submitted", "lookup_verified", "empty", "blocked"):
+        value = filing.get(name, 0)
+        if isinstance(value, bool):
+            value = int(value)
+        if not isinstance(value, int) or value < 0:
+            value = 1 if name == "blocked" else 0
+        counts[name] = value
+    return {"schema": 1, "ok": int(filing.get("ok") is True), "cycle_ok": int(result.get("ok") is True), **counts}
+
+
 def main() -> int:
     args = parse_args()
     if args.env_file:
@@ -330,8 +441,8 @@ def main() -> int:
     else:
         load_local_env_file(ROOT / ".env")
 
-    # GitHub recovery intentionally does not run the portal worker. It can keep
-    # facts, Sheet state, and export decisions current without filing new cases.
+    # All historical ingestion remains non-filing. Only the separately gated,
+    # audited current-incident step may temporarily enable the shared worker.
     os.environ["AUTO_FILE_ENABLED"] = "0"
     os.environ.setdefault("PROCESS_INLINE", "1")
     os.environ.setdefault("DISABLE_SHEETS_SYNC", "0")
@@ -346,7 +457,8 @@ def main() -> int:
         print(json.dumps({"ok": False, "configuration_errors": errors}, sort_keys=True))
         return 2
     if args.check_config:
-        print(json.dumps({"ok": True, "action": "configuration_ready"}, sort_keys=True))
+        print(json.dumps({"ok": True, "action": "configuration_ready", "capabilities": CLOUD_RECOVERY_CAPABILITIES,
+                          "automatic_311_filing_enabled": _cloud_filing_enabled()}, sort_keys=True))
         return 0
 
     try:
@@ -358,6 +470,11 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "cloud_recovery_failed"}, sort_keys=True))
         return 1
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    # GitHub masks the legacy secret value "true" even inside unrelated JSON.
+    # Emit only integer capability counters for independent receipt readback.
+    filing_receipt = filing_execution_receipt(result)
+    if filing_receipt is not None:
+        print("CLOUD_311_RECEIPT_V1 " + json.dumps(filing_receipt, sort_keys=True))
     return 0 if result.get("ok") is True else 1
 
 
