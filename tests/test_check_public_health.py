@@ -5,6 +5,15 @@ from scripts.check_public_health import validate_health
 from packages.public_records.config import source_configs
 
 
+@pytest.mark.parametrize('state', ['login_required', 'stale', 'unverified', 'unavailable'])
+def test_green_processes_do_not_hide_unusable_nyc311_login(state):
+    payload = _payload()
+    payload.update(auto_file_enabled=True, nyc311_session={'configured': True, 'state': state, 'has_error': True})
+    failures, _ = validate_health(payload, now=dt.datetime(2026, 7, 20, 2, 0, tzinfo=dt.UTC),
+        max_capture_age_seconds=600, max_automation_age_seconds=1200, max_import_age_seconds=3600)
+    assert failures == ['NYC311 session requires attention: ' + state]
+
+
 def _payload():
     return {
         "ok": True,

@@ -12,6 +12,7 @@ from packages.automation_status import read_automation_status, watchdog_max_age_
 from packages.db import database_is_ready
 from packages.llm.openai_client import llm_enabled
 from packages.nyc311.health import public_status as public_311_status
+from packages.nyc311.session_health import public_status as public_311_session
 from packages.whatsapp.status import read_capture_status
 
 router = APIRouter()
@@ -539,6 +540,7 @@ def health(check_database: bool = False):
         'watchdog_operational_state': 'degraded' if watchdog['has_error'] else 'ready',
         'process_inline': _truthy('PROCESS_INLINE'),
         'llm_enabled': llm_enabled(),
+        'auto_file_enabled': _truthy('AUTO_FILE_ENABLED'),
         'sheets_disabled': _truthy('DISABLE_SHEETS_SYNC'),
         'database_configured': database_configured,
         'database_ready': database_ready,
@@ -548,6 +550,7 @@ def health(check_database: bool = False):
         'whatsapp_capture': whatsapp_capture,
         'automation': _public_automation_status(automation),
         'nyc311_status': public_311_status(),
+        'nyc311_session': public_311_session(),
         'watchdog': watchdog,
         'chat_export_sync': _public_chat_export_sync_status(),
         'cloud_export_receiver': _public_cloud_export_receiver_status(),

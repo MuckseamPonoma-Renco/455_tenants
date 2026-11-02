@@ -48,6 +48,27 @@ Live filing is automatic when enabled. The supplied `.env.example` sets `AUTO_FI
 
 Before the final click, the worker rechecks incident eligibility and the claim-bound payload. It records `submitting` before clicking; `submission_unknown` and `submitting` do not automatically retry. Reconcile the receipt before considering another attempt. See the [filing contract](NYC311_PORTAL_AUTOMATION.md).
 
+Chat classification uses a strict output schema and local type/consistency
+validation. Malformed, refused or truncated model output is a failed review,
+not a successful classification. Account/quota errors do not trigger a second
+request through a fallback endpoint. Model confidence is not evidence of a
+building condition: questions, predictions, conditional scenarios, quotations
+and negated faults have deterministic nonreport guards. Chat and retrieved
+context are treated as evidence rather than instructions to the model.
+
+For an incident linked to chat evidence, automatic filing rechecks the original
+source messages, their age and a concrete elevator condition. A recent
+discussion cannot refresh an old outage. Complaint symptoms come from retained
+source text instead of a model summary. These controls reduce known errors;
+they do not establish perfect language understanding. Keep reviewing source
+links and confirmed receipts, and add regressions when a new mistake is found.
+
+The existing GPT-5 review/escalation model has a separate bounded output budget
+(`LLM_REASONING_MAX_OUTPUT_TOKENS=2048`, `LLM_REASONING_EFFORT=low`). Its output
+limit includes reasoning, so the primary classifier's 220-token budget was too
+small to finish reviews (see [OpenAI's output-budget guidance](https://developers.openai.com/api/docs/guides/reasoning)). This does not change the configured models. Incomplete
+reviews remain errors rather than being accepted as valid output.
+
 Historical archive-processing and reprocessing paths suppress new filing jobs; weekly audit and cloud recovery runners disable automatic filing for their historical processing. Keep filing disabled and the portal worker and automation daemon stopped during review/import. Later queue operations can still consider eligible incidents, and an age threshold alone is not a replay safeguard.
 
 ## Operator views

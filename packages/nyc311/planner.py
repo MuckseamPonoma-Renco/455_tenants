@@ -41,7 +41,9 @@ ELEVATOR_ACTIONABLE_COMPLAINT_RE = re.compile(
     r"shutdown|shut\s*off|trapped|entrapment|"
     r"alarm|"
     r"stopping\s+on\s+(?:each|every|all)\s+floor|floor[- ]by[- ]floor|"
-    r"skip(?:s|ped|ping)?\s+(?:a\s+)?floor|irregular\s+floor|"
+    r"skip(?:s|ped|ping)?\s+(?:(?:a|our|my|the)\s+)?floor|irregular\s+floor|unavailable|"
+    r"won[’']?t\s+open|wouldn[’']?t\s+open|misbehaving|kaputt|acting\s+up|"
+    r"(?:both|still)\s+(?:still\s+)?(?:out|down)|only\s+one\s+(?:is\s+)?working|"
     r"doors?\s+stuck|one\s+(?:working\s+)?(?:elevator|lift)|"
     r"down\s+to\s+one|only\s+one\s+(?:working\s+)?(?:elevator|lift)|"
     r"reduced\s+service|malfunction(?:ing)?|"
@@ -118,34 +120,30 @@ def _classifier_says_actionable_elevator(inc: Incident) -> bool | None:
     )
     decisions = list(session.scalars(query).all())
     if not decisions:
+        if refs or session.scalar(select(MessageDecision.message_id).where(MessageDecision.incident_id == inc.incident_id).limit(1)):
+            return False
         return None
+    now = datetime.now(timezone.utc).timestamp()
+    max_age_hours = _env_int("AUTO_FILE_MAX_INCIDENT_AGE_HOURS", 168)
     for row in decisions:
         if (row.event_type or "new_issue") not in ACTIONABLE_ELEVATOR_EVENTS:
             continue
-        # Queued work can outlive a rule fix. Recheck the original source for
-        # direct rule-derived outages so a corrected false positive cannot be
-        # submitted using its old materialized incident. Context/model-backed
-        # decisions retain their existing evidence path.
-        if row.chosen_source in {"rules", "rules_with_llm_disagreement", "rules_with_llm_disagreement_rule_state"}:
-            try:
-                stored_rules = json.loads(row.rules_json or "{}")
-            except (TypeError, ValueError):
-                stored_rules = {}
-            if (
-                isinstance(stored_rules, dict)
-                and stored_rules.get("is_issue")
-                and stored_rules.get("category") == "elevator"
-                and stored_rules.get("event_type") in ACTIONABLE_ELEVATOR_EVENTS
-            ):
-                raw = session.get(RawMessage, row.message_id)
-                current_rules = classify_rules(raw.text or "") if raw is not None else {}
-                if not (
-                    current_rules.get("is_issue")
-                    and current_rules.get("category") == "elevator"
-                    and current_rules.get("event_type") in ACTIONABLE_ELEVATOR_EVENTS
-                ):
-                    continue
-        return True
+        raw = session.get(RawMessage, row.message_id)
+        if raw is None:
+            continue
+        # A recent discussion must not make an old outage fresh again.
+        if max_age_hours > 0 and (raw.ts_epoch is None or not 0 <= now - raw.ts_epoch <= max_age_hours * 3600):
+            continue
+        current_rules = classify_rules(raw.text or "")
+        if current_rules.get("nonreport_reason") or current_rules.get("kind") == "restore" or current_rules.get("event_type") == "restore":
+            continue
+        if current_rules.get("is_issue") and current_rules.get("category") != "elevator":
+            continue
+        # The classifier resolves the topic and context, but the source must
+        # still contain a concrete condition. Never qualify invented symptoms
+        # merely because they appear in a model summary or confidence score.
+        if ELEVATOR_ACTIONABLE_COMPLAINT_RE.search(raw.text or ""):
+            return True
     return False
 
 

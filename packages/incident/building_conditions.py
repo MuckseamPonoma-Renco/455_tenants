@@ -7,6 +7,11 @@ import re
 def building_condition_presentation(text: str) -> dict[str, str] | None:
     """Recognize a stated condition, never infer code violations or health effects."""
     clean = " ".join((text or "").split())
+    # An elevator used as a location does not make a wall/ceiling repair an
+    # elevator malfunction. Keep this narrow to a stated maintenance need.
+    if (re.search(r"\b(?:the|our|my)\s+(?:ceiling|walls?)\b[^.!?]{0,80}\bneeds?\s+(?:paint(?:ing)?|repaint(?:ing)?|patch(?:ing)?)\b", clean, re.I)
+            and not re.search(r"\b(?:if|may|might|could|would|not|doesn['’]t|broken|stuck|out\s+of\s+service|not\s+working)\b|\?", clean, re.I)):
+        return {"kind": "surface_maintenance", "label": "Building surface maintenance", "summary": "A tenant reported a wall or ceiling needing painting or patching."}
     if not re.search(r"\b(?:my|mine|our|ours|we|i)\b", clean, re.I):
         return None
     if re.search(r"\b(?:elevators?|lifts?|trapped|fire|entered|entry)\b", clean, re.I):

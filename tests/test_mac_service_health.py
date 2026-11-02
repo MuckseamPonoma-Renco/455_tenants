@@ -7,6 +7,15 @@ import sys
 import pytest
 
 
+@pytest.mark.parametrize('state,expected', [('ready', 'healthy'), ('login_required', 'attention'), ('stale', 'attention'), ('unavailable', 'attention')])
+def test_session_attention_does_not_restart_other_services(tmp_path, state, expected):
+    row = _service_row(tmp_path, database={'auto_file_enabled': True,
+        'nyc311_session': {'configured': True, 'state': state, 'has_error': state != 'ready'}},
+        running='true', service='nyc311_session')
+    assert row[6] == expected
+    assert row[7] == 'false'
+
+
 @pytest.mark.parametrize(
     ("database", "running", "expected_state", "expected_repair", "reason_fragment"),
     [

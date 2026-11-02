@@ -32,6 +32,30 @@ created by this app, not an export of your normal browser profile. Keep it out o
 source control and shared storage. Expired sessions require sign-in again;
 configured authentication failures never silently fall back to anonymous filing.
 
+The visible browser can close after sign-in. The worker reuses the app's saved
+session in a fresh browser after restart. With filing enabled, the automation
+daemon checks that session at startup and every 30 minutes (configurable with
+`NYC311_SESSION_CHECK_SECONDS`, bounded to 5–60 minutes). A check visits only the
+portal home; it does not open or submit a complaint. Verified server-issued
+renewals are saved atomically with owner-only permissions. A slow older check
+cannot overwrite a newer interactive login. The worker also verifies login at
+the final review screen.
+
+The city controls expiry and can require verification again; no local setting
+can guarantee permanent login. `/health`, the operations summary and the Mac
+service check report an expired, unavailable, unverified or stale login
+separately from process health. The daemon retries unsuccessful checks after
+five minutes without restarting capture or other services. To check directly:
+
+```bash
+./.venv/bin/python scripts/run_311_portal_worker.py --check-session
+```
+
+If this reports `login_required`, run `--sign-in` again. A fresh verified check
+automatically returns only known pre-submit sign-in holds to the normal queue.
+It preserves attempt counts, eligibility and duplicate checks. CAPTCHA holds,
+completed jobs and uncertain submissions do not receive this recovery.
+
 ## One-time setup
 
 ```bash
@@ -68,8 +92,9 @@ for the same incident also blocks filing at claim and at final review.
 
 An unsolved visible CAPTCHA or required sign-in stops before the final click and
 holds the job as `awaiting_human_verification`. The operator queue and summary
-show the hold. The unattended worker does not solve challenges or reclaim held
-jobs. After sign-in, explicitly resume one eligible held job with:
+show the hold. The unattended worker does not solve challenges. Sign-in holds
+recover after fresh authentication as described above. To handle a CAPTCHA,
+explicitly resume one eligible held job with:
 
 ```bash
 ./.venv/bin/python scripts/run_311_portal_worker.py \
