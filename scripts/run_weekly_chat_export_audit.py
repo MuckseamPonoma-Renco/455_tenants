@@ -127,16 +127,19 @@ def retry_incomplete_llm_reviews(export_path: Path, *, since: str, llm_mode: str
     if not pending_ids or llm_mode not in {"all", "supervised"}:
         return result
 
-    touched_incident_ids: set[str] = set()
-    with get_session() as session:
-        try:
-            for message_id in pending_ids:
+    # Commit each completed review independently. A later outage or process
+    # restart must not discard already-paid successful model work.
+    for message_id in pending_ids:
+        with get_session() as session:
+            try:
                 raw = session.get(RawMessage, message_id)
                 if raw is None:
                     continue
                 previous = session.get(MessageDecision, message_id)
-                if previous and previous.incident_id:
-                    touched_incident_ids.add(previous.incident_id)
+                status, _ = llm_review_details(previous, text=raw.text or "")
+                if status in {"completed", "not_applicable"}:
+                    continue
+                touched_incident_ids = {previous.incident_id} if previous and previous.incident_id else set()
                 result["attempted"] = int(result["attempted"]) + 1
                 extractor.classify_and_upsert_incident(session, raw, allow_filing_job=False)
                 decision = session.get(MessageDecision, message_id)
@@ -148,17 +151,17 @@ def retry_incomplete_llm_reviews(export_path: Path, *, since: str, llm_mode: str
                     return result
                 if decision and decision.incident_id:
                     touched_incident_ids.add(decision.incident_id)
+                for incident_id in touched_incident_ids:
+                    incident = session.get(extractor.Incident, incident_id)
+                    if incident is not None:
+                        _recompute_incident_materialization(session, incident)
+                session.commit()
                 result["completed"] = int(result["completed"]) + 1
-
-            for incident_id in touched_incident_ids:
-                incident = session.get(extractor.Incident, incident_id)
-                if incident is not None:
-                    _recompute_incident_materialization(session, incident)
-            session.commit()
-        except Exception as exc:
-            session.rollback()
-            result["failed"] = 1
-            result["error"] = str(exc)[:300]
+            except Exception as exc:
+                session.rollback()
+                result["failed"] = 1
+                result["error"] = str(exc)[:300]
+                return result
     return result
 
 

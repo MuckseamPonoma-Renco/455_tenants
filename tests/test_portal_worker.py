@@ -469,6 +469,8 @@ def test_submit_elevator_complaint_passes_viewport_to_new_context(monkeypatch, t
 
         def screenshot(self, path, full_page):
             calls.append(('screenshot', path, full_page))
+            from pathlib import Path
+            Path(path).write_bytes(b'fixture screenshot')
 
         def fill(self, value, force=False):
             calls.append(('fill', value, force))

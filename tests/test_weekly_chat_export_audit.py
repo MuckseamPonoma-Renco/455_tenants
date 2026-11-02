@@ -7,6 +7,37 @@ from packages.db import MessageDecision, RawMessage, get_session
 import scripts.run_weekly_chat_export_audit as weekly_audit
 
 
+@pytest.mark.parametrize("review_status", ["completed", "error"])
+def test_full_review_audits_advisory_without_allowing_model_to_create_incident(client, tmp_path, monkeypatch, review_status):
+    from packages.incident import extractor
+    from packages.db import FilingJob, Incident
+    from scripts.audit_whatsapp_export_decisions import llm_review_details
+    monkeypatch.setattr(extractor, "LLM_MODE", "all")
+    calls = []
+    def model(text, **kwargs):
+        calls.append(text)
+        return {"is_issue": True, "signal_type": "report", "category": "elevator", "asset": "elevator_both",
+                "event_type": "outage", "confidence": 99 if review_status == "completed" else 0,
+                "review_status": review_status, "review_error": "fixture_error" if review_status == "error" else "",
+                "title": "Incorrect current outage", "summary": "Incorrect current outage"}
+    monkeypatch.setattr(extractor, "llm_classify_message", model)
+    monkeypatch.setattr(extractor, "llm_review_decision", lambda *a, **k: pytest.fail("Guard must precede model arbitration"))
+    raw = RawMessage(message_id="advisory-audit", sender_hash="fixture", chat_name="Fixture",
+                     text="They usually use gel, not spray. They also have glue traps if you need them.")
+    with get_session() as session:
+        session.add(raw)
+        session.flush()
+        extractor.classify_and_upsert_incident(session, raw, allow_filing_job=False)
+        session.flush()
+        decision = session.get(MessageDecision, raw.message_id)
+        assert len(calls) == 1
+        assert decision.is_issue is False
+        assert decision.chosen_source == "guardrail_general_advisory"
+        assert llm_review_details(decision, text=raw.text)[0] == ("completed" if review_status == "completed" else "failed")
+        assert session.query(Incident).count() == 0
+        assert session.query(FilingJob).count() == 0
+
+
 @pytest.mark.parametrize("skip_import", [True, False])
 def test_audit_only_keeps_reconciliation_read_only_and_normal_import_applies_it(tmp_path, monkeypatch, skip_import):
     calls = []
@@ -170,3 +201,35 @@ def test_retry_incomplete_reviews_reprocesses_only_unreviewed_messages(client, t
     assert result["completed"] == 1
     assert result["failed"] == 0
     assert calls == [message_ids[1]]
+
+
+def test_review_retry_keeps_completed_work_when_a_later_review_fails(client, tmp_path, monkeypatch):
+    export_path = tmp_path / "WhatsApp Chat - Test.txt"
+    export_path.write_text("[6/5/26, 9:00:00 AM] Resident: First report\n[6/5/26, 9:01:00 AM] Resident: Second report\n")
+    messages = weekly_audit.iter_export_messages(export_path)
+    with get_session() as session:
+        for m in messages:
+            session.add(RawMessage(message_id=m.message_id, chat_name=m.chat_name, sender=m.sender,
+                sender_hash=sender_hash(m.sender), ts_iso=m.ts_iso, ts_epoch=m.ts_epoch,
+                text=m.text, source="zip_import"))
+            session.add(MessageDecision(message_id=m.message_id, llm_json="{}"))
+        session.commit()
+    calls = []
+    def classify(session, raw, *, allow_filing_job):
+        assert allow_filing_job is False
+        calls.append(raw.message_id)
+        d = session.get(MessageDecision, raw.message_id)
+        d.llm_json = json.dumps({"review_status": "completed", "confidence": 90})
+        session.flush()
+        if raw.message_id == messages[1].message_id:
+            raise RuntimeError("simulated connection loss")
+    monkeypatch.setattr("packages.incident.extractor.classify_and_upsert_incident", classify)
+    result = weekly_audit.retry_incomplete_llm_reviews(export_path, since="2026-06-05", llm_mode="all")
+    assert result["completed"] == 1 and result["failed"] == 1
+    with get_session() as session:
+        assert json.loads(session.get(MessageDecision, messages[0].message_id).llm_json)["review_status"] == "completed"
+        assert session.get(MessageDecision, messages[1].message_id).llm_json == "{}"
+    calls.clear()
+    result = weekly_audit.retry_incomplete_llm_reviews(export_path, since="2026-06-05", llm_mode="all")
+    assert calls == [messages[1].message_id]
+    assert result["pending_before"] == 1

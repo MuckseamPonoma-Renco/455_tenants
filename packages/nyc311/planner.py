@@ -20,9 +20,9 @@ from packages.nyc311.drafts import build_filing_draft
 
 ACTIONABLE_ELEVATOR_EVENTS = {"outage", "still_out", "new_issue"}
 SUBMISSION_UNCERTAIN_JOB_STATES = frozenset({"submitting", "submission_unknown"})
-EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted"}) | SUBMISSION_UNCERTAIN_JOB_STATES
-CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"claimed", "submitted"}) | SUBMISSION_UNCERTAIN_JOB_STATES
-PRE_SUBMISSION_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "failed"})
+EQUIVALENT_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "submitted", "awaiting_human_verification"}) | SUBMISSION_UNCERTAIN_JOB_STATES
+CLAIM_BLOCKING_EQUIVALENT_JOB_STATES = frozenset({"claimed", "submitted", "awaiting_human_verification"}) | SUBMISSION_UNCERTAIN_JOB_STATES
+PRE_SUBMISSION_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "claimed", "failed", "awaiting_human_verification"})
 REFRESHABLE_JOB_STATES = frozenset({"awaiting_approval", "approved", "pending", "failed"})
 FILING_APPROVAL_PHRASE = "APPROVED \u2014 GO LIVE"
 APPROVAL_HASH_PREFIX = "approval_payload_sha256="
@@ -227,7 +227,7 @@ def _equivalent_job_blocks_filing(
     signature: tuple[str, str, str, str, str],
     now: datetime,
 ) -> bool:
-    if job.state in {"awaiting_approval", "approved", "pending", "claimed"} | SUBMISSION_UNCERTAIN_JOB_STATES:
+    if job.state in {"awaiting_approval", "approved", "pending", "claimed", "awaiting_human_verification"} | SUBMISSION_UNCERTAIN_JOB_STATES:
         return True
     if job.state != "submitted":
         return False

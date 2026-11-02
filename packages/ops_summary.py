@@ -107,6 +107,7 @@ def build_ops_summary(session) -> dict[str, Any]:
         'claimed': 0,
         'submitting': 0,
         'submission_unknown': 0,
+        'awaiting_human_verification': 0,
         'submitted': 0,
         'failed': 0,
     }
@@ -152,6 +153,9 @@ def build_ops_summary(session) -> dict[str, Any]:
     elif open_incidents and job_counts.get('failed', 0):
         stage = 'filing_attention_needed'
         next_step = 'Inspect the failed portal attempt; automatic retries stop at the configured attempt limit.'
+    if job_counts.get('awaiting_human_verification', 0):
+        stage = 'filing_attention_needed'
+        next_step = 'Complete NYC311 sign-in or CAPTCHA in the visible browser, then resume the held job after eligibility is rechecked.'
     if job_counts.get('submitting', 0):
         stage = 'filing_submission_in_progress'
         next_step = 'A final NYC311 submission is in progress; wait for its receipt and do not submit it again.'
@@ -183,6 +187,19 @@ def build_ops_summary(session) -> dict[str, Any]:
             'code': 'failed_jobs',
             'title': '311 filing retries needed',
             'detail': f"{job_counts['failed']} filing job(s) failed and need a portal rerun or selector refresh.",
+        })
+
+    if job_counts.get('awaiting_human_verification', 0):
+        alerts.append({
+            'level': 'warning',
+            'code': '311_human_verification_required',
+            'title': 'NYC311 needs human verification',
+            'detail': f"{job_counts['awaiting_human_verification']} filing job(s) stopped before final submission because sign-in or CAPTCHA needs attention.",
+        })
+        actions.append({
+            'kind': 'do_now',
+            'title': 'Complete NYC311 verification',
+            'detail': 'Use the visible sign-in or held-job resume flow. The app does not solve CAPTCHA or retry uncertain submissions.',
         })
 
     if reconciliation_needed:
@@ -255,6 +272,7 @@ def build_ops_summary(session) -> dict[str, Any]:
         'filing_jobs_failed': int(job_counts.get('failed', 0)),
         'filing_jobs_submitting': int(job_counts.get('submitting', 0)),
         'filing_jobs_submission_unknown': int(job_counts.get('submission_unknown', 0)),
+        'filing_jobs_awaiting_human_verification': int(job_counts.get('awaiting_human_verification', 0)),
         'filing_jobs_receipt_reconciliation_needed': int(reconciliation_needed),
         'service_requests_total': int(case_count),
         'recent_elevator_incidents_30d': int(recent_elevator_count),
