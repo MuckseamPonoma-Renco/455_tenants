@@ -475,7 +475,35 @@ def _skip_job_with_existing_receipt(job: FilingJob, case: ServiceRequestCase) ->
     job.notes = _append_job_note(job.notes, f"auto-skipped because incident already has service request {case.service_request_number}")
 
 
-def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
+def _new_live_report_can_reopen_skipped_job(session, job: FilingJob, inc: Incident, message_id: str | None) -> bool:
+    """Only new live evidence can reopen a known, never-attempted retirement."""
+    if job.state != "skipped" or int(job.attempts or 0) != 0 or job.completed_at or job.claimed_at or not message_id:
+        return False
+    notes = job.notes or ""
+    if not any(reason in notes for reason in (
+        "auto-skipped because incident is no longer auto-eligible",
+        "Safety correction: false-positive elevator outage",
+    )):
+        return False
+    raw = session.get(RawMessage, message_id)
+    decision = session.get(MessageDecision, message_id)
+    retired_at = _parse_iso(job.updated_at)
+    now = datetime.now(tz=timezone.utc).timestamp()
+    if (raw is None or raw.source not in {"whatsapp_web", "tasker"}
+            or raw.ts_epoch is None or retired_at is None
+            or not retired_at.timestamp() < int(raw.ts_epoch) <= now
+            or now - int(raw.ts_epoch) > 86400):
+        return False
+    if (decision is None or decision.incident_id != inc.incident_id
+            or not decision.is_issue or decision.category != "elevator"):
+        return False
+    return decision.event_type in ACTIONABLE_ELEVATOR_EVENTS or (
+        decision.event_type == "status_update"
+        and bool(ELEVATOR_ACTIONABLE_COMPLAINT_RE.search(raw.text or ""))
+    )
+
+
+def ensure_filing_job_for_incident(session, inc: Incident, *, trigger_message_id: str | None = None) -> FilingJob | None:
     dedupe_key = _dedupe_key(inc)
     pending_job = None
     for row in session.new:
@@ -491,7 +519,8 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
         if existing_job is not None:
             _retire_ineligible_job(existing_job)
         return None
-    if existing_job and existing_job.state not in REFRESHABLE_JOB_STATES:
+    reopen = bool(existing_job and _new_live_report_can_reopen_skipped_job(session, existing_job, inc, trigger_message_id))
+    if existing_job and existing_job.state not in REFRESHABLE_JOB_STATES and not reopen:
         return existing_job
 
     existing_case = session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == inc.incident_id))
@@ -504,6 +533,22 @@ def ensure_filing_job_for_incident(session, inc: Incident) -> FilingJob | None:
 
     payload_json = draft.payload_json()
     if existing_job is not None:
+        if reopen:
+            equivalent_job = _find_equivalent_filing_job(
+                session, _filing_signature(draft.complaint_type, draft.form_target, payload_json),
+                states=EQUIVALENT_JOB_STATES, exclude=existing_job,
+            )
+            if equivalent_job is not None:
+                return existing_job
+            prior_notes = existing_job.notes
+            existing_job.state = "pending"
+            _refresh_filing_job_draft(existing_job, inc, draft, payload_json)
+            existing_job.updated_at = now_iso()
+            existing_job.notes = _append_job_note(
+                f"reopened for newer live report {trigger_message_id}; prior skip retained: {prior_notes or ''}",
+                f"current draft: {draft.description}",
+            )
+            return existing_job
         return _refresh_filing_job_draft(existing_job, inc, draft, payload_json)
 
     equivalent_job = _find_equivalent_filing_job(

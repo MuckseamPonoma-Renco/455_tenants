@@ -51,6 +51,15 @@ Stale pre-submit claims return to `pending`. A still-eligible payload that chang
 during review is rebuilt and requeued, rather than permanently skipped. Failed
 pre-submit attempts retry up to `AUTO_FILE_MAX_PORTAL_ATTEMPTS` (default `3`).
 
+A never-attempted job skipped for ineligibility or a corrected false-positive can
+return to `pending` when a newer live WhatsApp/Tasker outage report arrives. The
+report must be newer than the skip, no more than 24 hours old, and classified as
+an actionable elevator issue. Existing receipts and equivalent filing jobs still
+block recovery. Historical replay, bulk queue scans, manual holds, attempted
+jobs, and uncertain submissions do not receive this automatic recovery. The old
+skip explanation remains in the job history, and the payload is rebuilt from
+current evidence before the normal submission checks run.
+
 Immediately before the final click, the worker commits `submitting`. A timeout
 or persistence error after that boundary becomes `submission_unknown`; neither
 state automatically retries. Reconcile the confirmation/receipt first. The
