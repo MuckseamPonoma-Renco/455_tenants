@@ -722,6 +722,25 @@ def _record_check_time(record: PublicRecordWatch, health: dict[str, Any]) -> str
     return min(seen, checked) if seen and checked else ""
 
 
+def _filing_check_time(record: PublicRecordWatch, health: dict[str, Any]) -> str:
+    if record.source_presence_status != "not_seen":
+        return _record_check_time(record, health)
+    # A completed absence check verifies that the status is unconfirmed. It
+    # does not renew the historical positive sighting or the filing's facts.
+    source = next((row for row in health.get("sources", [])
+                   if row.get("source_key") == record.source_system), {})
+    try:
+        checked = parse_ts_to_epoch(record.source_checked_at)
+        succeeded = parse_ts_to_epoch(source.get("last_success_at"))
+    except (ValueError, OverflowError):
+        return ""
+    if checked is None or succeeded is None:
+        return ""
+    # Require both matching-source receipts. A failed or unrelated refresh
+    # must not advance this timestamp.
+    return normalize_timestamp(min(checked, succeeded)) or ""
+
+
 def _building_match_explanation(record: PublicRecordWatch) -> str:
     if str(record.bin or "") == building_bin() and str(record.bbl or "") == building_bbl_compact():
         return (f"The DOB address {record.address or 'on this record'} belongs to this building: "
@@ -778,6 +797,11 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
     )
     latest_replacement = _latest_replacement_filing(records)
     filing_progress = _filing_progress(latest_replacement)
+    filing_history = ""
+    if latest_replacement and filing_progress["phase"] == "filing_status_unconfirmed":
+        last_seen = normalize_timestamp(latest_replacement.last_seen_at)
+        if last_seen:
+            filing_history = f" Last seen in the official source: {last_seen}."
     current_replacement_filings = [latest_replacement] if latest_replacement and filing_progress["phase"] in {
         "objections_pending", "plan_review", "approved_awaiting_permit", "permit_issued_watch",
     } else []
@@ -828,9 +852,9 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
             ) + _building_match_explanation(record) + (
                 filing_progress["current_bottleneck"] + " " + filing_progress["next_expected_record"]
                 if inactive_phase else "An elevator application records submitted scope. An electrical permit does not establish approval of this elevator application."
-            ),
+            ) + filing_history,
             "checked_by": "Automatic DOB/Open Data check",
-            "last_checked_at": _record_check_time(record, health),
+            "last_checked_at": _filing_check_time(record, health),
             "human_needed": (
                 ("The operator should restore source confirmation; management should confirm this filing's current status."
                  if filing_progress["phase"] == "filing_status_unconfirmed"
@@ -995,9 +1019,9 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
         items.append({
             "topic": "Lobby posting / start-date notice",
             "answer": posting_answers[filing_progress["phase"]],
-            "why_it_matters": "Retain the known filing history and confirm the current project status before deriving a new notice request.",
+            "why_it_matters": "Retain the known filing history and confirm the current project status before deriving a new notice request." + filing_history,
             "checked_by": "Automatic rule from latest known filing status",
-            "last_checked_at": _record_check_time(latest_replacement, health),
+            "last_checked_at": _filing_check_time(latest_replacement, health),
             "human_needed": "Report any newly posted notice or active work you observe; management should provide current project documents.",
             "source_url": latest_replacement.source_url,
         })
@@ -1255,8 +1279,8 @@ def project_state(session) -> dict[str, Any]:
     ).all()
     filing = _latest_replacement_filing(records)
     project_payload = {**_project_payload(project), **_filing_progress(filing)}
-    project_payload["official_status_checked_at"] = normalize_timestamp(filing.last_seen_at) if filing else None
     health = watchdog_source_health(session)
+    project_payload["official_status_checked_at"] = _filing_check_time(filing, health) if filing else None
     return {
         "project": project_payload,
         "management_claims": {
