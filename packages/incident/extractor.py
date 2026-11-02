@@ -1712,5 +1712,5 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
     attach_manual_cases_from_text(session, text=rm.text or "", incident=incident, raw_message=rm)
     _record_decision(session, rm, rules, llm_choice, chosen, chosen_source, incident.incident_id if incident else None)
     if incident and allow_filing_job:
-        ensure_filing_job_for_incident(session, incident)
+        ensure_filing_job_for_incident(session, incident, trigger_message_id=rm.message_id)
     return incident.incident_id if incident else ""

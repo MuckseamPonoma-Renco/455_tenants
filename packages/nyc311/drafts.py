@@ -66,6 +66,10 @@ def _short_description(inc: Incident) -> str:
     if "one working elevator" in text or "down to one working elevator" in text:
         return "Only one elevator working."
     if "stuck" in text:
+        if inc.asset == "elevator_both":
+            # A combined outage may say one car is stuck while the other is
+            # simply unavailable. Do not assign that symptom to both cars.
+            return "Both elevators down."
         return f"{subject} stuck."
     if "reduced or not working" in text or "not working" in text or "down" in text or "dead" in text:
         if inc.asset == "elevator_both":
