@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 from playwright.sync_api import Error as PlaywrightError
@@ -32,6 +34,101 @@ class PortalSubmissionCancelled(RuntimeError):
 
 class PortalSubmissionUncertain(RuntimeError):
     """Final submit may have reached NYC311; never retry without reconciliation."""
+
+    def __init__(self, message: str, *, evidence_path: str | None = None):
+        super().__init__(message)
+        self.evidence_path = evidence_path
+
+
+class PortalHumanVerificationRequired(RuntimeError):
+    """A visible unsolved challenge blocks submission; no final click occurred."""
+
+    def __init__(self, *, evidence_path: str | None = None, reason: str = "captcha"):
+        super().__init__("NYC311 sign-in requires user verification" if reason == "sign_in"
+                         else "NYC311 requires human CAPTCHA verification before submission")
+        self.evidence_path = evidence_path
+        self.reason = reason
+
+
+def _session_state_path() -> Path:
+    configured = os.environ.get("NYC311_SESSION_STATE_PATH")
+    return Path(configured).expanduser() if configured else Path.home() / ".local/state/tenant-issue-os/private/nyc311-session.json"
+
+
+def _session_context_options() -> dict[str, Any]:
+    path = _session_state_path()
+    if not path.is_file():
+        return {}
+    try:
+        state = json.loads(path.read_text())
+        if not isinstance(state, dict) or not isinstance(state.get("cookies"), list):
+            raise ValueError("invalid session state")
+        return {"storage_state": state}
+    except (OSError, ValueError):
+        raise PortalHumanVerificationRequired(reason="sign_in") from None
+
+
+def _is_portal_authenticated(page: Page) -> bool:
+    if urlparse(page.url).netloc != urlparse(PORTAL_BASE_URL).netloc:
+        return False
+    # Merely returning to the portal origin (including /SignIn) is not proof.
+    return page.locator('a[href*="LogOff"], a[href*="SignOut"], a[href*="signout"], a[href*="logout"]').count() > 0
+
+
+def _save_verified_session(context, page: Page) -> None:
+    if not _is_portal_authenticated(page):
+        raise PortalHumanVerificationRequired(reason="sign_in")
+    path = _session_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".nyc311-session-", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(context.storage_state(), handle)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def sign_in_interactively(*, wait_seconds: int = 300) -> dict[str, Any]:
+    """Explicit operator flow: sign in and remember only this app's session."""
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=False)
+        context = browser.new_context(viewport={"width": 1440, "height": 1100}, timezone_id="America/New_York")
+        page = context.new_page()
+        try:
+            page.goto(PORTAL_SIGN_IN_URL, wait_until="domcontentloaded", timeout=120000)
+            print("Complete NYC.ID sign-in in the visible browser. No complaint will be submitted.", flush=True)
+            deadline = time.monotonic() + min(900, max(1, wait_seconds))
+            while time.monotonic() < deadline:
+                if _is_portal_authenticated(page):
+                    _save_verified_session(context, page)
+                    return {"ok": True, "authenticated": True, "session_saved": True}
+                page.wait_for_timeout(1000)
+            return {"ok": False, "error": "sign_in_not_completed", "session_saved": False}
+        except PlaywrightError:
+            return {"ok": False, "error": "sign_in_interrupted", "session_saved": False}
+        finally:
+            browser.close()
+
+
+def _human_verification_required(page: Page) -> bool:
+    """Inspect visible challenge UI without clicking or solving it."""
+    return bool(page.evaluate("""() => {
+        const visible = el => {
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+        };
+        const token = [...document.querySelectorAll('textarea[name="g-recaptcha-response"], textarea[name="h-captcha-response"]')]
+            .some(el => el.value.trim());
+        const challenge = [...document.querySelectorAll('iframe')].some(el =>
+            visible(el) && /recaptcha|hcaptcha/i.test(el.src + ' ' + el.title) &&
+            !/invisible/i.test(el.title) && !/[?&]size=invisible/i.test(el.src));
+        return challenge && !token;
+    }"""))
 
 
 @dataclass
@@ -166,14 +263,19 @@ def _address_queries(payload: dict[str, Any]) -> tuple[list[str], str]:
 def _maybe_sign_in(page: Page) -> bool:
     email = _env("311_EMAIL", "NYC311_EMAIL")
     password = _env("311_PASSWORD", "NYC311_PASSWORD")
-    if not email or not password:
+    if (not email or not password) and not _session_state_path().is_file():
         return False
 
     try:
         page.goto(PORTAL_SIGN_IN_URL, wait_until="domcontentloaded", timeout=120_000)
         page.wait_for_timeout(5000)
-        if page.url.startswith(PORTAL_BASE_URL):
+        if _is_portal_authenticated(page):
             return True
+
+        if page.locator('#gigya-passwordless-login-form').count():
+            raise PortalHumanVerificationRequired(reason="sign_in")
+        if urlparse(page.url).hostname not in {"www1.nyc.gov", "nyc.gov", "prd-login.nyc.gov"} or not email or not password:
+            raise PortalHumanVerificationRequired(reason="sign_in")
 
         email_input = page.locator('#gigya-loginID, input[name="username"]').first
         password_input = page.locator('#gigya-password, input[name="password"]').first
@@ -184,15 +286,17 @@ def _maybe_sign_in(page: Page) -> bool:
         email_input.fill(email)
         password_input.fill(password)
         submit_button.click(force=True, no_wait_after=True)
-        page.wait_for_function(
-            "base => window.location.href.startsWith(base)",
-            arg=PORTAL_BASE_URL,
-            timeout=45_000,
-        )
-        page.wait_for_timeout(2000)
-        return page.url.startswith(PORTAL_BASE_URL)
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if _is_portal_authenticated(page):
+                return True
+            page.wait_for_timeout(1000)
+        raise PortalHumanVerificationRequired(reason="sign_in")
+    except PortalHumanVerificationRequired:
+        raise
     except Exception:
-        return False
+        # Configured authentication must not silently become anonymous filing.
+        raise PortalHumanVerificationRequired(reason="sign_in") from None
 
 
 def _open_elevator_flow(page: Page) -> None:
@@ -342,6 +446,7 @@ def _save_screenshot(page: Page, screenshot_dir: Path | None, label: str) -> str
     filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_safe_name(label)}.png"
     path = screenshot_dir / filename
     page.screenshot(path=str(path), full_page=True)
+    path.chmod(0o600)
     return str(path)
 
 
@@ -397,7 +502,10 @@ def submit_elevator_complaint(
     submit_live: bool = False,
     screenshot_dir: str | Path | None = None,
     before_submit: Callable[[], bool] | None = None,
+    human_verification_timeout_seconds: int = 0,
 ) -> PortalSubmissionResult:
+    if human_verification_timeout_seconds and headless:
+        raise ValueError("Human verification requires a visible browser")
     load_local_env_file()
     screenshot_path = Path(screenshot_dir) if screenshot_dir else Path(".local/nyc311_portal")
     description = _trim_description(str(payload.get("description") or payload.get("payload", {}).get("description") or ""))
@@ -406,9 +514,14 @@ def submit_elevator_complaint(
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={"width": 1440, "height": 2200}, timezone_id="America/New_York")
+        context = browser.new_context(viewport={"width": 1440, "height": 2200}, timezone_id="America/New_York", **_session_context_options())
         page = context.new_page()
-        login_used = _maybe_sign_in(page)
+        try:
+            login_used = _maybe_sign_in(page)
+        except PortalHumanVerificationRequired as exc:
+            evidence = _save_screenshot(page, screenshot_path, "sign_in_required")
+            browser.close()
+            raise PortalHumanVerificationRequired(reason=exc.reason, evidence_path=evidence) from None
 
         _open_elevator_flow(page)
         _set_value(page, "#n311_additionaldetailsid_select", "0023fcab-0291-e811-a964-000d3a199997")
@@ -454,6 +567,14 @@ def submit_elevator_complaint(
                 review_screenshot_path=review_screenshot_path,
                 confirmation_screenshot_path=None,
             )
+        if human_verification_timeout_seconds and _human_verification_required(page):
+            deadline = time.monotonic() + min(900, max(0, human_verification_timeout_seconds))
+            print("NYC311 requires human verification in the visible browser; waiting before submission.", flush=True)
+            while _human_verification_required(page) and time.monotonic() < deadline:
+                page.wait_for_timeout(1000)
+        if _human_verification_required(page):
+            browser.close()
+            raise PortalHumanVerificationRequired(evidence_path=review_screenshot_path)
         if before_submit is not None and not before_submit():
             browser.close()
             raise PortalSubmissionCancelled("Filing payload or incident state changed before final submission")
@@ -478,8 +599,18 @@ def submit_elevator_complaint(
             except PlaywrightError:
                 confirmation_screenshot_path = None
         except Exception as exc:
+            evidence_path = None
+            try:
+                evidence_path = _save_screenshot(page, screenshot_path, "submission_unknown")
+                if evidence_path:
+                    Path(evidence_path).chmod(0o600)
+            except Exception:
+                pass
             browser.close()
-            raise PortalSubmissionUncertain("NYC311 final submission outcome needs receipt reconciliation") from exc
+            raise PortalSubmissionUncertain(
+                "NYC311 final submission outcome needs receipt reconciliation",
+                evidence_path=evidence_path,
+            ) from exc
         browser.close()
         return PortalSubmissionResult(
             service_request_number=service_request_number,

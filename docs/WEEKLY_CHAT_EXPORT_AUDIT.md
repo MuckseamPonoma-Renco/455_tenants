@@ -83,6 +83,12 @@ not acknowledge a new export after such a failure, so it can retry after API acc
 is restored. A successful ZIP download or database import is not proof that every
 message received model review.
 
+Each successful retry is committed independently, so an interruption preserves
+completed model work. Full-review mode also reviews advisory/reference messages;
+deterministic non-report guards still control their final classification. A model
+failure on those messages remains an audit failure rather than a fabricated
+completed review.
+
 Automatic retries remain enabled. After an import/audit failure, the same export
 waits 1 hour before another attempt; repeated failures increase that delay to 2,
 4, 8, 16, then at most 24 hours. Inbox checks continue on their existing schedule,

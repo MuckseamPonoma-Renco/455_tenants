@@ -644,6 +644,31 @@ def test_public_collapse_duplicate_incidents_promotes_both_elevator_asset():
     assert collapsed[0].asset == "elevator_both"
 
 
+def test_aggregate_elevator_merge_does_not_change_message_specific_asset(client, monkeypatch):
+    service = _FakeService()
+    monkeypatch.setattr(sheets_sync, "_service", lambda: service)
+    monkeypatch.setattr(sheets_sync, "_public_sheet_id", lambda: "public-sheet-fixture")
+    monkeypatch.setenv("PUBLIC_UPDATES_CHAT_NAMES", "Fixture Tenants")
+    with get_session() as session:
+        for suffix, asset, epoch, ts, text in [
+            ("north", "elevator_north", 1781176244, "2026-06-11T09:50:44Z", "The elevator is out."),
+            ("both", "elevator_both", 1781179844, "2026-06-11T10:50:44Z", "Both elevators are out."),
+        ]:
+            session.add(Incident(incident_id=suffix, category="elevator", asset=asset, status="open",
+                title="Elevator outage", summary=text, proof_refs="msg-" + suffix,
+                start_ts_epoch=epoch, last_ts_epoch=epoch, report_count=1, witness_count=1))
+            session.add(RawMessage(message_id="msg-" + suffix, chat_name="Fixture Tenants", sender_hash="fixture",
+                ts_iso=ts, ts_epoch=epoch, text=text, source="whatsapp_web"))
+        session.commit()
+    sheets_sync.sync_public_updates_to_sheets()
+    values = next(kwargs["body"]["values"] for kind, kwargs in service.calls
+                  if kind == "update" and kwargs["range"] == f"{sheets_sync._public_updates_tab()}!A1")
+    assert any(row[1] == "North elevator" and row[6] == "North elevator was reported as out." for row in values if len(row) >= 7)
+    assert any(row[1] == "Both elevators" and row[6] == "Both elevators were reported as out." for row in values if len(row) >= 7)
+    with get_session() as session:
+        assert session.get(Incident, "north").asset == "elevator_north"
+
+
 def test_public_sanitizer_removes_standalone_person_names():
     text = sheets_sync._public_safe_summary_text(
         "Crowds form in the lobby and Jack mans elevator door like a bouncer. | "

@@ -15,7 +15,7 @@ from packages.nyc311.planner import (
     now_iso,
     recover_cancelled_filing_job,
 )
-from packages.nyc311.portal import PortalSubmissionCancelled, PortalSubmissionUncertain, lookup_service_request_status, submit_elevator_complaint
+from packages.nyc311.portal import PortalHumanVerificationRequired, PortalSubmissionCancelled, PortalSubmissionUncertain, lookup_service_request_status, submit_elevator_complaint
 from packages.nyc311.tracker import apply_portal_lookup_status, create_case_from_filing_job
 from packages.worker_jobs import _safe_sync_sheets
 
@@ -96,6 +96,8 @@ def _submission_failure(job_id: int, exc: Exception, *, receipt=None) -> dict[st
                     job.notes = _append_note(job.notes, "receipt reconciliation required; do not retry" if unknown else "failed before final submit in portal_playwright")
                     if receipt is not None:
                         job.notes = _append_note(job.notes, f"portal_receipt={receipt.service_request_number}")
+                    if getattr(exc, "evidence_path", None):
+                        job.notes = _append_note(job.notes, f"outcome_evidence={exc.evidence_path}")
                     session.commit()
     except Exception as persist_exc:
         # In the uncertain path, the earlier committed 'submitting' fence still
@@ -117,14 +119,35 @@ def run_portal_filing_once(
     incident_ids: Collection[str] | None = None,
     incident_validator: Callable[[object, Incident], bool] | None = None,
     before_submit: Callable[[], bool] | None = None,
+    resume_human_job_id: int | None = None,
+    human_verification_timeout_seconds: int = 0,
 ) -> dict[str, Any]:
+    if human_verification_timeout_seconds and headless:
+        raise ValueError("Human verification requires a visible browser")
+    if resume_human_job_id is not None and (headless or human_verification_timeout_seconds <= 0):
+        raise ValueError("Resuming a human-verification job requires a visible browser and a bounded wait")
     scope = {}
     if incident_ids is not None:
         scope["incident_ids"] = incident_ids
     if incident_validator is not None:
         scope["incident_validator"] = incident_validator
     with get_session() as session:
+        resumed = None
+        if resume_human_job_id is not None:
+            resumed = session.scalar(select(FilingJob).where(FilingJob.job_id == resume_human_job_id).with_for_update())
+            if resumed is None or resumed.state != "awaiting_human_verification":
+                return {"ok": False, "job": None, "error": "job_not_awaiting_human_verification"}
+            resumed.state = "pending"
+            resumed.claimed_at = None
+            scope["incident_ids"] = frozenset({resumed.incident_id})
+            session.flush()
         job, skipped = claim_next_job(session, **scope)
+        if resumed is not None and job is not None and job.job_id != resume_human_job_id:
+            session.rollback()
+            return {"ok": False, "job": None, "error": "human_verification_resume_deferred"}
+        if resumed is not None and job is None and resumed.state == "pending":
+            session.rollback()
+            return {"ok": False, "job": None, "error": "human_verification_resume_deferred"}
         session.commit()
         if skipped:
             _safe_sync_sheets()
@@ -140,9 +163,29 @@ def run_portal_filing_once(
             headless=headless,
             submit_live=True,
             before_submit=lambda: _begin_submission(job_id, **scope, **({"before_submit": before_submit} if before_submit is not None else {})),
+            **({"human_verification_timeout_seconds": human_verification_timeout_seconds} if human_verification_timeout_seconds else {}),
         )
         if not submission.service_request_number:
             raise RuntimeError("Portal submission finished without a service request number")
+    except PortalHumanVerificationRequired as exc:
+        with get_session() as session:
+            job = session.scalar(select(FilingJob).where(FilingJob.job_id == job_id).with_for_update())
+            # Only a known pre-submit claim may enter this state. Never clear a
+            # submitting/unknown fence if a concurrent path already armed it.
+            if job is not None and job.state == "claimed":
+                job.state = "awaiting_human_verification"
+                job.claimed_at = None
+                job.updated_at = now_iso()
+                job.last_error = str(exc)
+                job.notes = _append_note(job.notes, f"human verification required ({exc.reason}); no final submission click occurred")
+                if exc.evidence_path:
+                    job.notes = _append_note(job.notes, f"review={exc.evidence_path}")
+                session.commit()
+            state = job.state if job is not None else "missing"
+        _safe_sync_sheets()
+        _audit("PORTAL_FILING_HUMAN_VERIFICATION_REQUIRED", job_id, {"state": state, "reason": exc.reason})
+        return {"ok": False, "job": job_meta, "job_id": job_id, "state": state,
+                "human_verification_required": state == "awaiting_human_verification", "reason": exc.reason}
     except PortalSubmissionCancelled as exc:
         with get_session() as session:
             job = session.scalar(select(FilingJob).where(FilingJob.job_id == job_id).with_for_update())

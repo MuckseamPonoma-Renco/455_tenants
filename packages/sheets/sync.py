@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import copy
+
 import json
 import os
 import re
@@ -3059,6 +3061,7 @@ def _public_update_rows(
     allowed_chat_names: set[str],
     message_ids_by_incident: dict[str, list[str]] | None = None,
     decision_map: dict[str, MessageDecision] | None = None,
+    source_incident_by_message: dict[str, Incident] | None = None,
 ) -> list[list[object]]:
     rows: list[tuple[int, str, str, list[object]]] = []
     seen_messages: set[str] = set()
@@ -3089,7 +3092,12 @@ def _public_update_rows(
             raw = raw_map.get(message_id)
             if raw is None or not _raw_message_is_public(raw, allowed_chat_names):
                 continue
-            if not _public_should_include_update(incident, raw, (decision_map or {}).get(message_id)):
+            original_incident = (source_incident_by_message or {}).get(message_id, incident)
+            source_incident = incident
+            if original_incident.asset != incident.asset:
+                source_incident = copy(incident)
+                source_incident.asset = original_incident.asset
+            if not _public_should_include_update(source_incident, raw, (decision_map or {}).get(message_id)):
                 continue
             seen_messages.add(message_id)
             source_text_key = re.sub(r"\W+", " ", _public_update_detection_text(raw).casefold()).strip()
@@ -3098,19 +3106,19 @@ def _public_update_rows(
                 preview_cell, open_cell = "", ""
             else:
                 preview_cell, open_cell = _public_raw_evidence_cells(raw)
-            cases = case_map.get(incident.incident_id, []) if _public_is_actionable_311_update(incident, raw) else []
+            cases = case_map.get(incident.incident_id, []) if _public_is_actionable_311_update(source_incident, raw) else []
             rows.append((
                 int(raw.ts_epoch or _incident_last_epoch(incident) or 0),
                 message_id,
                 source_text_key,
                 [
                     _public_ts(raw.ts_iso, fallback=raw.ts_epoch) or "",
-                    _public_event_issue_label(incident, raw),
-                    _public_event_category_label(incident, raw),
+                    _public_event_issue_label(source_incident, raw),
+                    _public_event_category_label(source_incident, raw),
                     _public_case_badge(cases) if cases else "",
                     preview_cell,
                     open_cell,
-                    _public_event_summary(incident, raw),
+                    _public_event_summary(source_incident, raw),
                     "",
                     "",
                 ],
@@ -3457,6 +3465,18 @@ def sync_public_updates_to_sheets():
 
     public_incidents.sort(key=_public_incident_sort_key, reverse=True)
 
+    # Aggregate grouping can promote the canonical asset to both elevators.
+    # Preserve each message's original asset for its event history while
+    # retaining the group's normalized titles and case/evidence aggregation.
+    original_incidents = {row.incident_id: copy(row) for row in public_incidents}
+    source_incident_by_message = {
+        message_id: original_incidents[row.incident_id]
+        for row in public_incidents
+        for message_id in _public_incident_message_ids(row, message_ids_by_incident)
+    }
+    for message_id, decision in decision_map.items():
+        if decision.incident_id in original_incidents:
+            source_incident_by_message[message_id] = original_incidents[decision.incident_id]
     public_incidents, case_map = _public_collapse_duplicate_incidents(public_incidents, case_map, message_ids_by_incident)
     public_cases = [case for cases in case_map.values() for case in cases]
     public_cases.sort(key=_public_case_sort_key, reverse=True)
@@ -3468,6 +3488,7 @@ def sync_public_updates_to_sheets():
         allowed_chat_names,
         message_ids_by_incident,
         decision_map,
+        source_incident_by_message,
     )
     refresh_label = _fmt_ts(now_epoch)
     top_category = category_rows[0][0] if category_rows else ""
@@ -3635,7 +3656,7 @@ def sync_dashboard_to_sheets():
         last_raw = session.query(RawMessage).order_by(RawMessage.ts_epoch.desc().nullslast()).first()
         open_cases = session.query(ServiceRequestCase).filter(ServiceRequestCase.closed_at.is_(None)).count()
         queue_count = session.query(FilingJob).filter(
-            FilingJob.state.in_(["awaiting_approval", "approved", "pending", "claimed", "submitting", "submission_unknown", "failed"])
+            FilingJob.state.in_(["awaiting_approval", "approved", "pending", "claimed", "submitting", "submission_unknown", "awaiting_human_verification", "failed"])
         ).count()
         review_count = session.query(MessageDecision).filter(MessageDecision.needs_review.is_(True)).count()
 
@@ -3743,7 +3764,7 @@ def sync_311_queue_to_sheets():
     with get_session() as session:
         jobs = (
             session.query(FilingJob)
-            .filter(FilingJob.state.in_(["awaiting_approval", "approved", "pending", "claimed", "submitting", "submission_unknown", "failed"]))
+            .filter(FilingJob.state.in_(["awaiting_approval", "approved", "pending", "claimed", "submitting", "submission_unknown", "awaiting_human_verification", "failed"]))
             .all()
         )
     values = [["job_id", "incident_id", "state", "priority", "complaint_type", "form_target", "attempts", "created_at", "claimed_at", "completed_at", "notes"]]

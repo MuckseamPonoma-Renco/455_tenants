@@ -6,7 +6,72 @@ from packages.db import FilingJob, Incident, ServiceRequestCase, get_session
 from packages.nyc311 import portal_worker
 from packages.nyc311.drafts import build_filing_draft
 from packages.nyc311.planner import claim_next_job, ensure_filing_job_for_incident
-from packages.nyc311.portal import PortalSubmissionCancelled, PortalSubmissionResult, PortalSubmissionUncertain
+from packages.nyc311.portal import PortalHumanVerificationRequired, PortalSubmissionCancelled, PortalSubmissionResult, PortalSubmissionUncertain
+
+
+def test_captcha_wait_is_visible_and_never_automatically_reclaimed(client, monkeypatch):
+    job_id = _seed_job()
+    def challenge(_payload, *, before_submit, **kwargs):
+        # The portal detects this before calling the durable final-click fence.
+        with get_session() as session:
+            assert session.get(FilingJob, job_id).state == "claimed"
+        raise PortalHumanVerificationRequired(evidence_path="/private/review.png")
+    monkeypatch.setattr(portal_worker, "submit_elevator_complaint", challenge)
+    result = portal_worker.run_portal_filing_once(verify_lookup=False)
+    assert result["human_verification_required"] is True
+    with get_session() as session:
+        job = session.get(FilingJob, job_id)
+        assert job.state == "awaiting_human_verification"
+        assert "no final submission click" in job.notes
+        assert "review=/private/review.png" in job.notes
+        assert session.query(ServiceRequestCase).count() == 0
+        assert claim_next_job(session)[0] is None
+
+
+@pytest.mark.parametrize("state", ["submitting", "submission_unknown", "submitted"])
+def test_human_resume_cannot_reopen_uncertain_or_completed_jobs(client, monkeypatch, state):
+    job_id = _seed_job()
+    with get_session() as session:
+        session.get(FilingJob, job_id).state = state
+        session.commit()
+    monkeypatch.setattr(portal_worker, "submit_elevator_complaint", lambda *a, **k: pytest.fail("Must not open portal"))
+    result = portal_worker.run_portal_filing_once(headless=False, resume_human_job_id=job_id,
+                                                human_verification_timeout_seconds=300)
+    assert result["error"] == "job_not_awaiting_human_verification"
+    with get_session() as session:
+        assert session.get(FilingJob, job_id).state == state
+
+
+def test_explicit_human_resume_revalidates_and_persists_one_receipt(client, monkeypatch):
+    job_id = _seed_job()
+    with get_session() as session:
+        session.get(FilingJob, job_id).state = "awaiting_human_verification"
+        session.commit()
+    def submit(_payload, *, before_submit, headless, human_verification_timeout_seconds, **kwargs):
+        assert headless is False
+        assert human_verification_timeout_seconds == 300
+        assert before_submit() is True
+        return _receipt()
+    monkeypatch.setattr(portal_worker, "submit_elevator_complaint", submit)
+    result = portal_worker.run_portal_filing_once(headless=False, verify_lookup=False,
+        resume_human_job_id=job_id, human_verification_timeout_seconds=300)
+    assert result["ok"] is True
+    with get_session() as session:
+        assert session.get(FilingJob, job_id).state == "submitted"
+        assert session.query(ServiceRequestCase).count() == 1
+
+
+def test_uncertain_submission_retains_post_click_evidence(client, monkeypatch):
+    job_id = _seed_job()
+    def submit(_payload, *, before_submit, **kwargs):
+        assert before_submit()
+        raise PortalSubmissionUncertain("No receipt", evidence_path="/private/outcome.png")
+    monkeypatch.setattr(portal_worker, "submit_elevator_complaint", submit)
+    portal_worker.run_portal_filing_once(verify_lookup=False)
+    with get_session() as session:
+        job = session.get(FilingJob, job_id)
+        assert job.state == "submission_unknown"
+        assert "outcome_evidence=/private/outcome.png" in job.notes
 
 
 def _seed_job():

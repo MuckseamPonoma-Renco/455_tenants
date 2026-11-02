@@ -80,6 +80,16 @@ def test_summary_marks_a_fresh_submission_as_in_progress(client):
     assert payload['metrics']['filing_jobs_submitting'] == 1
 
 
+def test_summary_exposes_human_verification_hold_without_claiming_filing_readiness(client):
+    _job('awaiting_human_verification')
+    payload = client.get('/api/summary', headers=API_HEADERS).json()
+    assert payload['stage'] == 'filing_attention_needed'
+    assert payload['metrics']['filing_jobs_awaiting_human_verification'] == 1
+    assert payload['metrics']['service_requests_total'] == 0
+    assert any(alert['code'] == '311_human_verification_required' for alert in payload['alerts'])
+    assert 'CAPTCHA' in payload['next_step']
+
+
 def test_operator_queue_sheet_keeps_uncertain_jobs_visible(client, monkeypatch):
     _job('submitting', dedupe_key='submitting-sheet')
     _job('submission_unknown', dedupe_key='unknown-sheet')

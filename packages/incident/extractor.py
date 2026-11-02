@@ -1360,10 +1360,11 @@ def _forced_nonreport_choice(rules: dict, llm_choice: dict | None) -> tuple[dict
 def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | None, str]:
     rules = classify_rules(rm.text)
     forced_nonreport, forced_source = _forced_nonreport_choice(rules, None)
-    if forced_nonreport is not None:
+    if forced_nonreport is not None and not _llm_reviews_every_meaningful_message():
         # Deterministic reference/advisory guards are authoritative.  Return
-        # before open-incident context or model review can turn quoted,
-        # historical, or external material into a current building event.
+        # early outside full-review mode. Full-export audits still require
+        # actual model provenance; the same guard is reapplied below before
+        # any model choice can become a current building event.
         return forced_nonreport, rules, None, forced_source or "guardrail_nonreport"
     rule_choice = _rule_choice(rules)
     reviewed_nonissue = bool(not rule_choice and REVIEWED_NONISSUE_CONTEXT_RE.search(rm.text or ""))

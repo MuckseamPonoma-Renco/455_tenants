@@ -13,7 +13,24 @@ Add these to `.env` if you want the worker to attempt portal login first:
 311_PASSWORD=replace_me
 ```
 
-If those vars are missing, the worker still files anonymously, which is enough for the elevator flow this repo needs.
+Without credentials or a saved session, the worker can reach the anonymous flow.
+NYC311 may require CAPTCHA before it accepts a complaint. A running worker or a
+completed draft is not a confirmed filing.
+
+NYC.ID may use an email-first verification flow instead of a password form. To
+sign in interactively without creating any complaint, run:
+
+```bash
+./.venv/bin/python scripts/run_311_portal_worker.py --sign-in
+```
+
+Complete the city's verification yourself in the visible browser. Only a verified
+portal sign-in is saved, in an owner-only local file at
+`~/.local/state/tenant-issue-os/private/nyc311-session.json`. Set
+`NYC311_SESSION_STATE_PATH` to choose another private location. This is a session
+created by this app, not an export of your normal browser profile. Keep it out of
+source control and shared storage. Expired sessions require sign-in again;
+configured authentication failures never silently fall back to anonymous filing.
 
 ## One-time setup
 
@@ -40,6 +57,20 @@ state automatically retries. Reconcile the confirmation/receipt first. The
 receipt is committed before optional status lookup. A tenant-provided receipt
 for the same incident also blocks filing at claim and at final review.
 
+An unsolved visible CAPTCHA or required sign-in stops before the final click and
+holds the job as `awaiting_human_verification`. The operator queue and summary
+show the hold. The unattended worker does not solve challenges or reclaim held
+jobs. After sign-in, explicitly resume one eligible held job with:
+
+```bash
+./.venv/bin/python scripts/run_311_portal_worker.py \
+  --headful --resume-human-job JOB_ID --human-verification-wait-seconds 300
+```
+
+This waits for the user to complete any visible challenge, revalidates the current
+incident and exact payload, and then submits. It refuses uncertain or completed
+jobs. Authentication does not guarantee that the city will omit CAPTCHA.
+
 ## Run the filing worker once
 
 This can submit a real complaint. Use it only for an authorized live deployment with a genuine current eligible incident, not as a demo or smoke test.
@@ -58,7 +89,9 @@ What it does:
 6. Marks the filing anonymous.
 7. Reaches review, submits, extracts the SR number, and stores the result back in the app.
 
-Screenshots are saved to `.local/nyc311_portal/`.
+Screenshots are saved with owner-only permissions to `.local/nyc311_portal/`.
+A post-click error also saves the visible outcome when possible, for receipt
+reconciliation; the absence of a screenshot never permits a blind retry.
 
 ## Look up a service request in the portal
 
