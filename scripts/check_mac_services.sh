@@ -377,6 +377,35 @@ service_status_row() {
   local needs_repair="false"
   local reason=""
 
+  if [[ "$name" == "nyc311_session" ]]; then
+    local parsed
+    parsed="$("$(mac_service_runtime_python)" - "$LOCAL_BODY_FILE" <<'PY'
+import json
+import sys
+try:
+    payload = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    payload = {}
+auth = payload.get('nyc311_session') or {}
+if payload.get('auto_file_enabled') is not True:
+    print('false\tnot_configured\tautomatic filing is disabled or health is unavailable')
+elif auth.get('configured') is not True:
+    print('false\tnot_configured\tno saved NYC311 account session is configured')
+elif auth.get('state') == 'ready' and auth.get('has_error') is False:
+    print('true\thealthy\tNYC311 saved login verified at ' + str(auth.get('last_checked_at')))
+else:
+    print('true\tattention\tNYC311 login state=' + str(auth.get('state', 'missing')) + '; run worker --check-session, then --sign-in if required')
+PY
+)"
+    IFS=$'\t' read -r configured state reason <<<"$parsed"
+    # Authentication needs a successful portal check or human sign-in, not a
+    # process restart. Keep the worker and capture running while it recovers.
+    reason="$(sanitize_field "$reason")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
+
   if [[ "$name" == "public_records" ]]; then
     if [[ ( "$WATCHDOG_STATE" == "ready" || "$WATCHDOG_STATE" == "working" ) \
       && "$WATCHDOG_HAS_ERROR" == "false" && "$WATCHDOG_SOURCE_ERRORS" == "0" \
@@ -686,6 +715,7 @@ collect_statuses() {
   service_status_row api >>"$STATUS_FILE"
   service_status_row storage >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
+  service_status_row nyc311_session >>"$STATUS_FILE"
   service_status_row public_records >>"$STATUS_FILE"
   service_status_row chat_export_sync >>"$STATUS_FILE"
   service_status_row cloud_export_receiver >>"$STATUS_FILE"

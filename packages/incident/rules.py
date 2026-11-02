@@ -1,6 +1,6 @@
 import re
 
-from packages.incident.content_guardrails import nonreporting_content_reason
+from packages.incident.content_guardrails import nonreporting_content_reason, NEGATED_ELEVATOR_PROBLEM_RE
 from packages.incident.building_conditions import building_condition_presentation
 
 ELEVATOR = re.compile(r"\b(elevator|elevators|lift|lifts)\b", re.I)
@@ -193,7 +193,7 @@ def _asset_status(text: str, side: str) -> tuple[bool, bool]:
         if segment.strip()
     ] or [text]
     return (
-        any(_side_has_status(segment, side, ASSET_AFFECTED_RE) for segment in segments),
+        any(_side_has_status(segment, side, ASSET_AFFECTED_RE) and not NEGATED_ELEVATOR_PROBLEM_RE.search(segment) for segment in segments),
         any(_side_has_status(segment, side, ASSET_WORKING_RE) for segment in segments),
     )
 
@@ -499,6 +499,8 @@ def classify_rules(text: str) -> dict:
             "title": "Elevator operation issue",
             "summary": "Tenant reports unsafe or irregular elevator operation.",
             "kind": "issue",
+            "preserve_issue": True,
+            "preserve_event_type": True,
         }
 
     if re.search(r"\bdown\s+to\s+1\s+elevator\b|\b1\s+elevator\s+again\b", t, re.I):

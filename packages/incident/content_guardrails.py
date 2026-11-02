@@ -44,9 +44,9 @@ HISTORICAL_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 CONDITIONAL_BUILDING_SCENARIO_RE = re.compile(
-    r"\b(?:if|when)\b[^.!?\n]{0,180}\b(?:elevators?|lifts?)\b"
-    r"[^.!?\n]{0,180}\b(?:out|broken|trap(?:s|ped)?|stuck|fire\s+stairs?)\b"
-    r"|\b(?:if|when)\b[^.!?\n]{0,180}\b(?:out|broken|trap(?:s|ped)?|stuck)\b"
+    r"\b(?:if|when(?!\s+(?:i|we|they)\s+(?:left|arrived|came|went|saw|heard|noticed)\b))\b[^.!?\n]{0,180}\b(?:elevators?|lifts?)\b"
+    r"[^.!?\n]{0,180}\b(?:out|down|not\s+working|broken|trap(?:s|ped)?|stuck|fire\s+stairs?)\b"
+    r"|\b(?:if|when(?!\s+(?:i|we|they)\s+(?:left|arrived|came|went|saw|heard|noticed)\b))\b[^.!?\n]{0,180}\b(?:out|down|not\s+working|broken|trap(?:s|ped)?|stuck)\b"
     r"[^.!?\n]{0,180}\b(?:elevators?|lifts?)\b",
     re.IGNORECASE,
 )
@@ -95,6 +95,27 @@ OBSERVED_CURRENT_HAZARD_RE = re.compile(
     r"|\b(?:smoke|flames?|fire)\s+(?:is|was|are|were)\b",
     re.IGNORECASE,
 )
+AUTOMATION_INSTRUCTION_RE = re.compile(
+    r"\b(?:ignore|disregard|override)\b[^.!?\n]{0,80}\b(?:instructions?|rules?|prompts?|system)\b"
+    r"|\b(?:set|return|output)\b[^.!?\n]{0,60}\b(?:is_issue|needs_review|confidence|json)\b",
+    re.IGNORECASE,
+)
+UNCONFIRMED_ELEVATOR_CONDITION_RE = re.compile(
+    r"\b(?:will|may|might|could|would)\s+(?:be\s+|get\s+|remain\s+)?"
+    r"(?:out\s+of\s+service|down|out|not\s+working|broken|stuck)\b"
+    r"|\b(?:scheduled|expected|going)\s+to\s+(?:be\s+|get\s+)?"
+    r"(?:out\s+of\s+service|down|out|not\s+working|broken|stuck)\b",
+    re.IGNORECASE,
+)
+NEGATED_ELEVATOR_PROBLEM_RE = re.compile(
+    r"\b(?:not|isn['’]t|aren['’]t)\s+(?:broken|down|stuck|out\s+of\s+service)\b"
+    r"|\bno\s+(?:elevator|lift)\s+(?:problems?|issues?|malfunctions?)\b", re.I,
+)
+PURE_SOCIAL_RE = re.compile(r"\s*(?:thanks(?:\s+for\s+(?:the\s+)?update)?|thank\s+you|ok(?:ay)?|hello|hi|good\s+morning|👍)[.!\s]*", re.I)
+REFERENCE_QUOTE_RE = re.compile(r"^\s*(?:earlier\s+message|quote|quoted\s+message|forwarded\s+message)\s*:", re.I)
+EXTERNAL_ELEVATOR_REPORT_RE = re.compile(
+    r"\b(?:elevators?|lifts?)\b[^.!?\n]{0,100}\b(?:another|other|their|that)\s+building\b"
+    r"|\b(?:another|other|their|that)\s+building\b[^.!?\n]{0,100}\b(?:elevators?|lifts?)\b", re.I)
 
 
 def nonreporting_content_reason(text: str | None) -> str | None:
@@ -102,6 +123,36 @@ def nonreporting_content_reason(text: str | None) -> str | None:
     clean = (text or "").strip()
     if not clean:
         return None
+
+    clauses = re.split(r"[.!?\n]+|\bbut\b", clean, flags=re.I)
+    independent_current_report = any(
+        CURRENT_BUILDING_CONDITION_RE.search(part)
+        and not CONDITIONAL_BUILDING_SCENARIO_RE.search(part)
+        and not UNCONFIRMED_ELEVATOR_CONDITION_RE.search(part)
+        and not AUTOMATION_INSTRUCTION_RE.search(part)
+        and not NEGATED_ELEVATOR_PROBLEM_RE.search(part)
+        for part in clauses
+    )
+    if PURE_SOCIAL_RE.fullmatch(clean):
+        return "social_message"
+    if EXTERNAL_ELEVATOR_REPORT_RE.search(clean):
+        local_parts = [part for part in clauses if not EXTERNAL_ELEVATOR_REPORT_RE.search(part)]
+        if not any(CURRENT_BUILDING_CONDITION_RE.search(part) for part in local_parts):
+            return "external_reference"
+    if REFERENCE_QUOTE_RE.search(clean):
+        return "quoted_reference"
+    if NEGATED_ELEVATOR_PROBLEM_RE.search(clean) and not independent_current_report:
+        return "counterexample"
+    if re.match(r"^\s*(?:is|are|was|were|does|do|did|could|can|should|has|have)\b", clean, re.I) and clean.endswith("?") and not re.search(r"[.!]\s+", clean):
+        return "question"
+    if (re.search(r"\b(?:elevators?|lifts?)\b", clean, re.I)
+            and UNCONFIRMED_ELEVATOR_CONDITION_RE.search(clean) and not independent_current_report):
+        return "unconfirmed_condition"
+
+    if AUTOMATION_INSTRUCTION_RE.search(clean):
+        factual_parts = [part for part in re.split(r"[.!?\n]+", clean) if not AUTOMATION_INSTRUCTION_RE.search(part)]
+        if not any(CURRENT_BUILDING_CONDITION_RE.search(part) for part in factual_parts):
+            return "automation_instruction"
 
     if TRANSIT_ONLY_RE.search(clean) and not CURRENT_BUILDING_CONDITION_RE.search(clean):
         return "external_reference"
@@ -132,7 +183,7 @@ def nonreporting_content_reason(text: str | None) -> str | None:
             return None
         return "historical_reference"
 
-    if CONDITIONAL_BUILDING_SCENARIO_RE.search(clean):
+    if CONDITIONAL_BUILDING_SCENARIO_RE.search(clean) and not independent_current_report:
         return "general_advisory"
 
     dateline = NEWS_DATELINE_RE.search(clean)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Collection
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -18,6 +19,37 @@ from packages.nyc311.planner import (
 from packages.nyc311.portal import PortalHumanVerificationRequired, PortalSubmissionCancelled, PortalSubmissionUncertain, lookup_service_request_status, submit_elevator_complaint
 from packages.nyc311.tracker import apply_portal_lookup_status, create_case_from_filing_job
 from packages.worker_jobs import _safe_sync_sheets
+from packages.nyc311 import session_health
+
+
+def release_verified_sign_in_holds() -> int:
+    """Resume only known pre-submit sign-in holds after a fresh auth check."""
+    status = session_health.public_status()
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(status['last_checked_at'])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return 0
+    if status.get('state') != 'ready' or not 0 <= age <= 60:
+        return 0
+    count = 0
+    with get_session() as session:
+        rows = session.scalars(select(FilingJob).where(
+            FilingJob.state == 'awaiting_human_verification',
+            FilingJob.last_error == 'NYC311 sign-in requires user verification',
+        ).with_for_update(skip_locked=True)).all()
+        for job in rows:
+            if job.completed_at or 'final submit armed' in (job.notes or ''):
+                continue
+            job.state = 'pending'
+            job.claimed_at = None
+            job.last_error = None
+            job.updated_at = now_iso()
+            job.notes = _append_note(job.notes, 'sign-in freshly verified; normal eligibility, attempt-limit and duplicate checks still required')
+            count += 1
+        session.commit()
+    if count:
+        _safe_sync_sheets()
+    return count
 
 
 def _append_note(existing: str | None, extra: str) -> str:

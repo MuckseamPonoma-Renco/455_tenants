@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from packages.db import FilingJob, Incident, RawMessage, ServiceRequestCase
 from packages.llm.openai_client import llm_enabled
 from packages.timeutil import normalize_timestamp, parse_ts_to_epoch
+from packages.nyc311.session_health import public_status as public_session_status
 
 
 def _now() -> datetime:
@@ -165,6 +166,13 @@ def build_ops_summary(session) -> dict[str, Any]:
 
     alerts: list[dict[str, Any]] = []
     actions: list[dict[str, str]] = []
+    authentication = public_session_status()
+    if authentication.get('configured') and authentication.get('has_error') and os.environ.get('AUTO_FILE_ENABLED', '').lower() in {'1', 'true', 'yes', 'on'}:
+        alerts.append({'level': 'warning', 'code': '311_session_attention',
+                       'title': 'NYC311 login needs attention',
+                       'detail': 'Saved login is not currently verified. Complete sign-in if requested; no complaint should be assumed filed.'})
+        actions.append({'kind': 'do_now', 'title': 'Check the worker login',
+                        'detail': 'Run the worker --check-session command; use --sign-in if NYC.ID requires verification.'})
 
     if open_incidents:
         top = open_incidents[0]

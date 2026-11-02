@@ -23,7 +23,8 @@ from packages.automation_status import (
     watchdog_result_ok,
     write_automation_status,
 )
-from packages.nyc311.portal_worker import run_portal_filing_once
+from packages.nyc311.portal_worker import run_portal_filing_once, release_verified_sign_in_holds
+from packages.nyc311 import session_health
 from packages.worker_jobs import full_resync_sheets, process_pending_messages, resync_replacement_watchdog, sync_311_statuses
 from scripts.audit_public_tenant_log import run_audit as run_public_tenant_log_audit
 
@@ -251,10 +252,17 @@ def main() -> None:
         update_watchdog_status(state="disabled", interval_seconds=0)
     next_public_tenant_log_audit_at = time.monotonic() if public_tenant_log_audit_seconds > 0 else None
     next_filing_poll_at = time.monotonic()
+    next_session_check_at = time.monotonic() if session_health.configured() and _env_bool('AUTO_FILE_ENABLED', False) else None
 
     while True:
         did_work = False
         try:
+            if next_session_check_at is not None and time.monotonic() >= next_session_check_at:
+                auth = _run_work_step('NYC311 session check', session_health.check_saved_session, poll_seconds=poll_seconds)
+                if auth and auth.get('state') == 'ready':
+                    _run_step('resume verified sign-in holds', release_verified_sign_in_holds)
+                _log(f"NYC311 session check: {auth}")
+                next_session_check_at = time.monotonic() + (session_health.check_interval_seconds() if auth and auth.get('state') == 'ready' else 300)
             if time.monotonic() >= next_filing_poll_at:
                 processed = 0
                 filing_delay_seconds = poll_seconds

@@ -18,6 +18,7 @@ from playwright.sync_api import Page, sync_playwright
 from packages.local_env import load_local_env_file
 from packages.nyc311.address import canonicalize_building_address
 from packages.nyc311.tracker import normalize_sr_number
+from packages.nyc311 import session_health
 
 PORTAL_BASE_URL = "https://portal.311.nyc.gov"
 PORTAL_HOME_URL = f"{PORTAL_BASE_URL}/"
@@ -51,8 +52,7 @@ class PortalHumanVerificationRequired(RuntimeError):
 
 
 def _session_state_path() -> Path:
-    configured = os.environ.get("NYC311_SESSION_STATE_PATH")
-    return Path(configured).expanduser() if configured else Path.home() / ".local/state/tenant-issue-os/private/nyc311-session.json"
+    return session_health.session_state_path()
 
 
 def _session_context_options() -> dict[str, Any]:
@@ -75,21 +75,28 @@ def _is_portal_authenticated(page: Page) -> bool:
     return page.locator('a[href*="LogOff"], a[href*="SignOut"], a[href*="signout"], a[href*="logout"]').count() > 0
 
 
-def _save_verified_session(context, page: Page) -> None:
+def _save_verified_session(context, page: Page, *, expected_fingerprint: str | None = None) -> str | None:
     if not _is_portal_authenticated(page):
         raise PortalHumanVerificationRequired(reason="sign_in")
     path = _session_state_path()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".nyc311-session-", delete=False) as handle:
-            temporary = Path(handle.name)
-            json.dump(context.storage_state(), handle)
-        temporary.chmod(0o600)
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    state = context.storage_state()
+    fingerprint = session_health.state_fingerprint(state)
+    with session_health.session_lock():
+        if expected_fingerprint is not None and session_health.current_fingerprint() != expected_fingerprint:
+            return None
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".nyc311-session-", delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(state, handle)
+            temporary.chmod(0o600)
+            os.replace(temporary, path)
+            session_health.record("ready", fingerprint=fingerprint)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    return fingerprint
 
 
 def sign_in_interactively(*, wait_seconds: int = 300) -> dict[str, Any]:
@@ -512,16 +519,27 @@ def submit_elevator_complaint(
     if not description:
         raise RuntimeError("Missing complaint description")
 
+    session_version = session_health.current_fingerprint()
+    try:
+        session_options = _session_context_options()
+    except PortalHumanVerificationRequired:
+        session_health.record_for_session("login_required", session_version)
+        raise
+    session_version = session_health.state_fingerprint(session_options["storage_state"]) if "storage_state" in session_options else None
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={"width": 1440, "height": 2200}, timezone_id="America/New_York", **_session_context_options())
+        context = browser.new_context(viewport={"width": 1440, "height": 2200}, timezone_id="America/New_York", **session_options)
         page = context.new_page()
         try:
             login_used = _maybe_sign_in(page)
         except PortalHumanVerificationRequired as exc:
             evidence = _save_screenshot(page, screenshot_path, "sign_in_required")
             browser.close()
+            session_health.record_for_session("login_required", session_version)
             raise PortalHumanVerificationRequired(reason=exc.reason, evidence_path=evidence) from None
+
+        if login_used and session_version is not None:
+            session_version = _save_verified_session(context, page, expected_fingerprint=session_version)
 
         _open_elevator_flow(page)
         _set_value(page, "#n311_additionaldetailsid_select", "0023fcab-0291-e811-a964-000d3a199997")
@@ -552,6 +570,12 @@ def submit_elevator_complaint(
 
         review_screenshot_path = _save_screenshot(page, screenshot_path, "review")
         review_text = page.locator("body").inner_text()
+        if login_used and not _is_portal_authenticated(page):
+            browser.close()
+            session_health.record_for_session("login_required", session_version)
+            raise PortalHumanVerificationRequired(reason="sign_in", evidence_path=review_screenshot_path)
+        if login_used and session_version is not None:
+            _save_verified_session(context, page, expected_fingerprint=session_version)
         if submit_live and not _review_has_address(review_text, payload):
             browser.close()
             raise RuntimeError(f"NYC311 review screen did not show the complaint address for {address_match.full_address}")

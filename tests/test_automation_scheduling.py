@@ -90,3 +90,21 @@ def test_idle_filing_interval_remains_configurable(monkeypatch):
     )
 
     assert filings == [0, 180, 360]
+
+
+def test_session_probe_schedule_and_short_failure_retry(monkeypatch):
+    checked = []
+    released = []
+    states = iter(['ready', 'login_required', 'ready'])
+    monkeypatch.setenv('AUTO_FILE_ENABLED', '1')
+    monkeypatch.setattr(automation.session_health, 'configured', lambda: True)
+    monkeypatch.setattr(automation.session_health, 'check_interval_seconds', lambda: 1800)
+    def probe():
+        checked.append(automation.time.monotonic())
+        return {'state': next(states, 'ready')}
+    monkeypatch.setattr(automation.session_health, 'check_saved_session', probe)
+    monkeypatch.setattr(automation, 'release_verified_sign_in_holds', lambda: released.append(automation.time.monotonic()) or 0)
+    filings, _, _ = _run_loop(monkeypatch, filing_results=[], duration=2160)
+    assert checked == [0, 1800, 2100]
+    assert released == [0, 2100]
+    assert filings == [0, 900, 1800]

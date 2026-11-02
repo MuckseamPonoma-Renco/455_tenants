@@ -970,7 +970,7 @@ def test_reviewed_export_guardrails_override_model_drift(client, monkeypatch):
     assert decisions[8].category == 'other'
     assert decisions[8].event_type == 'new_issue'
     assert all(decision.is_issue is False for decision in decisions[9:])
-    assert all(decision.chosen_source == 'guardrail_reviewed_non_issue' for decision in decisions[9:])
+    assert all(decision.chosen_source in {'guardrail_reviewed_non_issue', 'guardrail_question'} for decision in decisions[9:])
 
 
 def test_non_elevator_problem_is_not_reframed_by_recent_elevator_context(client, monkeypatch):
@@ -1225,7 +1225,7 @@ def test_context_does_not_turn_an_outage_question_into_a_report(client, monkeypa
         decision = session.get(MessageDecision, question.json()['message_id'])
         assert decision is not None
         assert decision.is_issue is False
-        assert decision.event_type is None
+        assert decision.event_type == 'non_issue'
         assert session.query(Incident).filter_by(category='elevator').count() == 1
 
 

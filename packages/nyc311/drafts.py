@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import re
 from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from packages.db import Incident, RawMessage, get_session
@@ -47,7 +48,9 @@ def _short_description(inc: Incident) -> str:
         rows = sorted(rows, key=lambda row: int(row.ts_epoch or 0), reverse=True)
         raw_texts = [" ".join((row.text or "").split()).lower() for row in rows if row.text]
 
-    text = " ".join([*raw_texts, summary]).strip()
+    # A materialized/model summary may be stale or contain an unsupported
+    # symptom. Prefer the retained source messages whenever available.
+    text = " ".join(raw_texts).strip() if raw_texts else summary
 
     if "stopping on each floor" in text or "stopping on every floor" in text:
         return f"{subject} stopping on every floor."
@@ -56,7 +59,9 @@ def _short_description(inc: Incident) -> str:
     if "trapped a passenger" in text:
         return f"{subject} trapped a passenger."
     if "problematic ride" in text or "rough ride" in text or "behaving badly" in text:
-        return f"{subject} acting up and stopping on random floors."
+        return f"{subject} operating roughly."
+    if re.search(r"\bskip(?:s|ped|ping)?\s+(?:(?:our|my|the|a)\s+)?floors?\b", text):
+        return f"{subject} skipping floors."
     if "clunk" in text and ("bounce" in text or "bounced" in text) and ("slow" in text or "slo-mo" in text):
         return f"{subject} made a loud clunk, bounced, and opened slowly."
     if "clunk" in text or "bounce" in text or "bounced" in text or "slo-mo" in text:

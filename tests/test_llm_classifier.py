@@ -29,6 +29,8 @@ def test_classifier_marks_a_valid_model_response_completed(monkeypatch):
             "category": "other",
             "event_type": "non_issue",
             "confidence": 92,
+            "asset": None, "severity": 1, "title": "", "summary": "",
+            "refers_to_open_incident": False, "close_incident": False, "needs_review": False,
         },
     )
 

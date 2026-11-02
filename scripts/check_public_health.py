@@ -82,6 +82,15 @@ def validate_health(
     if payload.get('sheets_disabled') is True or payload.get('sheets_configured') is not True:
         failures.append('Google Sheets sync is not configured and enabled')
 
+    session = payload.get('nyc311_session')
+    if payload.get('auto_file_enabled') is True:
+        if not isinstance(session, dict):
+            failures.append('NYC311 session health is missing')
+        elif session.get('configured') is True:
+            details['nyc311_session_state'] = session.get('state')
+            if session.get('state') != 'ready' or session.get('has_error') is not False:
+                failures.append('NYC311 session requires attention: ' + str(session.get('state', 'unknown')))
+
     storage = payload.get('storage')
     if not isinstance(storage, dict):
         failures.append('host storage health is missing')

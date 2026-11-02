@@ -1354,6 +1354,8 @@ def _forced_nonreport_choice(rules: dict, llm_choice: dict | None) -> tuple[dict
         "close_incident": False,
         "needs_review": False,
     }
+    if reason == "unconfirmed_condition":
+        choice["needs_review"] = True
     return _normalize_choice(choice), f"guardrail_{reason}"
 
 
