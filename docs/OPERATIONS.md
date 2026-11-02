@@ -89,6 +89,13 @@ With a dedicated public workbook configured, sync writes four resident views: `T
 
 The private operator workbook retains all six detailed watchdog views: `ElevatorWatch`, `ProjectStatus`, `PublicRecords`, `WatchdogChecks`, `ActionQueue`, and `WeeklyDigest`. These preserve management claims, source provenance, verification checks, deadlines, and follow-up drafts. See the [replacement watchdog guide](ELEVATOR_REPLACEMENT_WATCHDOG.md) for the underlying rules.
 
+For a previously seen filing that is absent from a completed source refresh,
+the watchdog reports its current status as unconfirmed. Its check timestamp uses
+the older of the record's absence receipt and that same source's successful
+refresh receipt. The last positive sighting remains visible as history. Missing,
+failed or unrelated source checks cannot renew the timestamp, and a later
+absence does not establish withdrawal, completion or physical repair.
+
 ## Day-to-day checks
 
 On an existing configured macOS installation, begin with read-only checks:
