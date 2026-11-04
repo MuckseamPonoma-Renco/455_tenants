@@ -2257,6 +2257,9 @@ def _public_elevator_text_is_working_status(text: str) -> bool:
     clean = elevator_restoration_text(_clean_text(text))
     if not clean:
         return False
+    clean = re.sub(r"\brunning\s+(?:the\s+)?(?:comms?\s+|communications?\s+)?cables?\b", '', clean, flags=re.I)
+    if re.search(r"\bnot\s+in\s+use\b", clean, re.I):
+        return False
     if _public_elevator_text_is_reduced_service(clean):
         return False
     if re.search(r"\b(?:not|isn['’]?t|aren['’]?t)\s+in\s+service\b", clean, re.IGNORECASE):
@@ -2855,7 +2858,7 @@ def _public_event_category_label(incident: Incident, raw: RawMessage | None) -> 
     if incident.category == "other":
         condition = building_condition_presentation(text)
         if condition:
-            return "Ventilation" if condition["kind"] == "ventilation" else "Electrical"
+            return {"ventilation": "Ventilation", "electrical": "Electrical"}.get(condition["kind"], "Other building issue")
         if _public_other_update_issue_label(text) == "Laundry machine/card issue":
             return "Laundry"
     if _public_has_apartment_entry_concern(text):

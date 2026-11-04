@@ -67,8 +67,15 @@ def declarative_elevator_text(text: str) -> str:
         or (part.rstrip().endswith('?') and re.match(r"\s*(?:is|are|was|were|does|do|did|can|could|has|have|should|would|why|what|when|where|who|how)\b", part, re.I))))
 
 
+FAILED_ELEVATOR_RESTORATION = re.compile(
+    r"\b(?:couldn['’]?t|could\s+not|cannot|can['’]?t|unable\s+to|failed\s+to)\s+"
+    r"(?:get|make|keep|bring)\b[^.!?\n]{0,100}?\b(?:operational|working|running|in\s+service|back\s+up)\b",
+    re.I,
+)
+
+
 def elevator_restoration_text(text: str) -> str:
-    clean = declarative_elevator_text(text)
+    clean = FAILED_ELEVATOR_RESTORATION.sub("", declarative_elevator_text(text))
     clean = re.sub(r"\b(?:went|go(?:ing)?|got|travel(?:led|ed|ing)?|climb(?:ed|ing)?|headed|sent)\s+back\s+up\b|\bback\s+up\s+to\b", '', clean, flags=re.I)
     clean = re.sub(r"\b(?:not|never|isn['’]?t|wasn['’]?t|hasn['’]?t|haven['’]?t)\s+(?:(?:yet|been|being|currently)\s+)*(?:fixed|repaired|restored|working|functioning|operational)\b", '', clean, flags=re.I)
     return clean
