@@ -107,7 +107,7 @@ def test_ensure_filing_jobs_closes_superseded_open_elevator_incidents(client):
         later_closed = Incident(
             incident_id='later-closed',
             category='elevator',
-            asset=None,
+            asset='elevator_both',
             severity=5,
             status='closed',
             start_ts='2026-04-12T12:00:37Z',

@@ -20,6 +20,7 @@ from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
 from packages.incident.content_guardrails import nonreporting_content_reason
 from packages.incident.building_conditions import building_condition_presentation
+from packages.incident.rules import elevator_restoration_text
 from packages.sheets.public_elevator_observations import elevator_observation_presentation
 from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted, public_record_payload
 from packages.sheets.public_semantic_overrides import (
@@ -2253,7 +2254,7 @@ def _public_elevator_text_has_context(text: str, fallback_asset: str | None) -> 
 
 
 def _public_elevator_text_is_working_status(text: str) -> bool:
-    clean = _clean_text(text)
+    clean = elevator_restoration_text(_clean_text(text))
     if not clean:
         return False
     if _public_elevator_text_is_reduced_service(clean):

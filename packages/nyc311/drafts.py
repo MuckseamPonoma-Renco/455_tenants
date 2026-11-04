@@ -3,6 +3,7 @@ import os
 import re
 from zoneinfo import ZoneInfo
 from sqlalchemy import select
+from sqlalchemy.orm import object_session
 from packages.db import Incident, RawMessage, get_session
 from packages.local_env import load_local_env_file
 from packages.nyc311.address import canonicalize_building_address
@@ -43,8 +44,12 @@ def _short_description(inc: Incident) -> str:
     raw_texts: list[str] = []
     refs = [ref.strip() for ref in (inc.proof_refs or "").split(",") if ref.strip()]
     if refs:
-        with get_session() as session:
-            rows = session.scalars(select(RawMessage).where(RawMessage.message_id.in_(refs))).all()
+        attached_session = object_session(inc)
+        if attached_session is not None:
+            rows = attached_session.scalars(select(RawMessage).where(RawMessage.message_id.in_(refs))).all()
+        else:
+            with get_session() as session:
+                rows = session.scalars(select(RawMessage).where(RawMessage.message_id.in_(refs))).all()
         rows = sorted(rows, key=lambda row: int(row.ts_epoch or 0), reverse=True)
         raw_texts = [" ".join((row.text or "").split()).lower() for row in rows if row.text]
 
@@ -52,6 +57,10 @@ def _short_description(inc: Incident) -> str:
     # symptom. Prefer the retained source messages whenever available.
     text = " ".join(raw_texts).strip() if raw_texts else summary
 
+    if re.search(r"\b(?:cannot|can['’]?t)\s+be\s+called\s+from\s+(?:the\s+)?basement\b|\bbasement\s+call\s+button\b.{0,30}\b(?:fail|fails|not\s+working)\b", text):
+        return f"{subject} does not respond to the basement call button."
+    if re.search(r"\b(?:not|doesn['’]?t|didn['’]?t|won['’]?t|wouldn['’]?t)\s+(?:go|going|stop)\b.{0,35}\b(?:basement|b)\b", text):
+        return f"{subject} fails to serve the basement."
     if "stopping on each floor" in text or "stopping on every floor" in text:
         return f"{subject} stopping on every floor."
     if "trapped a passenger" in text and "stuck" in text:
@@ -96,7 +105,7 @@ def build_filing_draft(inc: Incident) -> FilingDraft | None:
     description = _short_description(inc)
     issue_title = "defective operation" if any(
         token in description.casefold()
-        for token in ("clunk", "bounced", "opened slowly", "operating roughly")
+        for token in ("clunk", "bounced", "opened slowly", "operating roughly", "basement")
     ) else "outage"
 
     payload = {

@@ -407,3 +407,42 @@ def test_reconciliation_resolves_issue_nonissue_alias_conflict(client):
         assert decision.is_issue is True
         assert decision.event_type == "restore"
         assert decision.incident_id == incident.incident_id
+
+
+def test_export_annotations_do_not_duplicate_identical_caption_or_edit():
+    assert cross_source_text_signature('South elevator is out <This message was edited>') == cross_source_text_signature('South elevator is out')
+    assert cross_source_text_signature('Both are not working again image omitted') == cross_source_text_signature('Both are not working again')
+    assert cross_source_text_signature('image omitted') == 'image omitted'
+    assert cross_source_text_signature('South elevator is out <This message was edited>') != cross_source_text_signature('North elevator is out')
+
+
+def test_one_duplicate_does_not_merge_distinct_episode_or_unknown_submission(client):
+    from packages.incident.cross_source_reconciliation import _reconcile_pair
+    with get_session() as s:
+        s.add_all([_incident('canonical',start=1784331000,proof_refs='live'),_incident('distinct',start=1784331000,proof_refs='archive,other')])
+        s.add_all([_raw('archive',source='zip_import',text='Both elevators are down image omitted',ts_epoch=1784331000,sender='Tenant'),_raw('live',source='whatsapp_web',text='Both elevators are down',ts_epoch=1784331000,sender='Tenant'),_raw('other',source='whatsapp_web',text='North elevator was stuck earlier.',ts_epoch=1784330900,sender='Witness')])
+        s.flush()
+        s.add_all([MessageDecision(message_id='archive',incident_id='distinct',is_issue=True,category='elevator'),MessageDecision(message_id='live',incident_id='canonical',is_issue=True,category='elevator'),MessageDecision(message_id='other',incident_id='distinct',is_issue=True,category='elevator')])
+        # Prefer the live canonical row while retaining the distinct history.
+        s.add(ServiceRequestCase(service_request_number='311-99999999',incident_id='canonical',status='In Progress'))
+        s.add(FilingJob(incident_id='distinct',dedupe_key='distinct-job',state='submission_unknown',attempts=1))
+        s.commit()
+        assert not find_exact_cross_source_duplicate_pairs(s)
+        pair=find_exact_cross_source_duplicate_pairs(s, normalize_export_annotations=True)[0]
+        result=_reconcile_pair(s,pair)
+        assert result.moved_filing_jobs==0
+        assert s.query(FilingJob).one().incident_id=='distinct'
+        assert s.query(FilingJob).one().state=='submission_unknown'
+        assert s.get(MessageDecision,'other').incident_id=='distinct'
+        assert s.get(Incident,'distinct').report_count==1
+
+
+
+def test_completed_secondary_model_review_survives_manual_correction():
+    import json
+    from packages.incident.cross_source_reconciliation import completed_model_review
+    d=MessageDecision(message_id='reviewed-source',chosen_source='review',llm_json=json.dumps({'review_status':'error'}),final_json=json.dumps({'review_status':'completed','is_issue':True}))
+    receipt=completed_model_review(d)
+    assert receipt['review_status']=='completed'
+    assert receipt['review_stage']=='secondary'
+    assert receipt['review_source_message_id']=='reviewed-source'

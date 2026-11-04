@@ -10,7 +10,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.orm import object_session
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase, get_session
 from packages.incident.dedupe import dedupe_open_elevator_continuations
-from packages.incident.rules import classify_rules
+from packages.incident.rules import classify_rules, CONTEXTUAL_CONFIRMED_OUTAGE, declarative_elevator_text
 from packages.incident.reconcile import (
     close_superseded_open_elevator_incidents,
     repair_unbounded_elevator_restore_attachments,
@@ -125,7 +125,23 @@ def _classifier_says_actionable_elevator(inc: Incident) -> bool | None:
         return None
     now = datetime.now(timezone.utc).timestamp()
     max_age_hours = _env_int("AUTO_FILE_MAX_INCIDENT_AGE_HOURS", 168)
+    # A later observation of a working car contradicts an older total outage.
+    # Preserve its history, but never file "both down" from that stale state.
+    partial_after = 0
+    if inc.asset == "elevator_both":
+        from packages.incident.rules import PARTIAL_SERVICE
+        for observation in decisions:
+            raw_observation = session.get(RawMessage, observation.message_id)
+            if raw_observation is None:
+                continue
+            if observation.event_type == "restore" or (observation.event_type == "status_update" and PARTIAL_SERVICE.search(raw_observation.text or "")):
+                partial_after = max(partial_after, int(raw_observation.ts_epoch or 0))
     for row in decisions:
+        try:
+            if json.loads(row.final_json or "{}").get("historical_audit") is True:
+                continue
+        except (ValueError, TypeError, AttributeError):
+            continue
         if (row.event_type or "new_issue") not in ACTIONABLE_ELEVATOR_EVENTS:
             continue
         raw = session.get(RawMessage, row.message_id)
@@ -134,15 +150,21 @@ def _classifier_says_actionable_elevator(inc: Incident) -> bool | None:
         # A recent discussion must not make an old outage fresh again.
         if max_age_hours > 0 and (raw.ts_epoch is None or not 0 <= now - raw.ts_epoch <= max_age_hours * 3600):
             continue
+        if partial_after and int(raw.ts_epoch or 0) <= partial_after:
+            continue
         current_rules = classify_rules(raw.text or "")
         if current_rules.get("nonreport_reason") or current_rules.get("kind") == "restore" or current_rules.get("event_type") == "restore":
             continue
         if current_rules.get("is_issue") and current_rules.get("category") != "elevator":
             continue
+        if (current_rules.get("is_issue") and current_rules.get("category") == "elevator"
+                and current_rules.get("event_type") in ACTIONABLE_ELEVATOR_EVENTS):
+            return True
         # The classifier resolves the topic and context, but the source must
         # still contain a concrete condition. Never qualify invented symptoms
         # merely because they appear in a model summary or confidence score.
-        if ELEVATOR_ACTIONABLE_COMPLAINT_RE.search(raw.text or ""):
+        if (ELEVATOR_ACTIONABLE_COMPLAINT_RE.search(raw.text or "")
+                or CONTEXTUAL_CONFIRMED_OUTAGE.search(declarative_elevator_text(raw.text or ""))):
             return True
     return False
 

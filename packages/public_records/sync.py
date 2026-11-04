@@ -397,14 +397,18 @@ def upsert_public_record(
     return existing, "changed"
 
 
-def sync_public_records(session, *, baseline: bool | None = None) -> dict[str, Any]:
+def sync_public_records(session, *, baseline: bool | None = None, fetched_rows=None) -> dict[str, Any]:
+    # Complete slow external requests before this function opens a database
+    # transaction. A source timeout must not idle a transaction until Neon
+    # terminates the connection.
+    if fetched_rows is None:
+        fetched_rows = fetch_public_record_rows()
     counts = {"fetched": 0, "created": 0, "baseline_created": 0, "changed": 0, "unchanged": 0, "source_errors": 0}
     seen: set[tuple[str, str, str]] = set()
     existing_sources = {
         source_system
         for (source_system,) in session.execute(select(PublicRecordWatch.source_system).distinct()).all()
     }
-    fetched_rows = fetch_public_record_rows()
     fetch_errors = list(fetched_rows.errors if isinstance(fetched_rows, PublicRecordFetchBatch) else LAST_FETCH_ERRORS)
     counts["source_errors"] = len(fetch_errors)
     _sync_source_error_action(session, fetch_errors)
@@ -437,8 +441,9 @@ def sync_public_records(session, *, baseline: bool | None = None) -> dict[str, A
 
 
 def sync_replacement_watchdog(session) -> dict[str, Any]:
+    fetched_rows = fetch_public_record_rows()
     project = ensure_default_project(session)
-    counts = sync_public_records(session)
+    counts = sync_public_records(session, fetched_rows=fetched_rows)
     actions = evaluate_project_rules(session)
     progress = _filing_progress(_latest_replacement_filing(session.scalars(select(PublicRecordWatch)).all()))
     for key in ("phase", "current_bottleneck", "next_expected_record"):

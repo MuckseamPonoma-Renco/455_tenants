@@ -15,6 +15,12 @@ from packages.incident.rules import (
     classify_rules,
     explicit_elevator_asset,
     explicit_laundry_asset,
+    ELEVATOR_FUNCTIONAL_DEFECT,
+    PARTIAL_SERVICE,
+    CONTEXTUAL_CONFIRMED_OUTAGE,
+    elevator_restoration_text,
+    BACK,
+    FLOOR_SERVICE_NORMAL,
     text_explicitly_supports_category,
 )
 from packages.llm.classifier import llm_classify_message, llm_review_decision
@@ -22,6 +28,7 @@ from packages.llm.triage import should_call_llm
 from packages.nyc311.planner import ensure_filing_job_for_incident, incident_is_auto_eligible
 from packages.nyc311.tracker import attach_manual_cases_from_text
 from packages.whatsapp.parser import is_media_placeholder_text
+from packages.incident.building_conditions import building_condition_presentation
 
 OTHER_WINDOW_SECONDS = int(os.environ.get("OTHER_WINDOW_SECONDS", "21600"))
 ELEVATOR_SILENCE_GAP_SECONDS = int(os.environ.get("ELEVATOR_SILENCE_GAP_SECONDS", "7200"))
@@ -57,7 +64,7 @@ SOURCE_CONTACT_LINE_RE = re.compile(r"^~?\s*[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.
 SOURCE_PERSON_ACTION_RE = re.compile(
     r"(?:\s+(?:and|,)?\s*)?\b(?:has\s+)?"
     r"(?:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
-    r"(?:it\s+)?(?:to\s+)?[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2}\b\.?",
+    r"(?:it\s+)?(?:to\s+)?(?!(?:from|by|at|on|in|for|the|a|an|it|us|them|me|this|that)\b)[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2}\b\.?",
     re.IGNORECASE,
 )
 SOURCE_LEADING_PERSON_RE = re.compile(
@@ -121,13 +128,14 @@ CONTEXTUAL_ELEVATOR_RESTORE_RE = re.compile(
     r"|\bboth\s+work\s+now\b"
     r"|\b(?:north\s*(?:&|and)\s*south|south\s*(?:&|and)\s*north)\s+(?:elevators?|lifts?)?\s*(?:are\s+)?(?:working|functioning|operational|running)\b"
     r"|\b(?:north|south)(?:\s+(?:elevator|lift|one))?\s+(?:is\s+)?back\s+in\s+service\b"
+    r"|\b(?:north|south)(?:\s+(?:elevator|lift|one))?\s+(?:is\s+)?working\s+now\b"
     r"|\brode\s+(?:the\s+)?(?:north|south)(?:\s+(?:elevator|lift|one))?[^.!?\n]{0,40}\bseemed\s+fine\b"
     r"|\b(?:i\s+)?(?:just\s+)?heard\s+it\s+moving\b"
     r"|\bit(?:'s|\s+is)\s+moving\b",
     re.IGNORECASE,
 )
 CONTEXTUAL_ELEVATOR_OUTAGE_RE = re.compile(
-    r"\b(?:it|they|north|south|one|both)\b[^.!?\n]{0,80}\b(?:was|were|is|are|still|again)?\s*(?:out|down|dead|stuck|not\s+working)\b"
+    r"\b(?:it|they|north|south|one|other|both)\s+(?:(?:was|were|is|are|still|again|both|also|currently|now)\s+)*(?:out|down|dead|stuck|not\s+working)\b"
     r"|\b(?:no|zero)\s+(?:elevators?|lifts?)\b"
     r"|\b(?:mechanic|mechanics)\b[^.!?\n]{0,120}\b(?:called|not\s+arrived|not\s+here|arriv(?:ed|ing)|coming|in\s+the\s+building|on\s+site)\b"
     r"|\b(?:excessive\s+heat|mechanical\s+room|heat\s+in\s+the\s+shaft)\b"
@@ -836,6 +844,11 @@ def _truncate_source_summary(value: str, *, limit: int = 320) -> str:
 
 
 def _fact_safe_summary(text: str | None, choice: dict | None, rules: dict | None) -> str:
+    condition = building_condition_presentation(text or "")
+    if condition and condition.get("kind") in {"stairwell_smoke", "smoke_report"}:
+        # Keep personal health disclosures in the private source, not the
+        # generated environmental-condition summary.
+        return condition["summary"]
     source_summary = _source_summary_from_text(text)
     elevator_fragment_summary = _source_elevator_only_fragment_summary(text, source_summary, choice)
     if elevator_fragment_summary:
@@ -982,7 +995,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
         and not text_explicitly_supports_category(text, "elevator")
     ):
         return None
-    if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(text):
+    if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(elevator_restoration_text(text)):
         extended_restore_context = _has_recent_same_chat_elevator_context(
             session,
             rm,
@@ -1020,7 +1033,19 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
         if not extended_context or not CONTEXTUAL_LONG_LOOKBACK_RE.search(text):
             return None
 
+    if re.search(r"\b(?:it|elevator|lift)\s+was\s+going\s+to\s+the\s+basement\b", text, re.I) and re.search(r"\b(?:I\s+took|today|laundry)\b", text, re.I):
+        return {"is_issue": True, "signal_type": "report", "category": "elevator", "asset": explicit_elevator_asset(text),
+                "event_type": "status_update", "severity": 2, "confidence": 85,
+                "title": "Basement ride observation", "summary": "A tenant reported successful rides to the basement; floor-call operation was not confirmed.",
+                "refers_to_open_incident": True, "close_incident": False, "needs_review": False,
+                "preserve_issue": True, "preserve_event_type": True}
+
     mechanism_update = bool(CONTEXTUAL_ELEVATOR_MECHANISM_RE.search(text))
+    functional_defect = bool(ELEVATOR_FUNCTIONAL_DEFECT.search(text)) and not re.search(r"\b(?:I|we|you)\s+(?:can['’]?t|cannot|couldn['’]?t)\s+go\b", text, re.I)
+    confirmed_outage = bool(CONTEXTUAL_CONFIRMED_OUTAGE.search(text)) and not (
+        re.search(r"\b(?:last\s+night|yesterday|earlier)\b", text, re.I)
+        and not CURRENT_STATE_REFERENCE.search(text)
+    )
     # Resolve this narrow fragment only with same-chat elevator context. Mere
     # mechanic presence or a prediction of repair is not a fresh outage report.
     reduced_service_report = bool(re.fullmatch(
@@ -1032,7 +1057,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
         CONTEXTUAL_CONFIRMATION_RE.search(text)
         and _has_recent_same_chat_elevator_context(session, rm, window_seconds=15 * 60)
     )
-    if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text) or mechanism_update or confirmation_update:
+    if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text) or mechanism_update or confirmation_update or functional_defect or confirmed_outage:
         continuing_outage = bool(
             re.search(
                 r"\b(?:still|again)\s+(?:out|down|dead|stuck|not\s+working)\b"
@@ -1046,7 +1071,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             "signal_type": "report",
             "category": "elevator",
             "asset": explicit_elevator_asset(text),
-            "event_type": "outage" if reduced_service_report else "still_out" if continuing_outage else "status_update",
+            "event_type": "new_issue" if functional_defect else "still_out" if continuing_outage else "outage" if reduced_service_report or confirmed_outage else "status_update",
             "severity": 4,
             "confidence": 78,
             "title": "Elevator outage update",
@@ -1449,6 +1474,11 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             return review_choice, rules, llm_choice, "review_rule_state" if rule_state_locked else "review"
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
+    if llm_choice and llm_choice.get("review_status") == "error":
+        chosen = dict(chosen or llm_choice)
+        chosen["needs_review"] = True
+        if not rule_choice:
+            chosen_source = "model_review_error"
     chosen = _normalize_explicit_asset_from_text(rm.text or "", _normalize_choice(chosen))
     guarded_choice, guarded_source = _unsupported_other_issue_guardrail(rm.text or "", rule_choice, chosen)
     if guarded_choice is not None:
@@ -1502,6 +1532,9 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
         if existing_decision and existing_decision.incident_id
         else None
     )
+    replacing_closure = bool(existing_decision and existing_decision.event_type == "restore"
+                             and existing_incident and existing_incident.status == "closed"
+                             and existing_incident.end_ts_epoch == rm.ts_epoch)
     if is_media_placeholder_text(rm.text):
         _record_decision(
             session,
@@ -1535,10 +1568,36 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
         chosen["needs_review"] = needs_review
         close_incident = bool(chosen.get("close_incident")) or event_type == "restore"
 
+        unsupported_restore = bool(
+            (CONTEXTUAL_CONFIRMED_OUTAGE.search(rm.text or "")
+             or ELEVATOR_FUNCTIONAL_DEFECT.search(rm.text or "")
+             or re.search(r"\b(?:not|never|hasn['’]?t)\s+(?:been\s+)?(?:fixed|repaired)\b", rm.text or "", re.I))
+            and not BACK.search(elevator_restoration_text(rm.text or ""))
+            and not FLOOR_SERVICE_NORMAL.search(rm.text or ""))
+        if cat == "elevator" and close_incident and unsupported_restore:
+            event_type = chosen["event_type"] = "new_issue" if ELEVATOR_FUNCTIONAL_DEFECT.search(rm.text or "") else "status_update"
+            close_incident = chosen["close_incident"] = False
+            chosen["needs_review"] = needs_review = True
+
+        if cat == "elevator" and close_incident and (
+                (PARTIAL_SERVICE.search(rm.text or "") and not asset)
+                or (not asset and re.search(r"\b(?:left|right)\s+side\b", rm.text or "", re.I))):
+            event_type = chosen["event_type"] = "status_update"
+            close_incident = chosen["close_incident"] = False
+            chosen["needs_review"] = needs_review = True
+
+        if cat == "elevator" and replacing_closure and not close_incident:
+            existing_incident.status = "open"
+            existing_incident.end_ts = existing_incident.end_ts_epoch = None
+
         if cat == "elevator":
             if close_incident:
                 def eligible_for_restore(row: Incident) -> bool:
                     if row.category != "elevator":
+                        return False
+                    if asset != "elevator_both" and row.asset not in {asset, "elevator_both" if asset else None}:
+                        return False
+                    if asset is None and row.asset is not None:
                         return False
                     if rm.ts_epoch is None or row.last_ts_epoch is None:
                         return True
@@ -1580,9 +1639,14 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
                             asset=asset,
                             event_type=event_type,
                         )
-                        candidate.status = "closed"
-                        candidate.end_ts = rm.ts_iso
-                        candidate.end_ts_epoch = rm.ts_epoch
+                        if asset == "elevator_both" or candidate.asset == asset:
+                            candidate.status = "closed"
+                            candidate.end_ts = rm.ts_iso
+                            candidate.end_ts_epoch = rm.ts_epoch
+                        else:
+                            candidate.status = "open"
+                            candidate.end_ts = candidate.end_ts_epoch = None
+                            candidate.title = "Elevator service partly restored"
                     incident = candidates[0]
             else:
                 query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")

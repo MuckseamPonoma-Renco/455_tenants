@@ -7,6 +7,17 @@ import re
 def building_condition_presentation(text: str) -> dict[str, str] | None:
     """Recognize a stated condition, never infer code violations or health effects."""
     clean = " ".join((text or "").split())
+    if (re.search(r"\b(?:stairs?|stairwell)\b", clean, re.I)
+            and re.search(r"\b(?:smok(?:e|ing)|cigarettes?|cigs?|butts?|ash)\b", clean, re.I)
+            and re.search(r"\b(?:standing\s+smoke|actively\s+smoking|(?:are|were|is|was)\s+smoking|filled\s+with|piles?\s+of|leaving\s+piles?)\b", clean, re.I)
+            and not re.match(r"\s*(?:if|imagine|hypothetically|can|could|should|is|are)\b", clean, re.I)):
+        debris = bool(re.search(r"\b(?:butts?|ash|litter|debris)\b", clean, re.I))
+        return {"kind": "stairwell_smoke", "label": "Stairwell smoke / debris" if debris else "Stairwell smoke",
+                "summary": "Smoke and cigarette debris were reported in the stairwell." if debris else "Smoke was reported in the stairwell."}
+    if (re.search(r"\bwhoever\s+is\s+smoking\s+on\s+\d+", clean, re.I)
+            and re.search(r"\b(?:front\s+desk|staff)\b.{0,50}\baware\b", clean, re.I)):
+        return {"kind": "smoke_report", "label": "Building smoke report",
+                "summary": "Smoking was reported on multiple floors; building staff were reportedly aware."}
     # An elevator used as a location does not make a wall/ceiling repair an
     # elevator malfunction. Keep this narrow to a stated maintenance need.
     if (re.search(r"\b(?:the|our|my)\s+(?:ceiling|walls?)\b[^.!?]{0,80}\bneeds?\s+(?:paint(?:ing)?|repaint(?:ing)?|patch(?:ing)?)\b", clean, re.I)

@@ -26,6 +26,8 @@ from packages.automation_status import (
 from packages.nyc311.portal_worker import run_portal_filing_once, release_verified_sign_in_holds
 from packages.nyc311 import session_health
 from packages.worker_jobs import full_resync_sheets, process_pending_messages, resync_replacement_watchdog, sync_311_statuses
+from packages.worker_jobs import retry_failed_model_reviews
+from packages.llm.openai_client import llm_enabled
 from scripts.audit_public_tenant_log import run_audit as run_public_tenant_log_audit
 
 
@@ -252,6 +254,8 @@ def main() -> None:
         update_watchdog_status(state="disabled", interval_seconds=0)
     next_public_tenant_log_audit_at = time.monotonic() if public_tenant_log_audit_seconds > 0 else None
     next_filing_poll_at = time.monotonic()
+    review_retry_seconds = max(60, _env_int('AUTOMATION_REVIEW_RETRY_SECONDS', 900))
+    next_review_retry_at = time.monotonic() if llm_enabled() else None
     next_session_check_at = time.monotonic() if session_health.configured() and _env_bool('AUTO_FILE_ENABLED', False) else None
 
     while True:
@@ -290,6 +294,13 @@ def main() -> None:
                 next_filing_poll_at = time.monotonic() + filing_delay_seconds
 
             now = time.monotonic()
+            if next_review_retry_at is not None and now >= next_review_retry_at:
+                review = _run_work_step('failed model review recovery', retry_failed_model_reviews, poll_seconds=poll_seconds)
+                if review and (review.get('recovered') or not review.get('ok')):
+                    _log(f"failed model review recovery: {review}")
+                if review and review.get('queued_jobs'):
+                    next_filing_poll_at = time.monotonic()
+                next_review_retry_at = time.monotonic() + (review_retry_seconds if review and review.get('ok') else max(review_retry_seconds, 3600))
             if next_public_tenant_log_audit_at is not None and now >= next_public_tenant_log_audit_at:
                 result = _run_work_step("public Tenant Log QA", _public_tenant_log_qa, poll_seconds=poll_seconds)
                 if result is not None:

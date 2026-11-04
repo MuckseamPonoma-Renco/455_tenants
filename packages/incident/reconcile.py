@@ -22,13 +22,9 @@ class ElevatorRestoreRepairSummary:
 
 
 def _assets_compatible(open_asset: str | None, closed_asset: str | None) -> bool:
-    if open_asset == closed_asset:
-        return True
-    if open_asset in {None, "elevator_both"}:
-        return True
-    if closed_asset in {None, "elevator_both"}:
-        return True
-    return False
+    # A single working car does not establish restoration of both cars, and
+    # an unidentified restoration cannot close a known different car.
+    return closed_asset == "elevator_both" or open_asset == closed_asset
 
 
 def _normalized_text(value: str | None) -> str:

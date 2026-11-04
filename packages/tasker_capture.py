@@ -142,8 +142,13 @@ def _recent_duplicate_candidates(
     return candidates.all()
 
 
-def cross_source_text_signature(text: str | None) -> str:
+def cross_source_text_signature(text: str | None, *, normalize_export_annotations: bool = True) -> str:
     clean = _clean(text).translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'}))
+    # Export UI annotations are not part of a caption or an edited message.
+    # Never erase the underlying edited wording or a media-only placeholder.
+    if normalize_export_annotations:
+        clean = re.sub(r"\s*<This message was edited>\s*$", "", clean, flags=re.I)
+        clean = re.sub(r"(?<=\S)\s+(?:image|video|audio|sticker|document) omitted\s*$", "", clean, flags=re.I)
     # Live capture can omit a trailing reaction emoji that the exported archive
     # preserves. Ignore pictographic symbols for cross-source identity while
     # retaining ordinary punctuation and text.

@@ -133,8 +133,24 @@ def nonreporting_content_reason(text: str | None) -> str | None:
         and not NEGATED_ELEVATOR_PROBLEM_RE.search(part)
         for part in clauses
     )
+    if (re.match(r"\s*(?:down\s+to|willing\s+to|let['’]?s)\s+report\b", clean, re.I)
+            and not independent_current_report and not OBSERVED_CURRENT_HAZARD_RE.search(clean)):
+        return "general_advisory"
+    if (re.match(r"\s*managing\s+broken\s+elevators?", clean, re.I)
+            and re.search(r"\b(?:maintenance\s+hours|put\s+up\s+no\s+smoking\s+signs)\b", clean, re.I)
+            and not independent_current_report):
+        return "general_advisory"
     if PURE_SOCIAL_RE.fullmatch(clean):
         return "social_message"
+    if (re.search(r"\b(?:elevators?|lifts?)\b", clean, re.I)
+            and re.match(r"\s*(?:if|hypothetically|imagine)\b", clean, re.I)
+            and not independent_current_report):
+        return "general_advisory"
+    if (re.search(r"\b(?:elevators?|lifts?)\b", clean, re.I)
+            and re.search(r"\b(?:tomorrow|next\s+(?:week|month)|scheduled)\b", clean, re.I)
+            and not independent_current_report
+            and not re.search(r"\b(?:now|today|currently)\b", clean, re.I)):
+        return "unconfirmed_condition"
     if EXTERNAL_ELEVATOR_REPORT_RE.search(clean):
         local_parts = [part for part in clauses if not EXTERNAL_ELEVATOR_REPORT_RE.search(part)]
         if not any(CURRENT_BUILDING_CONDITION_RE.search(part) for part in local_parts):

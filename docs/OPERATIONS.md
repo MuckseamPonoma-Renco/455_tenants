@@ -71,6 +71,32 @@ reviews remain errors rather than being accepted as valid output.
 
 Historical archive-processing and reprocessing paths suppress new filing jobs; weekly audit and cloud recovery runners disable automatic filing for their historical processing. Keep filing disabled and the portal worker and automation daemon stopped during review/import. Later queue operations can still consider eligible incidents, and an age threshold alone is not a replay safeguard.
 
+### Failed-review recovery and audited history repairs
+
+The automation daemon retries recent failed model reviews every 15 minutes
+(`AUTOMATION_REVIEW_RETRY_SECONDS`, minimum 60 seconds). It shares the export
+pipeline lock, preserves completed secondary reviews, and stops the batch on a
+provider failure with at least a one-hour backoff. Historical and archive
+reprocessing never creates filing jobs. Only a recovered live report no older
+than 24 hours may enter normal eligibility, and an existing filing or uncertain
+submission remains protected.
+
+A later report of one working elevator prevents an older total-outage source
+from authorizing a new “both down” complaint. A named car's restoration cannot
+close the other car or a combined outage. Unmapped left/right observations stay
+unresolved. Export annotation normalization applies to new intake; broader bulk
+historical matching requires an explicitly scoped audit.
+
+For a reviewed data repair, `scripts/apply_audited_repair.py --manifest PATH`
+validates exact before/after rows without writing. Applying requires `--apply`
+and the approved manifest's `--expected-sha256`. Keep the private source snapshot
+and manifest for rollback, use the export/automation maintenance locks, and
+validate again immediately before applying. The patch cannot modify filing jobs,
+service-request cases, or watchdog actions. It aborts on changed rows. Publish
+the corresponding source-bound public overrides before the next Sheet refresh,
+and verify rendered output and live readback separately. An offline rendering
+or stored filing job is not evidence of a live Sheet update or a city receipt.
+
 ## Operator views
 
 Google Sheets is the primary day-to-day operator interface. The database remains the source of truth; these tabs are generated output, not a two-way command interface.

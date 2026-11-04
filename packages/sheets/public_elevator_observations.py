@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from packages.incident.rules import declarative_elevator_text, ELEVATOR_FUNCTIONAL_DEFECT
 
 
 def _result(label: str, summary: str, *, include: bool = True) -> dict[str, object]:
@@ -11,6 +12,16 @@ def _result(label: str, summary: str, *, include: bool = True) -> dict[str, obje
 def elevator_observation_presentation(text: str) -> dict[str, object] | None:
     """Use only explicit text; the caller establishes a linked elevator context."""
     lowered = " ".join((text or "").split()).casefold()
+    asserted = declarative_elevator_text(lowered)
+    asserted_sides = [side for side in ('north', 'south') if re.search(rf'\b{side}\b', asserted)]
+    subject = asserted_sides[0].title() + ' elevator' if len(asserted_sides) == 1 else 'An elevator'
+    if ELEVATOR_FUNCTIONAL_DEFECT.search(asserted):
+        if re.search(r"\b(?:cannot|can['’]?t|couldn['’]?t)\s+be\s+called\s+from\s+(?:the\s+)?(?:basement|b)\b", asserted):
+            return _result('Elevator basement-call problem', f'{subject} was reported unable to be called from the basement.')
+        if re.search(r"\b(?:basement|b)\b", asserted):
+            return _result('Elevator basement-service problem', f'{subject} was reported failing to serve the basement.')
+        if re.search(r'\b(?:random\s+floors?|skip(?:s|ped|ping)?\s+(?:the\s+)?lobby)\b', asserted):
+            return _result('Elevator floor-service problem', f'{subject} was reported travelling to unintended floors or skipping the lobby.')
     uncertain = re.compile(r"\b(?:maybe|may|might|possibly|possible|think|seems?|appears?)\b")
     side_names = {side for side in ("north", "south") if re.search(rf"\b{side}\b", lowered)}
     # Questions and silence alone do not establish an outage.

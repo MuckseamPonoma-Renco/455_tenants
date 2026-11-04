@@ -957,12 +957,12 @@ def test_reviewed_export_guardrails_override_model_drift(client, monkeypatch):
     with get_session() as session:
         decisions = [session.get(MessageDecision, message_id) for message_id in message_ids]
 
-    assert decisions[1].event_type == 'status_update'
+    assert decisions[1].event_type == 'outage'
     assert decisions[2].event_type == 'status_update'
     assert json.loads(decisions[2].final_json or '{}')['title'] == 'Elevator working update'
-    assert decisions[3].event_type == 'status_update'
-    assert decisions[5].event_type == 'status_update'
-    assert decisions[6].event_type == 'status_update'
+    assert decisions[3].event_type == 'outage'
+    assert decisions[5].event_type == 'outage'
+    assert decisions[6].event_type == 'new_issue'
     assert decisions[7].is_issue is True
     assert decisions[7].category == 'security_access'
     assert decisions[7].event_type == 'new_issue'
@@ -1604,7 +1604,7 @@ def test_llm_assist_can_promote_issue_and_logs_decision(client, monkeypatch):
         incident = session.query(Incident).one()
         decision = session.query(MessageDecision).one()
         assert incident.category == 'elevator'
-        assert decision.chosen_source in {'llm', 'hybrid'}
+        assert decision.chosen_source in {'llm', 'hybrid', 'hybrid_rule_state'}
         assert decision.is_issue is True
 
 
