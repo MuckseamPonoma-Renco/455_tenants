@@ -67,8 +67,12 @@ class _ReconciliationIndex:
     job_counts_by_incident_id: dict[str, int]
 
 
-def find_exact_cross_source_duplicate_pairs(session) -> list[CrossSourceDuplicatePair]:
-    """Pair each archive/live alias once by exact normalized text and time."""
+def find_exact_cross_source_duplicate_pairs(session, *, normalize_export_annotations: bool = False) -> list[CrossSourceDuplicatePair]:
+    """Pair exact aliases. Broader annotation cleanup requires a scoped audit.
+
+    New intake normalizes annotations, but bulk historical reconciliation keeps
+    its old boundary so installation cannot rewrite unaudited older history.
+    """
     window = cross_source_duplicate_window_seconds()
     if window <= 0:
         return []
@@ -82,7 +86,7 @@ def find_exact_cross_source_duplicate_pairs(session) -> list[CrossSourceDuplicat
     archives: dict[str, list[RawMessage]] = {}
     live: dict[str, list[RawMessage]] = {}
     for row in rows:
-        signature = cross_source_text_signature(row.text)
+        signature = cross_source_text_signature(row.text, normalize_export_annotations=normalize_export_annotations)
         if not is_cross_source_duplicate_candidate(row.text):
             continue
         target = archives if row.source in CROSS_SOURCE_DUPLICATE_SOURCES else live
@@ -285,14 +289,38 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
 
 
-def _recompute_incident_materialization(session, incident: Incident) -> None:
+def _recompute_incident_materialization(session, incident: Incident, *, rebuild_summary: bool = False) -> None:
     rows = session.execute(
         select(MessageDecision, RawMessage)
         .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
         .where(MessageDecision.incident_id == incident.incident_id)
         .order_by(RawMessage.ts_epoch, RawMessage.message_id)
     ).all()
-    issue_rows = [(decision, raw) for decision, raw in rows if decision.is_issue]
+    import json
+    def counted(decision):
+        if not decision.is_issue:
+            return False
+        try:
+            return not json.loads(decision.final_json or '{}').get('alias_of')
+        except (ValueError,TypeError,AttributeError):
+            return True
+    issue_rows = [(decision, raw) for decision, raw in rows if counted(decision)]
+    if rebuild_summary:
+        import json
+        from packages.incident.extractor import _fact_safe_summary
+        summaries = []
+        for decision, raw in issue_rows:
+            try:
+                choice = json.loads(decision.final_json or "{}")
+                rules = json.loads(decision.rules_json or "{}")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(choice, dict) or not isinstance(rules, dict):
+                continue
+            summary = _fact_safe_summary(raw.text, choice, rules)
+            if summary and summary not in summaries:
+                summaries.append(summary)
+        incident.summary = " | ".join(summaries)[-2000:]
     incident.report_count = len(issue_rows)
 
     session.query(IncidentWitness).filter(IncidentWitness.incident_id == incident.incident_id).delete(
@@ -321,7 +349,26 @@ def _recompute_incident_materialization(session, incident: Incident) -> None:
     incident.updated_at = _now_iso()
 
 
+def completed_model_review(decision: MessageDecision | None) -> dict | None:
+    """Retain an actual completed model receipt when canonicalizing aliases."""
+    import json
+    if decision is None:
+        return None
+    try:
+        primary = json.loads(decision.llm_json or "{}")
+        final = json.loads(decision.final_json or "{}")
+    except (ValueError, TypeError):
+        return None
+    if isinstance(primary, dict) and primary.get("review_status") == "completed":
+        return primary
+    if (isinstance(final, dict) and final.get("review_status") == "completed"
+            and str(decision.chosen_source or "").startswith("review")):
+        return {**final, "review_stage": "secondary", "review_source_message_id": decision.message_id}
+    return None
+
+
 def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRow | None:
+    from packages.incident import source_observation as observations
     index = _build_index(session, [pair])
     archive = index.raw_by_id.get(pair.archive_message_id)
     live = index.raw_by_id.get(pair.live_message_id)
@@ -329,6 +376,8 @@ def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRo
         return None
 
     canonical, duplicate = _pick_canonical_raw(index, archive, live)
+    if observations.required() and not observations.alias_matches(duplicate,canonical):
+        return None
     canonical_decision = _decision(index, canonical)
     duplicate_decision = _decision(index, duplicate)
     canonical_incident = _incident_for_decision(index, canonical_decision)
@@ -354,6 +403,14 @@ def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRo
         canonical_incident is not None
         and duplicate_incident is not None
         and canonical_incident.incident_id != duplicate_incident.incident_id
+        and not observations.required()
+        # A duplicate message is not proof that two whole incident histories
+        # are duplicates. Keep other reports and their filing receipts separate.
+        and session.scalar(select(MessageDecision.message_id).where(
+            MessageDecision.incident_id == duplicate_incident.incident_id,
+            MessageDecision.message_id != duplicate.message_id,
+            MessageDecision.is_issue.is_(True),
+        ).limit(1)) is None
     ):
         row.moved_service_cases, row.moved_filing_jobs, row.moved_watchdog_actions = _move_incident_references(
             session,
@@ -361,6 +418,42 @@ def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRo
             canonical_incident_id=canonical_incident.incident_id,
             duplicate_message_id=duplicate.message_id,
         )
+
+    if canonical_decision is not None and completed_model_review(canonical_decision) is None:
+        completed = completed_model_review(duplicate_decision)
+        if completed is not None:
+            import json
+            canonical_decision.llm_json = json.dumps({**completed, "review_source_message_id": duplicate.message_id})
+
+    if observations.required():
+        import json
+        # Keep immutable proof IDs, including those named by already submitted
+        # jobs. Identity reconciliation must not erase filing evidence.
+        merged = merge_attachment_manifests(canonical.attachments, duplicate.attachments)
+        if merged:
+            canonical.attachments = merged
+        if duplicate_decision is not None:
+            final = json.loads(duplicate_decision.final_json or '{}')
+            final['alias_of'] = canonical.message_id
+            if isinstance(final.get('observation'),dict):
+                final['observation']['source_identity'] = canonical.message_id
+            duplicate_decision.final_json = json.dumps(final)
+        if canonical_decision is not None:
+            final = json.loads(canonical_decision.final_json or '{}')
+            if isinstance(final.get('observation'),dict):
+                final['observation']['source_identity'] = canonical.message_id
+            canonical_decision.final_json = json.dumps(final)
+            if observations.from_decision(canonical_decision,canonical) is None:
+                final['source_review_pending']=True
+                canonical_decision.needs_review=True
+                canonical_decision.auto_file_candidate=False
+                canonical_decision.final_json=json.dumps(final)
+        session.flush()
+        for incident in (canonical_incident,duplicate_incident):
+            if incident is not None:
+                _recompute_incident_materialization(session,incident)
+        row.action = 'reconciled_evidence_retained'
+        return row
 
     if duplicate_decision is not None:
         session.delete(duplicate_decision)
@@ -385,6 +478,9 @@ def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRo
             if stale is not None:
                 session.delete(stale)
 
+    if duplicate_incident is not None and duplicate_incident.incident_id != row.canonical_incident_id:
+        if session.get(Incident, duplicate_incident.incident_id) is not None:
+            _recompute_incident_materialization(session, duplicate_incident)
     if canonical_incident is not None:
         _recompute_incident_materialization(session, canonical_incident)
     return row

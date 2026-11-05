@@ -108,3 +108,16 @@ def test_session_probe_schedule_and_short_failure_retry(monkeypatch):
     assert checked == [0, 1800, 2100]
     assert released == [0, 2100]
     assert filings == [0, 900, 1800]
+
+
+def test_failed_review_recovery_is_periodic_and_backs_off_errors(monkeypatch):
+    calls=[]
+    states=iter([True,False,True])
+    monkeypatch.setattr(automation,'llm_enabled',lambda:True)
+    monkeypatch.setattr(automation.session_health,'configured',lambda:False)
+    def retry():
+        calls.append(automation.time.monotonic())
+        return {'ok':next(states,True),'recovered':0,'queued_jobs':0}
+    monkeypatch.setattr(automation,'retry_failed_model_reviews',retry)
+    _run_loop(monkeypatch,filing_results=[],duration=4560)
+    assert calls==[0,900,4500]

@@ -15,13 +15,21 @@ from packages.incident.rules import (
     classify_rules,
     explicit_elevator_asset,
     explicit_laundry_asset,
+    ELEVATOR_FUNCTIONAL_DEFECT,
+    PARTIAL_SERVICE,
+    CONTEXTUAL_CONFIRMED_OUTAGE,
+    elevator_restoration_text,
+    BACK,
+    FLOOR_SERVICE_NORMAL,
     text_explicitly_supports_category,
 )
+from packages.incident import source_observation as observations
 from packages.llm.classifier import llm_classify_message, llm_review_decision
 from packages.llm.triage import should_call_llm
 from packages.nyc311.planner import ensure_filing_job_for_incident, incident_is_auto_eligible
 from packages.nyc311.tracker import attach_manual_cases_from_text
 from packages.whatsapp.parser import is_media_placeholder_text
+from packages.incident.building_conditions import building_condition_presentation
 
 OTHER_WINDOW_SECONDS = int(os.environ.get("OTHER_WINDOW_SECONDS", "21600"))
 ELEVATOR_SILENCE_GAP_SECONDS = int(os.environ.get("ELEVATOR_SILENCE_GAP_SECONDS", "7200"))
@@ -57,7 +65,7 @@ SOURCE_CONTACT_LINE_RE = re.compile(r"^~?\s*[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.
 SOURCE_PERSON_ACTION_RE = re.compile(
     r"(?:\s+(?:and|,)?\s*)?\b(?:has\s+)?"
     r"(?:reported|informed|notified|told|texted|called|contacted|messaged|sent)\s+"
-    r"(?:it\s+)?(?:to\s+)?[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2}\b\.?",
+    r"(?:it\s+)?(?:to\s+)?(?!(?:from|by|at|on|in|for|the|a|an|it|us|them|me|this|that)\b)[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2}\b\.?",
     re.IGNORECASE,
 )
 SOURCE_LEADING_PERSON_RE = re.compile(
@@ -121,13 +129,14 @@ CONTEXTUAL_ELEVATOR_RESTORE_RE = re.compile(
     r"|\bboth\s+work\s+now\b"
     r"|\b(?:north\s*(?:&|and)\s*south|south\s*(?:&|and)\s*north)\s+(?:elevators?|lifts?)?\s*(?:are\s+)?(?:working|functioning|operational|running)\b"
     r"|\b(?:north|south)(?:\s+(?:elevator|lift|one))?\s+(?:is\s+)?back\s+in\s+service\b"
+    r"|\b(?:north|south)(?:\s+(?:elevator|lift|one))?\s+(?:is\s+)?working\s+now\b"
     r"|\brode\s+(?:the\s+)?(?:north|south)(?:\s+(?:elevator|lift|one))?[^.!?\n]{0,40}\bseemed\s+fine\b"
     r"|\b(?:i\s+)?(?:just\s+)?heard\s+it\s+moving\b"
     r"|\bit(?:'s|\s+is)\s+moving\b",
     re.IGNORECASE,
 )
 CONTEXTUAL_ELEVATOR_OUTAGE_RE = re.compile(
-    r"\b(?:it|they|north|south|one|both)\b[^.!?\n]{0,80}\b(?:was|were|is|are|still|again)?\s*(?:out|down|dead|stuck|not\s+working)\b"
+    r"\b(?:it|they|north|south|one|other|both)\s+(?:(?:was|were|is|are|still|again|both|also|currently|now)\s+)*(?:out|down|dead|stuck|not\s+working)\b"
     r"|\b(?:no|zero)\s+(?:elevators?|lifts?)\b"
     r"|\b(?:mechanic|mechanics)\b[^.!?\n]{0,120}\b(?:called|not\s+arrived|not\s+here|arriv(?:ed|ing)|coming|in\s+the\s+building|on\s+site)\b"
     r"|\b(?:excessive\s+heat|mechanical\s+room|heat\s+in\s+the\s+shaft)\b"
@@ -264,6 +273,9 @@ def _open_incidents_context(session, rm: RawMessage | None = None) -> list[dict]
 
 def _message_context_row(msg: RawMessage, decision: MessageDecision | None = None, *, text_limit: int = 240) -> dict:
     row = {
+        "message_id": msg.message_id,
+        "source_sha256": observations.source_hash(msg.text or ""),
+        "ts_epoch": msg.ts_epoch,
         "ts": msg.ts_iso,
         "sender": msg.sender,
         "source": msg.source,
@@ -326,7 +338,7 @@ def _recent_related_context(session, rm: RawMessage) -> list[dict]:
         .filter(RawMessage.message_id != rm.message_id)
     )
     if rm.chat_name:
-        query = query.filter(RawMessage.chat_name == rm.chat_name)
+        query = query.filter(RawMessage.chat_name.in_(observations.chat_aliases(rm.chat_name)) if observations.required() else RawMessage.chat_name == rm.chat_name)
     if rm.ts_epoch is not None:
         query = query.filter(
             RawMessage.ts_epoch.isnot(None),
@@ -360,18 +372,33 @@ def _recent_chat_context(session, rm: RawMessage) -> list[dict]:
         .filter(RawMessage.message_id != rm.message_id)
     )
     if rm.chat_name:
-        query = query.filter(RawMessage.chat_name == rm.chat_name)
+        query = query.filter(RawMessage.chat_name.in_(observations.chat_aliases(rm.chat_name)) if observations.required() else RawMessage.chat_name == rm.chat_name)
     if rm.ts_epoch is not None:
         query = query.filter(RawMessage.ts_epoch.isnot(None))
         query = query.filter(RawMessage.ts_epoch <= rm.ts_epoch)
         query = query.filter(RawMessage.ts_epoch >= int(rm.ts_epoch) - RECENT_CHAT_CONTEXT_WINDOW_SECONDS)
     rows = query.order_by(RawMessage.ts_epoch.desc().nullslast()).limit(RECENT_CHAT_CONTEXT_LIMIT).all()
     rows.reverse()
-    return [
+    result = [
         _message_context_row(row, decision)
         for row, decision in rows
         if not is_media_placeholder_text(row.text)
     ]
+    if observations.required() and rm.attachments:
+        from packages.whatsapp.media import attachment_context
+        quoted=attachment_context(rm.attachments).get('message_context',{}).get('reply_text','')
+        # Match retained messages, not an invented parent based on an incident
+        # title. Quoted UI text is a hint; the selected source is hash-checked.
+        lines=list(dict.fromkeys(line.strip() for line in quoted.splitlines() if len(line.strip())>=12))[:24]
+        if lines and rm.ts_epoch is not None:
+            parents=session.query(RawMessage,MessageDecision).outerjoin(MessageDecision,RawMessage.message_id==MessageDecision.message_id).filter(
+                RawMessage.chat_name.in_(observations.chat_aliases(rm.chat_name)),
+                RawMessage.text.in_(lines),RawMessage.ts_epoch<=rm.ts_epoch,
+                RawMessage.ts_epoch>=rm.ts_epoch-7*86400,RawMessage.message_id!=rm.message_id).order_by(RawMessage.ts_epoch.desc()).limit(3).all()
+            parent_ids={row.message_id for row,_ in parents}
+            result=[row for row in result if row.get('message_id') not in parent_ids]
+            result.extend({**_message_context_row(row,decision),'quoted_reply_parent':True} for row,decision in reversed(parents))
+    return result
 
 
 def _same_local_day(epoch_a: int | None, epoch_b: int | None) -> bool:
@@ -836,6 +863,11 @@ def _truncate_source_summary(value: str, *, limit: int = 320) -> str:
 
 
 def _fact_safe_summary(text: str | None, choice: dict | None, rules: dict | None) -> str:
+    condition = building_condition_presentation(text or "")
+    if condition and condition.get("kind") in {"stairwell_smoke", "smoke_report"}:
+        # Keep personal health disclosures in the private source, not the
+        # generated environmental-condition summary.
+        return condition["summary"]
     source_summary = _source_summary_from_text(text)
     elevator_fragment_summary = _source_elevator_only_fragment_summary(text, source_summary, choice)
     if elevator_fragment_summary:
@@ -849,6 +881,8 @@ def _fact_safe_summary(text: str | None, choice: dict | None, rules: dict | None
 
 
 def _should_use_llm(text: str, rules: dict) -> bool:
+    if observations.required():
+        return True
     mode = (LLM_MODE or "uncertain").lower().strip()
     if mode in {"", "off", "false", "0"}:
         return False
@@ -860,6 +894,8 @@ def _should_use_llm(text: str, rules: dict) -> bool:
 
 
 def _llm_reviews_every_meaningful_message() -> bool:
+    if observations.required():
+        return True
     return (LLM_MODE or "uncertain").lower().strip() in {"all", "supervised"}
 
 
@@ -982,7 +1018,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
         and not text_explicitly_supports_category(text, "elevator")
     ):
         return None
-    if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(text):
+    if CONTEXTUAL_ELEVATOR_RESTORE_RE.search(elevator_restoration_text(text)):
         extended_restore_context = _has_recent_same_chat_elevator_context(
             session,
             rm,
@@ -1020,7 +1056,19 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
         if not extended_context or not CONTEXTUAL_LONG_LOOKBACK_RE.search(text):
             return None
 
+    if re.search(r"\b(?:it|elevator|lift)\s+was\s+going\s+to\s+the\s+basement\b", text, re.I) and re.search(r"\b(?:I\s+took|today|laundry)\b", text, re.I):
+        return {"is_issue": True, "signal_type": "report", "category": "elevator", "asset": explicit_elevator_asset(text),
+                "event_type": "status_update", "severity": 2, "confidence": 85,
+                "title": "Basement ride observation", "summary": "A tenant reported successful rides to the basement; floor-call operation was not confirmed.",
+                "refers_to_open_incident": True, "close_incident": False, "needs_review": False,
+                "preserve_issue": True, "preserve_event_type": True}
+
     mechanism_update = bool(CONTEXTUAL_ELEVATOR_MECHANISM_RE.search(text))
+    functional_defect = bool(ELEVATOR_FUNCTIONAL_DEFECT.search(text)) and not re.search(r"\b(?:I|we|you)\s+(?:can['’]?t|cannot|couldn['’]?t)\s+go\b", text, re.I)
+    confirmed_outage = bool(CONTEXTUAL_CONFIRMED_OUTAGE.search(text)) and not (
+        re.search(r"\b(?:last\s+night|yesterday|earlier)\b", text, re.I)
+        and not CURRENT_STATE_REFERENCE.search(text)
+    )
     # Resolve this narrow fragment only with same-chat elevator context. Mere
     # mechanic presence or a prediction of repair is not a fresh outage report.
     reduced_service_report = bool(re.fullmatch(
@@ -1032,7 +1080,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
         CONTEXTUAL_CONFIRMATION_RE.search(text)
         and _has_recent_same_chat_elevator_context(session, rm, window_seconds=15 * 60)
     )
-    if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text) or mechanism_update or confirmation_update:
+    if CONTEXTUAL_ELEVATOR_OUTAGE_RE.search(text) or mechanism_update or confirmation_update or functional_defect or confirmed_outage:
         continuing_outage = bool(
             re.search(
                 r"\b(?:still|again)\s+(?:out|down|dead|stuck|not\s+working)\b"
@@ -1046,7 +1094,7 @@ def _contextual_elevator_followup_choice(session, rm: RawMessage, rules: dict) -
             "signal_type": "report",
             "category": "elevator",
             "asset": explicit_elevator_asset(text),
-            "event_type": "outage" if reduced_service_report else "still_out" if continuing_outage else "status_update",
+            "event_type": "new_issue" if functional_defect else "still_out" if continuing_outage else "outage" if reduced_service_report or confirmed_outage else "status_update",
             "severity": 4,
             "confidence": 78,
             "title": "Elevator outage update",
@@ -1398,6 +1446,8 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
     open_incidents = _open_incidents_context(session, rm)
     recent_related = _recent_related_context(session, rm)
     recent_chat = _recent_chat_context(session, rm)
+    if observations.required():
+        recent_chat = [*recent_chat, {'target_metadata': {'message_id':rm.message_id,'timestamp':rm.ts_iso,'epoch':rm.ts_epoch}}]
     if _should_use_llm(rm.text or "", rules):
         llm = llm_classify_message(
             rm.text or "",
@@ -1406,6 +1456,16 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             recent_chat=recent_chat,
         )
     llm_choice = _normalize_explicit_asset_from_text(rm.text or "", _normalized_llm_choice(llm))
+    if observations.required():
+        # Use the checked source interpretation throughout the pipeline. Legacy
+        # rule locks and incident-title inference must not overwrite it later.
+        if _should_request_review(rule_choice, llm_choice, llm is not None):
+            reviewed = _normalized_llm_choice(llm_review_decision(
+                rm.text or '', rule_choice, llm_choice, open_incidents=open_incidents,
+                recent_related=recent_related, recent_chat=recent_chat))
+            if reviewed and reviewed.get('review_status') == 'completed':
+                return reviewed, rules, reviewed, 'source_review'
+        return llm_choice, rules, llm_choice, 'source_model'
     forced_nonreport, forced_source = _forced_nonreport_choice(rules, llm_choice)
     if forced_nonreport is not None:
         return forced_nonreport, rules, llm_choice, forced_source or "guardrail_nonreport"
@@ -1449,6 +1509,11 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
             return review_choice, rules, llm_choice, "review_rule_state" if rule_state_locked else "review"
 
     chosen, chosen_source = _merge_choices(rule_choice, llm_choice)
+    if llm_choice and llm_choice.get("review_status") == "error":
+        chosen = dict(chosen or llm_choice)
+        chosen["needs_review"] = True
+        if not rule_choice:
+            chosen_source = "model_review_error"
     chosen = _normalize_explicit_asset_from_text(rm.text or "", _normalize_choice(chosen))
     guarded_choice, guarded_source = _unsupported_other_issue_guardrail(rm.text or "", rule_choice, chosen)
     if guarded_choice is not None:
@@ -1475,6 +1540,14 @@ def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | N
 
 def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | None, chosen: dict | None, chosen_source: str, incident_id: str | None):
     row = session.get(MessageDecision, rm.message_id) or MessageDecision(message_id=rm.message_id)
+    if observations.required():
+        try:prior=json.loads(row.final_json or '{}')
+        except (ValueError,TypeError):prior={}
+        chosen=dict(chosen or {})
+        # A retry of archived evidence is still history, even when the primary
+        # provider has recovered. Only a genuinely new source can be current.
+        if prior.get('historical_audit'):chosen['historical_audit']=True
+        if prior.get('alias_of'):chosen['alias_of']=prior['alias_of']
     previous_incident_id = row.incident_id
     row.incident_id = incident_id
     row.created_at = _now_iso()
@@ -1502,24 +1575,63 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
         if existing_decision and existing_decision.incident_id
         else None
     )
+    replacing_closure = bool(existing_decision and existing_decision.event_type == "restore"
+                             and existing_incident and existing_incident.status == "closed"
+                             and existing_incident.end_ts_epoch == rm.ts_epoch)
+    if observations.required():
+        from packages.whatsapp.media import attachment_context
+        if attachment_context(rm.attachments).get('message_context',{}).get('text_complete') is False:
+            _record_decision(session,rm,{},None,{'is_issue':False,'needs_review':True,
+                'capture_review':{'state':'incomplete','source_sha256':observations.source_hash(rm.text or '')}},'incomplete_capture',None)
+            return ''
+        if rm.ts_epoch is not None:
+            previous_captures=session.query(RawMessage,MessageDecision).join(MessageDecision,RawMessage.message_id==MessageDecision.message_id).filter(
+                RawMessage.message_id!=rm.message_id,RawMessage.sender_hash==rm.sender_hash,
+                RawMessage.chat_name.in_(observations.chat_aliases(rm.chat_name)),
+                RawMessage.ts_epoch>=rm.ts_epoch-120,RawMessage.ts_epoch<=rm.ts_epoch+120).all()
+            for partial,decision in previous_captures:
+                final=json.loads(decision.final_json or '{}');capture=final.get('capture_review') or {}
+                if (capture.get('state') in {'incomplete','suspected_incomplete'}
+                        and capture.get('source_sha256')==observations.source_hash(partial.text)
+                        and len(rm.text)>len(partial.text) and rm.text.startswith(partial.text)):
+                    final['capture_review']={**capture,'state':'superseded','full_message_id':rm.message_id,'full_source_sha256':observations.source_hash(rm.text)}
+                    decision.final_json=json.dumps(final);decision.needs_review=False
     if is_media_placeholder_text(rm.text):
+        media_pending = observations.required()
+        media_choice = {'is_issue':False, 'signal_type':'non_issue', 'category':'other',
+                        'needs_review':True, 'media_review':{'state':'pending' if rm.attachments else 'unavailable',
+                        'source_sha256':observations.source_hash(rm.text or ''),
+                        'attachments_sha256':observations.source_hash(rm.attachments or '')}} if media_pending else None
         _record_decision(
             session,
             rm,
             {"kind": "media_placeholder", "is_issue": False},
             None,
-            None,
-            "media_placeholder",
+            media_choice,
+            "media_review_required" if media_pending else "media_placeholder",
             None,
         )
         return ""
 
     chosen, rules, llm_choice, chosen_source = _pick_decision(session, rm)
+    if observations.required():
+        candidate = (chosen or {}).get('observation') or (llm_choice or {}).get('observation')
+        if isinstance(candidate,dict):
+            candidate={**candidate,'needs_review':bool(candidate.get('needs_review') or (chosen or {}).get('needs_review') or (llm_choice or {}).get('needs_review'))}
+        bound = observations.bind(candidate, rm.text or '', source_attachments=rm.attachments)
+        if bound['review_status'] == 'completed':
+            chosen = {**(chosen or llm_choice or {}), **observations.decision_fields(bound), 'observation': bound}
+            if bound['category']=='laundry':
+                chosen['asset']=explicit_laundry_asset(rm.text or '')
+            chosen_source = 'source_observation'
+        else:
+            chosen = {**(chosen or {}), 'needs_review': True, 'observation': bound}
+            chosen_source = 'source_observation_pending'
     incident = None
 
     if chosen and chosen.get("is_issue") and chosen.get("signal_type") == "report":
         chosen = dict(chosen)
-        chosen["summary"] = _fact_safe_summary(rm.text or "", chosen, rules)
+        chosen["summary"] = chosen["observation"]["public_summary"] if observations.required() and (chosen.get("observation") or {}).get("review_status") == "completed" else _fact_safe_summary(rm.text or "", chosen, rules)
         cat = chosen.get("category") or "other"
         asset = chosen.get("asset")
         event_type = chosen.get("event_type") or "new_issue"
@@ -1535,10 +1647,84 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
         chosen["needs_review"] = needs_review
         close_incident = bool(chosen.get("close_incident")) or event_type == "restore"
 
+        unsupported_restore = bool(
+            (CONTEXTUAL_CONFIRMED_OUTAGE.search(rm.text or "")
+             or ELEVATOR_FUNCTIONAL_DEFECT.search(rm.text or "")
+             or re.search(r"\b(?:not|never|hasn['’]?t)\s+(?:been\s+)?(?:fixed|repaired)\b", rm.text or "", re.I))
+            and not BACK.search(elevator_restoration_text(rm.text or ""))
+            and not FLOOR_SERVICE_NORMAL.search(rm.text or ""))
+        if cat == "elevator" and close_incident and unsupported_restore:
+            event_type = chosen["event_type"] = "new_issue" if ELEVATOR_FUNCTIONAL_DEFECT.search(rm.text or "") else "status_update"
+            close_incident = chosen["close_incident"] = False
+            chosen["needs_review"] = needs_review = True
+
+        if cat == "elevator" and close_incident and (
+                (PARTIAL_SERVICE.search(rm.text or "") and not asset)
+                or (not asset and re.search(r"\b(?:left|right)\s+side\b", rm.text or "", re.I))):
+            event_type = chosen["event_type"] = "status_update"
+            close_incident = chosen["close_incident"] = False
+            chosen["needs_review"] = needs_review = True
+
+        if cat == "elevator" and replacing_closure and not close_incident:
+            existing_incident.status = "open"
+            existing_incident.end_ts = existing_incident.end_ts_epoch = None
+
+        def same_observed_condition(row: Incident) -> bool:
+            if not observations.required() or (chosen.get('observation') or {}).get('review_status') != 'completed':
+                return True
+            incoming = chosen['observation']
+            if incoming['state'] in {'outage','partial_service','malfunction'} and row.asset != incoming['asset']:
+                return False
+            filed_jobs = session.query(FilingJob).filter(
+                FilingJob.incident_id == row.incident_id,
+                (FilingJob.attempts > 0) | FilingJob.state.in_(['submitted', 'submission_unknown'])
+            ).all()
+            filed_source_ids = set()
+            for job in filed_jobs:
+                try:
+                    payload = json.loads(job.payload_json or '{}')
+                    preferred = (payload.get('source_evidence') or {}).get('message_id')
+                    refs = (payload.get('incident') or {}).get('proof_refs') or ''
+                    filed_source_ids.update([preferred] if preferred else [ref.strip() for ref in refs.split(',') if ref.strip()])
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            if filed_jobs and rm.message_id not in filed_source_ids:
+                # An aggregate can already contain misassigned later reports.
+                # Its most recent observation must not redefine what was filed.
+                matching_filed_source = False
+                for filed_source_id in filed_source_ids:
+                    filed_raw = session.get(RawMessage, filed_source_id)
+                    filed_decision = session.get(MessageDecision, filed_source_id)
+                    filed = observations.from_decision(filed_decision, filed_raw)
+                    if (filed is not None and filed['include']
+                            and filed['asset'] == incoming['asset']
+                            and observations.condition_kind(filed) == observations.condition_kind(incoming)):
+                        matching_filed_source = True
+                        break
+                if not matching_filed_source:
+                    return False
+            # Reclassifying this same source preserves its existing identity.
+            if existing_decision is not None and existing_decision.incident_id == row.incident_id:
+                return True
+            prior = session.query(MessageDecision,RawMessage).join(RawMessage,MessageDecision.message_id==RawMessage.message_id).filter(MessageDecision.incident_id==row.incident_id).order_by(RawMessage.ts_epoch.desc()).all()
+            for decision, source in prior:
+                observed = observations.from_decision(decision,source)
+                if observed is not None and observed['include']:
+                    if incoming['state'] in {'repair_visit','repair_pending'}:
+                        return True
+                    return observations.condition_kind(observed) == observations.condition_kind(incoming)
+            return False
+
         if cat == "elevator":
             if close_incident:
                 def eligible_for_restore(row: Incident) -> bool:
                     if row.category != "elevator":
+                        return False
+                    if not same_observed_condition(row):
+                        return False
+                    if asset != "elevator_both" and row.asset not in {asset, "elevator_both" if asset else None}:
+                        return False
+                    if asset is None and row.asset is not None:
                         return False
                     if rm.ts_epoch is None or row.last_ts_epoch is None:
                         return True
@@ -1580,19 +1766,27 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
                             asset=asset,
                             event_type=event_type,
                         )
-                        candidate.status = "closed"
-                        candidate.end_ts = rm.ts_iso
-                        candidate.end_ts_epoch = rm.ts_epoch
+                        if asset == "elevator_both" or candidate.asset == asset:
+                            candidate.status = "closed"
+                            candidate.end_ts = rm.ts_iso
+                            candidate.end_ts_epoch = rm.ts_epoch
+                        else:
+                            candidate.status = "open"
+                            candidate.end_ts = candidate.end_ts_epoch = None
+                            candidate.title = "Elevator service partly restored"
                     incident = candidates[0]
             else:
                 query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
                 if asset and asset != "elevator_both":
                     query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
-                last_open = existing_incident if existing_incident and existing_incident.category == cat else None
+                last_open = existing_incident if (existing_incident and existing_incident.category == cat
+                                                  and same_observed_condition(existing_incident)) else None
                 continuation_event = event_type in {"still_out", "status_update"}
                 recent_same_chat_elevator = _has_recent_same_chat_elevator_context(session, rm)
                 if last_open is None:
                     for row in query.order_by(Incident.last_ts_epoch.desc().nullslast()).all():
+                        if not same_observed_condition(row):
+                            continue
                         if rm.ts_epoch is None or row.last_ts_epoch is None:
                             last_open = row
                             break

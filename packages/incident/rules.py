@@ -12,7 +12,7 @@ ELEVATOR_ASSET_BOTH = re.compile(
     r"north\s*(?:&|and)\s*south|south\s*(?:&|and)\s*north)\b",
     re.I,
 )
-ELEVATOR_ASSET_ZERO = re.compile(r"\b(?:zero|no)\s+(?:elevators?|lifts?)\b", re.I)
+ELEVATOR_ASSET_ZERO = re.compile(r"\b(?:zero|no)\s+(?:elevators?|lifts?)\b|\b(?:none|neither)\s+(?:are\s+|is\s+)?working\b", re.I)
 ONLY_SIDE_WORKING = re.compile(
     r"\bonly\s+(?:the\s+)?(?P<side>north|south|left|right)\s+"
     r"(?:elevator|lift|one|side)?\s*(?:is\s+)?"
@@ -46,6 +46,40 @@ REDUCED_SERVICE = re.compile(
     re.I,
 )
 CONTINUING = re.compile(r"\b(still|again)\b", re.I)
+CONTEXTUAL_CONFIRMED_OUTAGE = re.compile(
+    r"\b(?:(?:it|they)\s+(?:(?:was|were|is|are|still|again|both|also|currently|now|definitely)\s+)+|(?:north|south|one|other|both)\s+(?:(?:was|were|is|are|still|again|also|currently|now|definitely)\s+)*)(?:out|down|dead|stuck|not\s+working)\b"
+    r"|\b(?:none|neither)\s+(?:(?:are|is|currently|still)\s+)?working\b"
+    r"|\bstill\s+(?:not\s+working|out|down)\b", re.I)
+PARTIAL_SERVICE = re.compile(
+    r"\b(?:one|1)\s+(?:(?:elevator|lift)\s+)?(?:(?:is|was|currently)\s+)?(?:working|running|operational)\b", re.I)
+ELEVATOR_FUNCTIONAL_DEFECT = re.compile(
+    r"\b(?:not|never|doesn['’]?t|didn['’]?t|won['’]?t|wouldn['’]?t|cannot|can['’]?t)\s+"
+    r"(?:be\s+)?(?:go(?:ing)?|stop(?:ping)?|open(?:ing)?|respond(?:ing)?|called)\b"
+    r"|\bskip(?:s|ped|ping)?\s+(?:the\s+|our\s+|my\s+)?(?:lobby|basement|floors?)\b"
+    r"|\brandom\s+floors?\b|\b(?:going|gone)\s+berserk\b", re.I)
+
+
+def declarative_elevator_text(text: str) -> str:
+    """Exclude a question about another car from the asserted condition."""
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text or "")
+    return " ".join(part for part in parts if not (
+        re.match(r"\s*(?:if|hypothetically|imagine)\b", part, re.I)
+        or (part.rstrip().endswith('?') and re.match(r"\s*(?:is|are|was|were|does|do|did|can|could|has|have|should|would|why|what|when|where|who|how)\b", part, re.I))))
+
+
+FAILED_ELEVATOR_RESTORATION = re.compile(
+    r"\b(?:couldn['’]?t|could\s+not|cannot|can['’]?t|unable\s+to|failed\s+to)\s+"
+    r"(?:get|make|keep|bring)\b[^.!?\n]{0,100}?\b(?:operational|working|running|in\s+service|back\s+up)\b",
+    re.I,
+)
+
+
+def elevator_restoration_text(text: str) -> str:
+    clean = FAILED_ELEVATOR_RESTORATION.sub("", declarative_elevator_text(text))
+    clean = re.sub(r"\b(?:went|go(?:ing)?|got|travel(?:led|ed|ing)?|climb(?:ed|ing)?|headed|sent)\s+back\s+up\b|\bback\s+up\s+to\b", '', clean, flags=re.I)
+    clean = re.sub(r"\b(?:not|never|isn['’]?t|wasn['’]?t|hasn['’]?t|haven['’]?t)\s+(?:(?:yet|been|being|currently)\s+)*(?:fixed|repaired|restored|working|functioning|operational)\b", '', clean, flags=re.I)
+    return clean
+
 BACK = re.compile(
     r"(back\s+(up|on|in\s+service)|working\s+now|working\s+normal(?:ly)?|operational\s+again|fixed|restored|currently\s+working|currently\s+functioning|(?:all|2)\s+(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?(?:working|functioning|operational|running)|both\s+(?:elevators?|lifts?)\s+(?:are\s+|were\s+|currently\s+)?(?:working|functioning|operational|running)|both\s+(?:are\s+|were\s+)?(?:working|functioning|operational|running)|both\s+work\s+now|seemed\s+to\s+come\s+at\s+a\s+normal\s+speed|they'?re\s+working\s+now)",
     re.I,
@@ -172,7 +206,7 @@ FRONT_DESK_PHONE_WORKS = re.compile(
 )
 
 ASSET_AFFECTED_RE = r"(?:out(?:\s+of\s+(?:service|order))?|down|dead|broken|not\s+in\s+service|not\s+working|stuck|shutdown|shut\s*off)"
-ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|restored|back\s+(?:up|on|in\s+service))"
+ASSET_WORKING_RE = r"(?:working|functioning|operational|running|in\s+service|restored|fixed|repaired|back\s+(?:up|on|in\s+service))"
 
 
 def _side_has_status(text: str, side: str, status_pattern: str) -> bool:
@@ -181,8 +215,9 @@ def _side_has_status(text: str, side: str, status_pattern: str) -> bool:
     return bool(
         re.search(rf"{side_asset}[^.!?\n]{{0,80}}{status}", text, re.I)
         or re.search(rf"{status}[^.!?\n]{{0,80}}{side_asset}", text, re.I)
-        or re.search(rf"\bno\s+(?:the\s+)?{side}\s+(?:elevator|lift|one|side)\b", text, re.I)
-        or re.search(rf"\bnot\s+(?:the\s+)?{side}\s+(?:elevator|lift)\b", text, re.I)
+        or (status_pattern == ASSET_AFFECTED_RE and (
+            re.search(rf"\bno\s+(?:the\s+)?{side}\s+(?:elevator|lift|one|side)\b", text, re.I)
+            or re.search(rf"\bnot\s+(?:the\s+)?{side}\s+(?:elevator|lift)\b", text, re.I)))
     )
 
 
@@ -194,11 +229,12 @@ def _asset_status(text: str, side: str) -> tuple[bool, bool]:
     ] or [text]
     return (
         any(_side_has_status(segment, side, ASSET_AFFECTED_RE) and not NEGATED_ELEVATOR_PROBLEM_RE.search(segment) for segment in segments),
-        any(_side_has_status(segment, side, ASSET_WORKING_RE) for segment in segments),
+        any(_side_has_status(elevator_restoration_text(segment), side, ASSET_WORKING_RE) for segment in segments),
     )
 
 
 def _asset(text: str):
+    text = declarative_elevator_text(text)
     if ELEVATOR_ASSET_BOTH.search(text) or ELEVATOR_ASSET_ZERO.search(text):
         return "elevator_both"
     only_working = ONLY_SIDE_WORKING.search(text)
@@ -432,13 +468,38 @@ def classify_rules(text: str) -> dict:
             "kind": "issue", "preserve_issue": True, "preserve_event_type": True,
         }
 
+    if (_has_elevator_reference(t)
+            and (re.search(r"\b(?:not|never|hasn['’]?t)\s+(?:been\s+)?fixed\b", t, re.I)
+                 or re.search(r"\bdon['’]?t\s+know\s+(?:about\s+)?(?:this\s+morning|today|now)\b", t, re.I))):
+        return {"is_issue": True, "category": "elevator", "asset": _asset(t),
+                "event_type": "status_update", "severity": 3, "kind": "issue",
+                "title": "Elevator repair status unconfirmed", "summary": "A tenant questions or cannot confirm the current elevator repair status.",
+                "needs_review": True, "preserve_issue": True, "preserve_event_type": True}
+
+    asserted = declarative_elevator_text(t)
+    if (_has_elevator_reference(asserted) and ELEVATOR_FUNCTIONAL_DEFECT.search(asserted)
+            and not BACK.search(elevator_restoration_text(t)) and not FLOOR_SERVICE_NORMAL.search(t)):
+        return {"is_issue": True, "category": "elevator", "asset": _asset(asserted),
+                "event_type": "new_issue", "severity": 4, "kind": "issue",
+                "title": "Elevator operation issue", "summary": "Tenant reports an elevator failing to serve a floor or operate normally.",
+                "preserve_issue": True, "preserve_event_type": True}
+
     if QUESTION_ONLY.search(t) and DISCUSSION_QUESTION.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
     if QUESTION_ONLY.search(t) and not OUT.search(t) and not BACK.search(t):
         return {"is_issue": False, "category": "other", "asset": None, "severity": 2, "title": "", "summary": "", "kind": "nonissue"}
 
-    if _has_elevator_reference(t) and (BACK.search(t) or FLOOR_SERVICE_NORMAL.search(t)) and not ONLY_SIDE_WORKING.search(t):
+    if _has_elevator_reference(t) and PARTIAL_SERVICE.search(t) and not re.search(r"\b(?:north|south)\b", t, re.I) and not re.search(r"\b(?:only|down\s+to)\b", t, re.I):
+        return {"is_issue": True, "category": "elevator", "asset": _asset(t),
+                "event_type": "status_update", "severity": 3, "kind": "issue",
+                "title": "Elevator service partly available", "summary": "One elevator is reported working; full service is not confirmed.",
+                "preserve_issue": True, "preserve_event_type": True}
+
+    north_out, north_working = _asset_status(t, 'north')
+    south_out, south_working = _asset_status(t, 'south')
+    mixed_service = (north_out and not north_working and south_working) or (south_out and not south_working and north_working)
+    if _has_elevator_reference(t) and (BACK.search(elevator_restoration_text(t)) or FLOOR_SERVICE_NORMAL.search(t)) and not ONLY_SIDE_WORKING.search(t) and not mixed_service:
         asset = _asset(t)
         if CAUTIOUS_RESTORE.search(t):
             return {

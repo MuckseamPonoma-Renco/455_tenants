@@ -465,6 +465,20 @@ def _open_chat(page: Page, chat_name: str) -> None:
 
 
 def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
+    expanded = page.evaluate(
+        f"""() => {{
+          let count = 0;
+          for (const node of document.querySelectorAll({MESSAGE_NODE_SELECTOR!r})) {{
+            const control = Array.from(node.querySelectorAll('button, [role="button"], span'))
+              .find(el => /^read more$/i.test((el.innerText || '').trim())
+                && el.getBoundingClientRect().height > 0 && el.children.length === 0);
+            if (control) {{ control.click(); count += 1; }}
+          }}
+          return count;
+        }}"""
+    )
+    if expanded:
+        page.wait_for_timeout(150)
     rows = page.evaluate(
         f"""
         () => {{
@@ -473,7 +487,10 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
             const captureId = `tenant-capture-${{Date.now()}}-${{domIndex}}-${{Math.random().toString(36).slice(2)}}`;
             node.setAttribute('data-tenant-capture-id', captureId);
             const prePlainText = (node.getAttribute('data-pre-plain-text') || '').trim();
-            const selectable = Array.from(node.querySelectorAll('span.selectable-text, div.selectable-text'))
+            const selectableSelector = 'span.selectable-text, div.selectable-text';
+            const selectable = Array.from(node.querySelectorAll(selectableSelector))
+              .filter(el => !el.parentElement?.closest(selectableSelector)
+                || !node.contains(el.parentElement.closest(selectableSelector)))
               .map(el => (el.innerText || '').trim())
               .filter(Boolean);
             const links = Array.from(node.querySelectorAll('a[href]'))
@@ -552,6 +569,8 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
               media_kinds: Array.from(new Set(mediaKinds)),
               has_download_button: Boolean(node.querySelector('button[aria-label*="Download"], [title*="Download"], span[data-icon="download"], span[data-icon="download-filled"]')),
               reply_text: replyLabel,
+              text_complete: !Array.from(node.querySelectorAll('button, [role="button"], span'))
+                .some(el => /^read more$/i.test((el.innerText || '').trim()) && el.getBoundingClientRect().height > 0),
             }};
           }});
         }}
@@ -571,7 +590,13 @@ def _media_placeholder_text(row: dict[str, Any]) -> str:
 def _candidate_from_row(chat_name: str, row: dict[str, Any]) -> WhatsAppCaptureCandidate | None:
     pre_plain_text = _clean(str(row.get("pre_plain_text") or ""))
     sender, ts_iso, ts_epoch = parse_whatsapp_message_meta(pre_plain_text)
-    text = _clean(str(row.get("caption") or "")) or _clean(str(row.get("text") or ""))
+    # A transient DOM node without message metadata is not a second message.
+    # Leave it unseen so the next capture cycle retries after rendering.
+    if ts_epoch is None:
+        return None
+    # Rich-text messages can have one selectable element per paragraph. The
+    # last element is only a caption hint, not the complete message body.
+    text = _clean(str(row.get("text") or "")) or _clean(str(row.get("caption") or ""))
     reply_text = _clean(str(row.get("reply_text") or ""))
     if reply_text:
         reply_manifest = build_attachment_manifest(message_context={"reply_text": reply_text}, source="whatsapp_web")
@@ -1004,6 +1029,8 @@ def _try_download_message_media(page: Page, message_locator: Locator, target_dir
 def _attachment_manifest_for_candidate(page: Page, candidate: WhatsAppCaptureCandidate, config: WhatsAppCaptureConfig) -> str | None:
     row = candidate.row
     message_context: dict[str, Any] = {}
+    if row.get('text_complete') is False:
+        message_context['text_complete'] = False
     if _clean(str(row.get("reply_text") or "")):
         message_context["reply_text"] = _clean(str(row.get("reply_text") or ""))
     links = [_clean(link) for link in (row.get("links") or []) if _clean(link)]

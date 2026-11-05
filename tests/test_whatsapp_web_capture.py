@@ -16,6 +16,26 @@ def auth_headers():
     return {"Authorization": "Bearer test-token"}
 
 
+def test_transient_message_without_timestamp_is_not_a_second_capture():
+    row={'pre_plain_text':'','caption':'Long meeting notes','text_complete':True}
+    assert web_capture._candidate_from_row('Fixture Tenants',row) is None
+
+
+def test_long_expanded_message_is_retained_in_full():
+    full='Meeting notes. '+('Additional discussion. '*80)+'The elevator call button still fails.'
+    row={'pre_plain_text':'[6:40 PM, 11/4/2026] Fixture Tenant: ','caption':full,'text_complete':True}
+    candidate=web_capture._candidate_from_row('Fixture Tenants',row)
+    assert candidate.text==full
+
+
+def test_rich_text_message_keeps_every_paragraph_instead_of_last_caption():
+    full = 'North elevator does not stop on floor twelve.\nSouth elevator is running.'
+    row = {'pre_plain_text': '[6:40 PM, 11/4/2026] Fixture Tenant: ',
+           'text': full, 'caption': 'South elevator is running.', 'text_complete': True}
+    candidate = web_capture._candidate_from_row('Fixture Tenants', row)
+    assert candidate.text == full
+
+
 def test_parse_whatsapp_message_meta_american_format():
     sender, ts_iso, ts_epoch = parse_whatsapp_message_meta("[6:21 PM, 4/17/2026] Karen: ")
 

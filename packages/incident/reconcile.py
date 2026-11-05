@@ -22,13 +22,9 @@ class ElevatorRestoreRepairSummary:
 
 
 def _assets_compatible(open_asset: str | None, closed_asset: str | None) -> bool:
-    if open_asset == closed_asset:
-        return True
-    if open_asset in {None, "elevator_both"}:
-        return True
-    if closed_asset in {None, "elevator_both"}:
-        return True
-    return False
+    # A single working car does not establish restoration of both cars, and
+    # an unidentified restoration cannot close a known different car.
+    return closed_asset == "elevator_both" or open_asset == closed_asset
 
 
 def _normalized_text(value: str | None) -> str:
@@ -153,6 +149,8 @@ def close_superseded_open_elevator_incidents(
     if not closed_rows:
         return ElevatorReconcileSummary()
 
+    from packages.incident import source_observation as observations
+    kinds={row.incident_id:observations.incident_kind(session,row) for row in [*open_rows,*closed_rows]} if observations.required() else {}
     summary = ElevatorReconcileSummary()
     for row in open_rows:
         open_last = int(row.last_ts_epoch or 0)
@@ -165,6 +163,7 @@ def close_superseded_open_elevator_incidents(
                 if int(candidate.end_ts_epoch or candidate.last_ts_epoch or 0) >= open_last
                 and int(candidate.end_ts_epoch or candidate.last_ts_epoch or 0) - open_last <= max_gap_seconds
                 and _assets_compatible(row.asset, candidate.asset)
+                and (not observations.required() or (kinds.get(row.incident_id) is not None and kinds.get(row.incident_id)==kinds.get(candidate.incident_id)))
             ),
             None,
         )

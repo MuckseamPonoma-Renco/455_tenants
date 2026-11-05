@@ -188,7 +188,7 @@ def test_tenant_audit_uses_existing_schema_and_rolls_back_renderer_commits(clien
     assert all(len(row) == 7 for row in tenant_audit._expected_values())
     original_session = sync.get_session
 
-    def renderer_with_commit():
+    def renderer_with_commit(*, record_lineage=True):
         with sync.get_session() as session:
             session.add(db.Incident(incident_id="audit-must-not-save", title="Temporary", category="other", status="open"))
             session.commit()

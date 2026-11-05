@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from packages.incident.rules import declarative_elevator_text, ELEVATOR_FUNCTIONAL_DEFECT, FAILED_ELEVATOR_RESTORATION, PARTIAL_SERVICE
 
 
 def _result(label: str, summary: str, *, include: bool = True) -> dict[str, object]:
@@ -11,6 +12,39 @@ def _result(label: str, summary: str, *, include: bool = True) -> dict[str, obje
 def elevator_observation_presentation(text: str) -> dict[str, object] | None:
     """Use only explicit text; the caller establishes a linked elevator context."""
     lowered = " ".join((text or "").split()).casefold()
+    asserted = declarative_elevator_text(lowered)
+    asserted_sides = [side for side in ('north', 'south') if re.search(rf'\b{side}\b', asserted)]
+    subject = asserted_sides[0].title() + ' elevator' if len(asserted_sides) == 1 else 'An elevator'
+    failed_repair = FAILED_ELEVATOR_RESTORATION.search(lowered)
+    if failed_repair:
+        remaining = FAILED_ELEVATOR_RESTORATION.sub('', lowered)
+        if not re.search(r"\b(?:working|operational|running|restored)\b", remaining):
+            uncertain_repair = bool(re.search(r"\b(?:rumou?r|unconfirmed|confirm\s+or\s+deny|apparently|seems?)\b", lowered))
+            earlier = ' the previous day' if re.search(r"\byesterday\b", lowered) else ''
+            if uncertain_repair:
+                return _result(f'{subject} repair report unconfirmed', f'An unconfirmed report said the {subject.lower()} could not be made operational{earlier}.')
+            return _result(f'{subject} repair not completed', f'The {subject.lower()} was reported not restored after a repair attempt{earlier}.')
+    if re.search(r"\b(?:still\s+)?not\s+in\s+use\b", asserted):
+        summary = f'{subject} was reported still out of use.'
+        if re.search(r"\b(?:techs?|technicians?)\s+(?:are\s+)?on\s+site\b", asserted):
+            summary += ' Technicians were reported on site.'
+        return _result(f'{subject} not in service', summary)
+    if ELEVATOR_FUNCTIONAL_DEFECT.search(asserted):
+        if re.search(r"\b(?:cannot|can['’]?t|couldn['’]?t)\s+be\s+called\s+from\s+(?:the\s+)?(?:basement|b)\b", asserted):
+            return _result('Elevator basement-call problem', f'{subject} was reported unable to be called from the basement.')
+        if re.search(r"\b(?:basement|b)\b", asserted):
+            return _result('Elevator basement-service problem', f'{subject} was reported failing to serve the basement.')
+        if re.search(r'\b(?:random\s+floors?|skip(?:s|ped|ping)?\s+(?:the\s+)?lobby)\b', asserted):
+            return _result('Elevator floor-service problem', f'{subject} was reported travelling to unintended floors or skipping the lobby.')
+    if (PARTIAL_SERVICE.search(asserted) and not asserted_sides
+            and not ELEVATOR_FUNCTIONAL_DEFECT.search(asserted)
+            and not re.search(r"\b(?:not\s+working|out|down|dead|stuck|broken)\b", asserted)):
+        if re.search(r"\b(?:ago|earlier|yesterday|last\s+night)\b", lowered):
+            return _result('One elevator reported working earlier', 'One unidentified elevator was reported working earlier; current service was not confirmed.')
+        if re.search(r"\b(?:looks?\s+like|seems?|appears?|maybe)\b", lowered):
+            return _result('One elevator tentatively reported working', 'One unidentified elevator appeared to be working; full service was not confirmed.')
+        # Let established reduced-service/mechanic summaries handle other
+        # present-tense reports; they must never inherit a both-cars restoration.
     uncertain = re.compile(r"\b(?:maybe|may|might|possibly|possible|think|seems?|appears?)\b")
     side_names = {side for side in ("north", "south") if re.search(rf"\b{side}\b", lowered)}
     # Questions and silence alone do not establish an outage.

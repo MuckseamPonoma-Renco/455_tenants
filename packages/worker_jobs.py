@@ -1,4 +1,7 @@
 from sqlalchemy import select
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 from packages.audit import append_audit_event, daily_hash_chain
 from packages.automation_status import watchdog_result_ok
@@ -7,6 +10,8 @@ from packages.incident.extractor import classify_and_upsert_incident
 from packages.nyc311.legal_export import export_legal_bundle as export_bundle_impl
 from packages.nyc311.replacement_export import export_elevator_replacement_bundle as export_replacement_bundle_impl
 from packages.nyc311.planner import ensure_filing_jobs
+from packages.nyc311.planner import ensure_filing_job_for_incident
+from packages.run_lock import try_file_lock
 from packages.nyc311.tracker import sync_all_case_statuses
 from packages.public_records.sync import sync_public_records as sync_public_records_impl
 from packages.public_records.sync import sync_replacement_watchdog as sync_replacement_watchdog_impl
@@ -156,6 +161,99 @@ def full_resync_sheets():
     append_audit_event("FULL_RESYNC_SHEETS", None, {"ok": ok})
     daily_hash_chain()
     return {"ok": ok}
+
+
+def _model_review_failed(decision: MessageDecision | None) -> bool:
+    if decision is None:
+        return False
+    try:
+        primary = json.loads(decision.llm_json or '{}')
+        final = json.loads(decision.final_json or '{}')
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(primary, dict) or not isinstance(final, dict):
+        return False
+    from packages.incident.source_observation import required
+    if required():
+        if final.get('source_review_pending'):
+            return True
+        if (final.get('observation') or {}).get('review_status')=='completed' and decision.chosen_source in {'source_observation','audited_source_observation'}:
+            return False
+    if str(decision.chosen_source or '').startswith('review') and final.get('review_status') == 'completed':
+        return False
+    return primary.get('review_status') == 'error'
+
+
+def retry_failed_model_reviews(*, limit: int = 25, lock_path: Path | None = None) -> dict:
+    """Recover recent failed reviews independently of the next phone export.
+
+    Reprocessing always disables filing. Only a successfully recovered live
+    report from the last 24 hours may then enter normal filing eligibility.
+    Historical exports, old reports and uncertain jobs retain their fences.
+    """
+    from packages.incident import extractor
+    from packages.incident.cross_source_reconciliation import _recompute_incident_materialization
+    from packages.llm.openai_client import llm_enabled
+    from packages.tasker_capture import LIVE_CAPTURE_SOURCES
+    if not llm_enabled():
+        return {'ok': False, 'state': 'disabled', 'recovered': 0, 'queued_jobs': 0}
+    lock_path = lock_path or Path.home() / '.local/state/tenant-issue-os/chat-export-pipeline.lock'
+    with try_file_lock(lock_path) as acquired:
+        if not acquired:
+            return {'ok': True, 'state': 'export_pipeline_busy', 'recovered': 0, 'queued_jobs': 0}
+        now = int(datetime.now(timezone.utc).timestamp())
+        with get_session() as session:
+            candidates = session.scalars(select(MessageDecision)
+                .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
+                .where(RawMessage.ts_epoch >= now - 14 * 86400,
+                       ((MessageDecision.llm_json.contains('"review_status"') & MessageDecision.llm_json.contains('"error"'))
+                        | MessageDecision.final_json.contains('"source_review_pending": true')))
+                .order_by(RawMessage.ts_epoch)).all()
+            ids = [row.message_id for row in candidates if _model_review_failed(row)][:max(1, min(limit, 100))]
+        result = {'ok': True, 'state': 'ready', 'selected': len(ids), 'recovered': 0, 'queued_jobs': 0}
+        previous_mode = extractor.LLM_MODE
+        extractor.LLM_MODE = 'all'
+        try:
+            for message_id in ids:
+                with get_session() as session:
+                    decision = session.scalar(select(MessageDecision).where(MessageDecision.message_id == message_id).with_for_update(skip_locked=True))
+                    if not _model_review_failed(decision):
+                        continue
+                    raw = session.get(RawMessage, message_id)
+                    if raw is None:
+                        continue
+                    touched = {decision.incident_id} if decision.incident_id else set()
+                    prior_has_filing = bool(decision.incident_id and (
+                        session.scalar(select(FilingJob.job_id).where(FilingJob.incident_id == decision.incident_id).limit(1)) is not None
+                        or session.scalar(select(ServiceRequestCase.id).where(ServiceRequestCase.incident_id == decision.incident_id).limit(1)) is not None))
+                    incident_id = classify_and_upsert_incident(session, raw, allow_filing_job=False)
+                    refreshed = session.get(MessageDecision, message_id)
+                    if _model_review_failed(refreshed):
+                        refreshed.needs_review = True
+                        session.commit()
+                        result.update(ok=False, state='review_failed')
+                        break  # No storm of requests while quota/provider access is unavailable.
+                    if incident_id:
+                        touched.add(incident_id)
+                    for identifier in touched:
+                        incident = session.get(Incident, identifier)
+                        if incident is not None:
+                            _recompute_incident_materialization(session, incident, rebuild_summary=True)
+                    incident = session.get(Incident, incident_id) if incident_id else None
+                    if (incident is not None and not prior_has_filing and raw.source in LIVE_CAPTURE_SOURCES
+                            and raw.ts_epoch is not None and 0 <= now - raw.ts_epoch <= 86400
+                            and session.scalar(select(FilingJob.job_id).where(FilingJob.incident_id == incident_id).limit(1)) is None):
+                        job = ensure_filing_job_for_incident(session, incident)
+                        if job is not None and job.state == 'pending':
+                            result['queued_jobs'] += 1
+                    session.commit()
+                    result['recovered'] += 1
+        finally:
+            extractor.LLM_MODE = previous_mode
+        if result['recovered']:
+            _safe_sync_sheets()
+        append_audit_event('RETRY_FAILED_MODEL_REVIEWS', None, result)
+        return result
 
 
 def reprocess_last_n(n: int):

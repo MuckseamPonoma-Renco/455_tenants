@@ -56,6 +56,15 @@ def _job_rank(job: FilingJob) -> tuple[int, str, int]:
 
 
 def _pick_canonical(session, cluster: list[Incident]) -> Incident | None:
+    jobs=session.scalars(select(FilingJob).where(FilingJob.incident_id.in_([inc.incident_id for inc in cluster]))).all()
+    from packages.incident import source_observation as observations
+    # Filed and skipped jobs are history, not disposable dedupe artifacts.
+    # Keep their original incident/payload associations intact in strict mode.
+    if observations.required() and jobs:
+        return None
+    if any(job.state in {'claimed','submitting','submission_unknown','awaiting_human_verification'}
+           or (int(job.attempts or 0)>0 and job.state!='submitted') for job in jobs):
+        return None
     case_counts = {
         inc.incident_id: session.query(ServiceRequestCase).filter_by(incident_id=inc.incident_id).count()
         for inc in cluster
@@ -185,6 +194,11 @@ def dedupe_open_elevator_continuations(
 ) -> DedupeSummary:
     """Merge an unscoped continuation into the closest open elevator incident."""
     summary = DedupeSummary()
+    from packages.incident import source_observation as observations
+    if observations.required():
+        # An unnamed car must not acquire an identity merely through timing.
+        # Explicit context is resolved when the source observation is created.
+        return summary
     used_ids: set[str] = set()
 
     while True:
@@ -247,8 +261,10 @@ def dedupe_open_incidents(session, *, gap_seconds: int = DEFAULT_DEDUPE_GAP_SECO
     ).all()
 
     groups: dict[tuple[str | None, str | None], list[Incident]] = defaultdict(list)
+    from packages.incident import source_observation as observations
     for inc in incidents:
-        groups[(inc.category, inc.asset)].append(inc)
+        kind=observations.incident_kind(session,inc) if observations.required() else None
+        groups[(inc.category, inc.asset, kind if kind is not None else (inc.incident_id if observations.required() else None))].append(inc)
 
     summary = DedupeSummary()
 

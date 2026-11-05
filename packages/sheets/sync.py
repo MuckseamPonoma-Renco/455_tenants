@@ -20,6 +20,7 @@ from googleapiclient.discovery import build
 from packages.db import ComplianceCheck, FilingJob, Incident, MessageDecision, PublicRecordWatch, RawMessage, ServiceRequestCase, WatchdogAction, WeeklyDigest, get_session
 from packages.incident.content_guardrails import nonreporting_content_reason
 from packages.incident.building_conditions import building_condition_presentation
+from packages.incident.rules import elevator_restoration_text
 from packages.sheets.public_elevator_observations import elevator_observation_presentation
 from packages.public_records.sync import action_is_tenant_visible, project_state, public_elevator_watch_items, public_record_is_tenant_trusted, public_record_payload
 from packages.sheets.public_semantic_overrides import (
@@ -1525,6 +1526,9 @@ def _raw_message_is_public(raw: RawMessage | None, allowed_chat_names: set[str])
         return True
     if not allowed_chat_names:
         return True
+    from packages.incident.source_observation import required
+    if required() and raw.source=='tasker':
+        return normalize_tasker_capture(raw.chat_name,raw.sender,raw.text).chat_name.casefold() in allowed_chat_names
     return _clean_text(raw.chat_name).casefold() in allowed_chat_names
 
 
@@ -2053,8 +2057,48 @@ def _public_case_updated_label(case: ServiceRequestCase) -> str:
     return _public_ts(case.last_checked_at or case.closed_at)
 
 
+def _verified_building_case(case: ServiceRequestCase) -> bool:
+    from packages.nyc311.address import canonicalize_building_address, _normalize_street
+    raw=_case_status_payload(case)
+    number=case.service_request_number
+    if raw.get('source')=='nyc311_portal':
+        if not raw.get('found') or raw.get('service_request_number')!=number or raw.get('observed_service_request_number')!=number:
+            return False
+        street=_normalize_street(str(raw.get('sr_address') or '').split(',')[0])
+    elif raw.get('source')=='nyc_open_data':
+        if str(raw.get('unique_key'))!=str(number):
+            return False
+        street=_normalize_street(raw.get('incident_address'))
+    else:
+        return False
+    expected=canonicalize_building_address()['street_address']
+    return bool(expected and street==expected)
+
+
+def _filed_case_description(case: ServiceRequestCase, jobs_by_id: dict) -> str:
+    job=jobs_by_id.get(case.filing_job_id)
+    if job is not None:
+        try:
+            return _public_sanitize_text(str(json.loads(job.payload_json or '{}').get('description') or ''))
+        except (ValueError,TypeError):
+            pass
+    raw=_case_status_payload(case)
+    return _public_sanitize_text(' / '.join(str(raw.get(k) or '') for k in ('problem','problem_details','additional_details') if raw.get(k))) or 'Tenant-provided case number'
+
+
 def _public_case_note(case: ServiceRequestCase, incident: Incident | None) -> str:
     raw_status = _case_status_payload(case)
+    from packages.incident.source_observation import required
+    if required():
+        source_audit=raw_status.get('source_audit') or {}
+        if source_audit.get('verdict')=='unsupported':
+            return 'Stored complaint wording needs source review.'
+        if source_audit.get('verdict')=='unverifiable':
+            return 'Original source evidence is incomplete or ambiguous.'
+        resolution=_truncate_public_text(_clean_text(case.resolution_description),limit=220)
+        if resolution:
+            return _public_sanitize_text(resolution)
+        return 'Automatic filing receipt.' if case.filing_job_id is not None else 'Tenant-provided case number; city receipt verified.'
     if raw_status and raw_status.get("found") is False:
         return "No public NYC status result yet."
     if not raw_status and not case.closed_at:
@@ -2253,8 +2297,11 @@ def _public_elevator_text_has_context(text: str, fallback_asset: str | None) -> 
 
 
 def _public_elevator_text_is_working_status(text: str) -> bool:
-    clean = _clean_text(text)
+    clean = elevator_restoration_text(_clean_text(text))
     if not clean:
+        return False
+    clean = re.sub(r"\brunning\s+(?:the\s+)?(?:comms?\s+|communications?\s+)?cables?\b", '', clean, flags=re.I)
+    if re.search(r"\bnot\s+in\s+use\b", clean, re.I):
         return False
     if _public_elevator_text_is_reduced_service(clean):
         return False
@@ -2449,6 +2496,17 @@ def _validate_public_semantic_override_sources(
         if not override.include:
             continue
         decision = decision_map.get(message_id)
+        from packages.incident import source_observation as observations
+        if observations.required() and decision is not None:
+            if raw.attachments:
+                media_review=json.loads(decision.final_json or '{}').get('media_review',{})
+                if (media_review.get('state')!='completed'
+                        or media_review.get('source_sha256')!=observations.source_hash(raw.text or '')
+                        or media_review.get('attachments_sha256')!=observations.source_hash(raw.attachments or '')):
+                    raise PublicSemanticOverrideError('Audited attachment changed or remains unreviewed')
+            observed=observations.from_decision(decision,raw,context_sources=raw_map)
+            if observed is not None:
+                continue
         if decision is None or not decision.incident_id or decision.incident_id not in incident_ids:
             missing_links.append(message_id)
     if missing_links:
@@ -2468,6 +2526,10 @@ def _public_should_include_update(
     semantic_override = _public_semantic_override(raw)
     if semantic_override is not None:
         return semantic_override.include
+    from packages.incident import source_observation as observations
+    if observations.required() and decision is not None:
+        observation = observations.from_decision(decision, raw)
+        return bool(observation['include'] and observations.publication_policy(observation,raw.text or '')=='allowed') if observation is not None else bool(decision.is_issue)
     text = _clean_text(raw.text)
     context_text = _public_update_detection_text(raw)
     if not text:
@@ -2854,7 +2916,7 @@ def _public_event_category_label(incident: Incident, raw: RawMessage | None) -> 
     if incident.category == "other":
         condition = building_condition_presentation(text)
         if condition:
-            return "Ventilation" if condition["kind"] == "ventilation" else "Electrical"
+            return {"ventilation": "Ventilation", "electrical": "Electrical"}.get(condition["kind"], "Other building issue")
         if _public_other_update_issue_label(text) == "Laundry machine/card issue":
             return "Laundry"
     if _public_has_apartment_entry_concern(text):
@@ -3054,6 +3116,99 @@ def _public_event_summary(incident: Incident, raw: RawMessage | None) -> str:
     return summary or _public_detail_text(incident, _public_focus_label(incident))
 
 
+def _observation_update_rows(incidents, raw_map, case_map, allowed_chat_names,
+                             message_ids_by_incident, decision_map, source_incident_by_message,
+                             source_case_map=None, lineage=None, filing_jobs_by_id=None):
+    from packages.incident import source_observation as observations
+    rows = []
+    seen = set()
+    incidents = list(incidents)
+    message_ids_by_incident = dict(message_ids_by_incident or {})
+    linked = {mid for incident in incidents for mid in _public_incident_message_ids(incident,message_ids_by_incident)}
+    # References and previously missed reports must not disappear merely
+    # because the old classifier never assigned an Incident row.
+    for mid,raw in raw_map.items():
+        if mid in linked:
+            continue
+        decision = (decision_map or {}).get(mid)
+        observed = observations.from_decision(decision,raw,context_sources=raw_map)
+        override = _public_semantic_override(raw)
+        if (observed is not None and observed['include']) or (override is not None and override.include):
+            identifier = 'source-only:'+mid
+            incidents.append(Incident(incident_id=identifier,category=(observed or {}).get('category','other'),asset=(observed or {}).get('asset'),title='Source reference'))
+            message_ids_by_incident[identifier] = [mid]
+    for incident in incidents:
+        for message_id in _public_incident_message_ids(incident, message_ids_by_incident):
+            raw = raw_map.get(message_id)
+            if raw is None or not _raw_message_is_public(raw, allowed_chat_names):
+                continue
+            decision = (decision_map or {}).get(message_id)
+            try:
+                alias_of = json.loads(decision.final_json or '{}').get('alias_of') if decision else None
+            except (ValueError, TypeError):
+                alias_of = None
+            if alias_of and alias_of in raw_map and observations.alias_matches(raw,raw_map[alias_of]):
+                continue
+            observation = observations.from_decision(decision, raw, context_sources=raw_map)
+            override = _public_semantic_override(raw)
+            if override is not None and not override.include:
+                continue
+            if observation is not None and (not observation['include'] or observations.publication_policy(observation,raw.text or '')!='allowed') and override is None:
+                continue
+            if observation is None and override is None:
+                # Expose the unresolved report without inventing a condition.
+                if decision is None or not decision.is_issue:
+                    continue
+                issue_label, category, summary = 'Report awaiting review', 'Unverified report', 'The source report is awaiting verification.'
+                identity = message_id
+            else:
+                identity = (observation or {}).get('source_identity') or message_id
+                issue_label = override.issue_label if override else observations.label(observation)
+                category = override.category_label if override else _public_category_label(observation['category'])
+                summary = override.summary if override else _public_safe_summary_text(observation['public_summary'])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            original = (source_incident_by_message or {}).get(message_id, incident)
+            # A receipt for a collapsed neighbouring episode is not this
+            # source's receipt. Only the original linked incident supplies it.
+            cases = (source_case_map if source_case_map is not None else case_map).get(original.incident_id, [])
+            if observation is None or observation['state'] not in {'outage','partial_service','malfunction','condition'}:
+                cases = []
+            elif observation['category']=='elevator':
+                related=[]
+                for case in cases:
+                    if (_case_status_payload(case).get('source_audit') or {}).get('verdict') in {'unsupported','unverifiable'}:
+                        continue
+                    description=_filed_case_description(case,filing_jobs_by_id or {})
+                    kind=observations.condition_kind({'category':'elevator','state':'malfunction','source_quote':description,'public_summary':''})
+                    if re.search(r'\b(?:not working|out|down|dead)\b',description,re.I) and kind=='elevator_operation':kind='availability'
+                    source_kind=observations.condition_kind(observation)
+                    if source_kind!=kind:continue
+                    named='elevator_north' if re.search(r'\bnorth\b',description,re.I) else 'elevator_south' if re.search(r'\bsouth\b',description,re.I) else None
+                    if named and observation['asset'] not in {None,named,'elevator_both'}:continue
+                    related.append(case)
+                cases=related
+            try:evidence_review=json.loads(decision.final_json or '{}').get('public_evidence_review',{}) if decision else {}
+            except (ValueError,TypeError):evidence_review={}
+            evidence_allowed = bool(evidence_review.get('allow')
+                and evidence_review.get('source_sha256')==observations.source_hash(raw.text or '')
+                and evidence_review.get('attachments_sha256')==observations.source_hash(raw.attachments or ''))
+            if override is not None:
+                evidence_allowed = override.show_evidence
+            preview, link = _public_raw_evidence_cells(raw) if evidence_allowed else ('','')
+            row = [_public_ts(raw.ts_iso, fallback=raw.ts_epoch) or '', issue_label, category,
+                   _public_case_badge(cases) if cases else '', preview, link, summary, '', '']
+            rows.append((int(raw.ts_epoch or 0), message_id, row))
+            if lineage is not None:
+                lineage.append({'message_id': message_id, 'source_identity': identity,
+                                'source_sha256': observations.source_hash(raw.text or ''),
+                                'row': row, 'observation_ready': observation is not None,
+                                'case_numbers': [case.service_request_number for case in cases]})
+    rows.sort(key=lambda item:(item[0],item[1]), reverse=True)
+    return [row for _,_,row in rows]
+
+
 def _public_update_rows(
     incidents: list[Incident],
     raw_map: dict[str, RawMessage],
@@ -3062,7 +3217,14 @@ def _public_update_rows(
     message_ids_by_incident: dict[str, list[str]] | None = None,
     decision_map: dict[str, MessageDecision] | None = None,
     source_incident_by_message: dict[str, Incident] | None = None,
+    source_case_map: dict[str, list[ServiceRequestCase]] | None = None,
+    lineage: list[dict] | None = None,
+    filing_jobs_by_id: dict | None = None,
 ) -> list[list[object]]:
+    from packages.incident import source_observation as observations
+    if observations.required():
+        return _observation_update_rows(incidents, raw_map, case_map, allowed_chat_names,
+            message_ids_by_incident, decision_map, source_incident_by_message, source_case_map, lineage,filing_jobs_by_id)
     rows: list[tuple[int, str, str, list[object]]] = []
     seen_messages: set[str] = set()
     for incident in incidents:
@@ -3384,7 +3546,8 @@ def _public_proof_cell(incident: Incident | None, raw_map: dict[str, RawMessage]
     return ""
 
 
-def sync_public_updates_to_sheets():
+def sync_public_updates_to_sheets(*, record_lineage: bool = True):
+    from packages.incident import source_observation as observations
     svc = _service()
     sheet_id = _public_sheet_id()
     tab = _public_updates_tab()
@@ -3403,10 +3566,10 @@ def sync_public_updates_to_sheets():
             session.query(MessageDecision)
             .filter(MessageDecision.incident_id.in_(incident_ids_all))
             .all()
-            if incident_ids_all
+            if incident_ids_all and not observations.required()
             else []
         )
-        if semantic_override_ids:
+        if semantic_override_ids and not observations.required():
             override_decisions = (
                 session.query(MessageDecision)
                 .filter(MessageDecision.message_id.in_(sorted(semantic_override_ids)))
@@ -3418,6 +3581,19 @@ def sync_public_updates_to_sheets():
                     for row in [*decision_rows, *override_decisions]
                 }.values()
             )
+        if observations.required():
+            from sqlalchemy import cast, func, or_
+            from sqlalchemy.orm import load_only
+            if session.bind.dialect.name=='postgresql':
+                from sqlalchemy.dialects.postgresql import JSONB
+                included=cast(func.coalesce(func.nullif(MessageDecision.final_json,''),'{}'),JSONB)['observation']['include'].as_boolean()
+            else:
+                included=func.json_extract(func.coalesce(func.nullif(MessageDecision.final_json,''),'{}'),'$.observation.include')
+            decision_rows = session.query(MessageDecision).options(load_only(
+                MessageDecision.message_id,MessageDecision.incident_id,MessageDecision.final_json,
+                MessageDecision.is_issue,MessageDecision.category,MessageDecision.event_type,MessageDecision.needs_review)).filter(or_(
+                MessageDecision.is_issue.is_(True),MessageDecision.needs_review.is_(True),included==True,
+                MessageDecision.message_id.in_(semantic_override_ids))).all()
         message_ids_by_incident: dict[str, list[str]] = {}
         decision_map: dict[str, MessageDecision] = {}
         for decision in decision_rows:
@@ -3432,6 +3608,11 @@ def sync_public_updates_to_sheets():
         }
         proof_message_ids.update(decision_map.keys())
         proof_message_ids.update(semantic_override_ids)
+        if observations.required():
+            for decision in decision_rows:
+                final=json.loads(decision.final_json or '{}')
+                proof_message_ids.update((final.get('observation') or {}).get('context_message_ids') or [])
+                if final.get('alias_of'):proof_message_ids.add(final['alias_of'])
         raw_map = (
             {row.message_id: row for row in session.query(RawMessage).filter(RawMessage.message_id.in_(sorted(proof_message_ids))).all()}
             if proof_message_ids
@@ -3456,6 +3637,9 @@ def sync_public_updates_to_sheets():
         ]
         incident_ids = [row.incident_id for row in public_incidents]
         all_cases = session.query(ServiceRequestCase).filter(ServiceRequestCase.incident_id.in_(incident_ids)).all() if incident_ids else []
+        verified_all_cases = [case for case in session.query(ServiceRequestCase).all() if _verified_building_case(case)] if observations.required() else []
+        filing_jobs_by_id = {job.job_id: job for job in session.query(FilingJob).all()} if observations.required() else {}
+
 
     case_map: dict[str, list[ServiceRequestCase]] = {}
     for case in all_cases:
@@ -3477,8 +3661,12 @@ def sync_public_updates_to_sheets():
     for message_id, decision in decision_map.items():
         if decision.incident_id in original_incidents:
             source_incident_by_message[message_id] = original_incidents[decision.incident_id]
+    source_case_map = {identifier: list(cases) for identifier, cases in case_map.items()}
+    publication_lineage = []
     public_incidents, case_map = _public_collapse_duplicate_incidents(public_incidents, case_map, message_ids_by_incident)
     public_cases = [case for cases in case_map.values() for case in cases]
+    if observations.required():
+        public_cases = verified_all_cases
     public_cases.sort(key=_public_case_sort_key, reverse=True)
     category_rows = _public_category_rows(public_incidents, case_map)
     update_rows = _public_update_rows(
@@ -3489,7 +3677,24 @@ def sync_public_updates_to_sheets():
         message_ids_by_incident,
         decision_map,
         source_incident_by_message,
+        source_case_map=source_case_map,
+        lineage=publication_lineage,
+        filing_jobs_by_id=filing_jobs_by_id,
     )
+    if observations.required():
+        # Counts describe the actual published source updates, including
+        # reports that the historical incident classifier had dropped.
+        grouped={}
+        for row in update_rows:
+            value=grouped.setdefault(row[2],{'count':0,'latest':row[0],'label':row[1]})
+            value['count']+=1
+        case_counts={}
+        for case in public_cases:
+            problem=str(_case_status_payload(case).get('problem') or case.complaint_type or '').casefold()
+            category='Elevator' if 'elevator' in problem else 'Heat / hot water' if 'heat' in problem or 'hot water' in problem else 'Other building issues'
+            case_counts[category]=case_counts.get(category,0)+1
+        category_rows=[[category,value['count'],case_counts.get(category,0),value['latest'],value['label']]
+                       for category,value in sorted(grouped.items(),key=lambda item:(-item[1]['count'],item[0]))]
     refresh_label = _fmt_ts(now_epoch)
     top_category = category_rows[0][0] if category_rows else ""
     latest_issue = str(update_rows[0][1]) if update_rows else (_public_focus_label(public_incidents[0]) if public_incidents else "")
@@ -3500,13 +3705,13 @@ def sync_public_updates_to_sheets():
         ["At a glance", "", "", "", "", "", "", "", "", ""],
         ["Item", "Count / detail", "What this means", "", "", "", "", "", "", ""],
         ["Last refresh", refresh_label, "Updated automatically from resident messages and 311 records.", "", "", "", "", "", "", ""],
-        ["Incidents", len(public_incidents), "Issues logged from the tenant chat and connected evidence.", "", "", "", "", "", "", ""],
-        ["311 filings", len(public_cases), "311 service requests connected to logged incidents.", "", "", "", "", "", "", ""],
+        ["Published updates" if observations.required() else "Incidents", len(update_rows) if observations.required() else len(public_incidents), "Source reports and updates; repeated observations may concern the same issue." if observations.required() else "Issues logged from the tenant chat and connected evidence.", "", "", "", "", "", "", ""],
+        ["311 filings", len(public_cases), "Verified city service requests for this building; a receipt does not prove repair." if observations.required() else "311 service requests connected to logged incidents.", "", "", "", "", "", "", ""],
         ["Most common issue type", top_category, "Category with the most logged incidents.", "", "", "", "", "", "", ""],
         ["Latest update", latest_issue, "Newest update in the log.", "", "", "", "", "", "", ""],
         ["", "", "", "", "", "", "", "", "", ""],
         ["Category snapshot", "", "", "", "", "", "", "", "", ""],
-        ["Category", "Incidents", "311 filings", "Latest update", "Latest issue", "", "", "", "", ""],
+        ["Category", "Updates" if observations.required() else "Incidents", "311 filings", "Latest update", "Latest issue", "", "", "", "", ""],
     ]
 
     if category_rows:
@@ -3538,8 +3743,8 @@ def sync_public_updates_to_sheets():
             values.append([
                 case.service_request_number or "311 case",
                 _public_case_status_label(case),
-                _truncate_public_text(_clean_text(case.complaint_type) or "311 complaint", limit=120),
-                _truncate_public_text(_public_focus_label(incident), limit=120),
+                _truncate_public_text(_clean_text(_case_status_payload(case).get("problem") or case.complaint_type) or "311 complaint", limit=120),
+                _truncate_public_text(_filed_case_description(case,filing_jobs_by_id) if observations.required() else _public_focus_label(incident), limit=220),
                 _public_ts(case.submitted_at) or "",
                 _public_case_updated_label(case),
                 _public_case_note(case, incident),
@@ -3571,6 +3776,10 @@ def sync_public_updates_to_sheets():
         },
     )
     _clear_legacy_public_update_tabs(svc, sheet_id)
+    if record_lineage and publication_lineage:
+        from packages.sheets.source_contract import save_publication_lineage
+        save_publication_lineage(publication_lineage)
+
 
 
 def sync_incidents_to_sheets():

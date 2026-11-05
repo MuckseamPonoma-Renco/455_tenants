@@ -283,7 +283,7 @@ def portal_lookup_to_raw_status(lookup: Any) -> dict | None:
     fields = {key: _portal_field(page_text, label) for key, label in PORTAL_FIELD_LABELS.items()}
     raw = {
         "source": "nyc311_portal",
-        "checked_at": now_iso(),
+        "checked_at": payload.get('checked_at') or now_iso(),
         "service_request_number": sr_number,
         "found": bool(payload.get("found")),
         "status": _clean_portal_status(str(payload.get("status") or "")),
@@ -348,7 +348,14 @@ def apply_open_data_status(case: ServiceRequestCase, live: dict) -> bool:
     case.complaint_type = live.get("complaint_type") or case.complaint_type
     case.resolution_description = (live.get("resolution_description") or case.resolution_description or "")[:2000] or None
     case.last_checked_at = now_iso()
-    case.raw_status_json = _json_dumps({"source": "nyc_open_data", **live})
+    raw = {"source": "nyc_open_data", **live}
+    try:
+        previous = json.loads(case.raw_status_json or '{}')
+    except (ValueError, TypeError):
+        previous = {}
+    if isinstance(previous, dict) and isinstance(previous.get('source_audit'), dict):
+        raw['source_audit'] = previous['source_audit']
+    case.raw_status_json = _json_dumps(raw)
     if live.get("created_date"):
         case.submitted_at = normalize_timestamp(live.get("created_date")) or case.submitted_at
     if live.get("closed_date"):
@@ -363,9 +370,20 @@ def apply_portal_lookup_status(case: ServiceRequestCase, lookup: Any) -> bool:
     if _portal_validation_error(case, raw):
         return False
     case.last_checked_at = raw.get("checked_at") or now_iso()
+    try:
+        previous=json.loads(case.raw_status_json or '{}')
+    except (ValueError,TypeError):
+        previous={}
+    if isinstance(previous,dict) and isinstance(previous.get('source_audit'),dict):
+        raw['source_audit']=previous['source_audit']
     case.raw_status_json = _json_dumps(raw)
     case.status = str(raw["status"])
-    case.complaint_type = case.complaint_type or raw.get("problem")
+    official_problem = raw.get("problem")
+    if official_problem:
+        existing = (case.complaint_type or '').casefold()
+        same_elevator_family = str(official_problem).casefold() == 'elevator' and 'elevator' in existing
+        if not same_elevator_family:
+            case.complaint_type = official_problem
     case.agency = raw.get("agency") or case.agency
     if raw.get("date_reported_normalized"):
         case.submitted_at = raw["date_reported_normalized"]
