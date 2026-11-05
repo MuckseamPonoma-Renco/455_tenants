@@ -1675,6 +1675,34 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
             incoming = chosen['observation']
             if incoming['state'] in {'outage','partial_service','malfunction'} and row.asset != incoming['asset']:
                 return False
+            filed_jobs = session.query(FilingJob).filter(
+                FilingJob.incident_id == row.incident_id,
+                (FilingJob.attempts > 0) | FilingJob.state.in_(['submitted', 'submission_unknown'])
+            ).all()
+            filed_source_ids = set()
+            for job in filed_jobs:
+                try:
+                    payload = json.loads(job.payload_json or '{}')
+                    preferred = (payload.get('source_evidence') or {}).get('message_id')
+                    refs = (payload.get('incident') or {}).get('proof_refs') or ''
+                    filed_source_ids.update([preferred] if preferred else [ref.strip() for ref in refs.split(',') if ref.strip()])
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            if filed_jobs and rm.message_id not in filed_source_ids:
+                # An aggregate can already contain misassigned later reports.
+                # Its most recent observation must not redefine what was filed.
+                matching_filed_source = False
+                for filed_source_id in filed_source_ids:
+                    filed_raw = session.get(RawMessage, filed_source_id)
+                    filed_decision = session.get(MessageDecision, filed_source_id)
+                    filed = observations.from_decision(filed_decision, filed_raw)
+                    if (filed is not None and filed['include']
+                            and filed['asset'] == incoming['asset']
+                            and observations.condition_kind(filed) == observations.condition_kind(incoming)):
+                        matching_filed_source = True
+                        break
+                if not matching_filed_source:
+                    return False
             # Reclassifying this same source preserves its existing identity.
             if existing_decision is not None and existing_decision.incident_id == row.incident_id:
                 return True
@@ -1751,7 +1779,8 @@ def classify_and_upsert_incident(session, rm: RawMessage, *, allow_filing_job: b
                 query = session.query(Incident).filter(Incident.category == "elevator", Incident.status != "closed")
                 if asset and asset != "elevator_both":
                     query = query.filter((Incident.asset == asset) | (Incident.asset == "elevator_both") | (Incident.asset.is_(None)))
-                last_open = existing_incident if existing_incident and existing_incident.category == cat else None
+                last_open = existing_incident if (existing_incident and existing_incident.category == cat
+                                                  and same_observed_condition(existing_incident)) else None
                 continuation_event = event_type in {"still_out", "status_update"}
                 recent_same_chat_elevator = _has_recent_same_chat_elevator_context(session, rm)
                 if last_open is None:

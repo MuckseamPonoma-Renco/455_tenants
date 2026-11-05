@@ -64,6 +64,31 @@ def source(mid, text, observation, *, epoch=None, iid="fixture"):
     return raw, d
 
 
+@pytest.mark.parametrize("tamper", [None, "source", "full_hash", "claim", "review", "evidence"])
+def test_complete_copy_can_resolve_only_a_bound_reviewed_non_report(tamper):
+    partial = "Meeting notes: plan the next meet"
+    full = partial + "ing and circulate an agenda."
+    excluded = dict(include=False, category="other", asset=None, state="discussion",
+                    time_scope="current", certainty="stated", source_quote="",
+                    public_summary="", needs_review=False, manual_review=True)
+    raw, decision = source("fragment", partial, facts.bind(excluded, partial))
+    capture = dict(state="reviewed_non_issue", source_sha256=facts.source_hash(partial),
+                   full_text=full, full_source_sha256=facts.source_hash(full),
+                   full_observation=facts.bind(excluded, full),
+                   evidence_method="verified_accessibility_expansion", evidence_sha256="a" * 64)
+    capture['full_observation']['manual_review'] = True
+    if tamper == "source": capture['source_sha256'] = "changed"
+    if tamper == "full_hash": capture['full_source_sha256'] = "changed"
+    if tamper == "claim": capture['full_observation']['include'] = True
+    if tamper == "review": capture['full_observation']['manual_review'] = False
+    if tamper == "evidence": capture['evidence_sha256'] = ""
+    final = json.loads(decision.final_json)
+    final['capture_review'] = capture
+    decision.final_json = json.dumps(final)
+    result = audit_source_contract([(raw, decision)], [])
+    assert result['ok'] is (tamper is None)
+
+
 def test_source_hash_change_invalidates_prior_observation():
     t = "South elevator is out."
     raw, d = source("a", t, observation(t, state="outage", asset="elevator_south"))
@@ -214,6 +239,8 @@ def test_exact_source_drives_filing_and_final_submit_rechecks_changes(
             confidence=95,
             witness_count=1,
             report_count=1,
+            start_ts='2020-01-01T00:00:00Z',
+            proof_refs='unrelated-old-source',
         )
         s.add_all([i, raw, d])
         s.flush()
@@ -223,6 +250,9 @@ def test_exact_source_drives_filing_and_final_submit_rechecks_changes(
             draft.description == o["public_summary"]
             and draft.payload["incident"]["asset"] is None
         )
+        assert draft.payload['incident']['start_ts'] == datetime.fromtimestamp(raw.ts_epoch, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        assert draft.payload['incident']['proof_refs'] == raw.message_id
+        assert draft.payload['incident']['report_count'] == 1
         job = FilingJob(
             incident_id=i.incident_id,
             dedupe_key="fixture",
@@ -508,6 +538,36 @@ def test_lifecycle_keeps_call_fault_separate_from_a_successful_ride(
                 assert facts.filing_evidence(s, s.get(Incident, ids[0])) is not None
         assert not facts.filing_evidence(s, s.get(Incident, ids[0]))
         assert not s.query(FilingJob).count()
+
+
+def test_misassigned_live_fault_does_not_inherit_an_old_outage_receipt(client, monkeypatch):
+    from packages.incident import extractor
+    monkeypatch.setenv('SOURCE_OBSERVATIONS_REQUIRED', '1')
+    base = int(datetime.now(timezone.utc).timestamp()) - 120
+    old_text = 'The elevator is out.'
+    old = source('filed-source', old_text,
+                 observation(old_text, state='outage', public_summary='Elevator is unavailable.'),
+                 epoch=base)
+    current_text = 'The elevator is running but not stopping at floor twelve.'
+    current_observation = observation(current_text, public_summary='Elevator is moving but not stopping at floor twelve.')
+    current = source('current-source', current_text, current_observation, epoch=base + 60)
+    choice = {**facts.decision_fields(current_observation), 'observation': current_observation,
+              'confidence': 95, 'severity': 3, 'review_status': 'completed'}
+    monkeypatch.setattr(extractor, '_pick_decision', lambda *_: (choice, {}, choice, 'source_review'))
+    with get_session() as session:
+        old_incident = Incident(incident_id='fixture', category='elevator', asset=None,
+                                status='open', title='Polluted aggregate title',
+                                start_ts_epoch=base, last_ts_epoch=base+60, confidence=95)
+        payload = json.dumps({'incident': {'proof_refs': 'filed-source'}, 'description': 'Elevator is unavailable.'})
+        job = FilingJob(incident_id='fixture', dedupe_key='old-outage',
+                        state='submitted', attempts=1, payload_json=payload)
+        session.add_all([old_incident, *old, *current, job]); session.flush()
+        new_id = extractor.classify_and_upsert_incident(session, current[0], allow_filing_job=False)
+        session.flush()
+        assert new_id and new_id != 'fixture'
+        assert job.incident_id == 'fixture' and job.payload_json == payload
+        assert current[1].incident_id == new_id
+        assert session.query(FilingJob).count() == 1
 
 
 def test_reclassification_preserves_historical_filing_fence(client, monkeypatch):

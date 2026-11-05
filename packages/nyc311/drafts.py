@@ -158,6 +158,11 @@ def build_filing_draft(inc: Incident, *, preferred_message_id: str | None = None
             'state':observation['state'],'time_scope':observation['time_scope'],'certainty':observation['certainty'],
             'condition_kind':observations.condition_kind(observation)}
         payload['incident']['asset'] = observation['asset']
+        payload['incident']['start_ts'] = normalize_timestamp(raw.ts_iso, fallback=raw.ts_epoch)
+        payload['incident']['end_ts'] = None
+        payload['incident']['proof_refs'] = ','.join(dict.fromkeys([raw.message_id, *observation.get('context_message_ids', [])]))
+        payload['incident']['report_count'] = 1
+        payload['incident']['witness_count'] = 1
     return FilingDraft(
         complaint_type="Elevator or Escalator Complaint",
         form_target="elevator_not_working",

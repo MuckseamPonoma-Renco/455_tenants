@@ -20,6 +20,29 @@ def _normal(value) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
+def _reviewed_non_issue_capture(raw, capture: dict) -> bool:
+    """A retained full UI copy can resolve a fragment only as a non-report.
+
+    It never supplies evidence for publication or filing. Keep both the original
+    raw record and the reviewed full text so the exclusion can be audited again.
+    """
+    full = capture.get("full_text")
+    review = capture.get("full_observation")
+    if not isinstance(full, str) or not isinstance(review, dict):
+        return False
+    bound = observations.bind(review, full)
+    return bool(
+        capture.get("source_sha256") == observations.source_hash(raw.text or "")
+        and capture.get("full_source_sha256") == observations.source_hash(full)
+        and raw.text and raw.text in full
+        and capture.get("evidence_method") == "verified_accessibility_expansion"
+        and re.fullmatch(r"[0-9a-f]{64}", str(capture.get("evidence_sha256", "")))
+        and review.get("manual_review") is True
+        and bound["review_status"] == "completed"
+        and not bound["include"] and not bound["needs_review"]
+    )
+
+
 def claim_errors(observation: dict, label: str, summary: str) -> list[str]:
     """Independent, conservative constraints on the literal published claim."""
     issues = []
@@ -123,6 +146,13 @@ def audit_source_contract(
             unreviewed.append(
                 {"message_id": raw.message_id, "reason": "incomplete_message_capture"}
             )
+            continue
+        if capture.get("state") == "reviewed_non_issue":
+            if _reviewed_non_issue_capture(raw, capture):
+                excluded += 1
+            else:
+                unreviewed.append({"message_id": raw.message_id,
+                                   "reason": "invalid_full_text_review"})
             continue
         if capture.get("state") == "superseded":
             full = context_sources.get(capture.get("full_message_id"))

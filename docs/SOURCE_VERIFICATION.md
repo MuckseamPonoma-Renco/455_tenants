@@ -8,8 +8,12 @@ Run `scripts/audit_public_tenant_log.py --days 30` for an independent comparison
 
 Automatic filing requires a current, explicit, reviewed condition. Its description comes from the source observation. A successful ride does not close a call-button fault. A newer contradictory operating report can stop an older outage filing even when the reports were assigned to different incidents. The final submission guard checks the immutable claimed payload and revalidates the selected source. Additional witnesses alone do not cancel an unchanged form.
 
+The observed date and proof references also come from the selected source, not the aggregate incident's older start date or unrelated witnesses. A filed incident's original source evidence constrains later merges, including reclassification of a previously misassigned source. An earlier aggregate review flag cannot override a current checked source; genuine source ambiguity still holds filing.
+
 Exports and the historical audit retain `allow_filing_job=False` and `historical_audit=true`; retries preserve that boundary. Alias reconciliation retains original message IDs and filing history. Submitted payloads and receipts are never rewritten to conceal an earlier classification error. Historical claim annotations are separately checked against the original payload hash and receipt associations. An uncertain submission is not retried without reconciliation.
 
 WhatsApp capture expands visible “Read more” controls before extracting text. If expansion fails, the partial text is retained as incomplete and cannot produce a complaint. A later complete capture can supersede that partial record only when author, chat, timestamp and text prefix agree. Browser session expiry and human verification still require intervention; source verification does not bypass those controls.
+
+Rich-text paragraphs are captured together, without nested selectable-text duplicates or timestamp-less paragraph fragments. A manually reviewed full UI copy can resolve retained fragments as non-reports only when source hashes, full-text evidence and the explicit non-report review agree. That exception cannot authorize a public claim or a complaint.
 
 The regression suite and live model canaries cover known failure modes. They do not prove that every future model interpretation is correct. Keep the source receipts, independent readback, review holds and filing receipt checks enabled.

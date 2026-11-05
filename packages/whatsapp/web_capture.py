@@ -487,7 +487,10 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
             const captureId = `tenant-capture-${{Date.now()}}-${{domIndex}}-${{Math.random().toString(36).slice(2)}}`;
             node.setAttribute('data-tenant-capture-id', captureId);
             const prePlainText = (node.getAttribute('data-pre-plain-text') || '').trim();
-            const selectable = Array.from(node.querySelectorAll('span.selectable-text, div.selectable-text'))
+            const selectableSelector = 'span.selectable-text, div.selectable-text';
+            const selectable = Array.from(node.querySelectorAll(selectableSelector))
+              .filter(el => !el.parentElement?.closest(selectableSelector)
+                || !node.contains(el.parentElement.closest(selectableSelector)))
               .map(el => (el.innerText || '').trim())
               .filter(Boolean);
             const links = Array.from(node.querySelectorAll('a[href]'))
@@ -591,7 +594,9 @@ def _candidate_from_row(chat_name: str, row: dict[str, Any]) -> WhatsAppCaptureC
     # Leave it unseen so the next capture cycle retries after rendering.
     if ts_epoch is None:
         return None
-    text = _clean(str(row.get("caption") or "")) or _clean(str(row.get("text") or ""))
+    # Rich-text messages can have one selectable element per paragraph. The
+    # last element is only a caption hint, not the complete message body.
+    text = _clean(str(row.get("text") or "")) or _clean(str(row.get("caption") or ""))
     reply_text = _clean(str(row.get("reply_text") or ""))
     if reply_text:
         reply_manifest = build_attachment_manifest(message_context={"reply_text": reply_text}, source="whatsapp_web")

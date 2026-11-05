@@ -28,6 +28,14 @@ def test_long_expanded_message_is_retained_in_full():
     assert candidate.text==full
 
 
+def test_rich_text_message_keeps_every_paragraph_instead_of_last_caption():
+    full = 'North elevator does not stop on floor twelve.\nSouth elevator is running.'
+    row = {'pre_plain_text': '[6:40 PM, 11/4/2026] Fixture Tenant: ',
+           'text': full, 'caption': 'South elevator is running.', 'text_complete': True}
+    candidate = web_capture._candidate_from_row('Fixture Tenants', row)
+    assert candidate.text == full
+
+
 def test_parse_whatsapp_message_meta_american_format():
     sender, ts_iso, ts_epoch = parse_whatsapp_message_meta("[6:21 PM, 4/17/2026] Karen: ")
 
