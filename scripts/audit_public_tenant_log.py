@@ -1054,8 +1054,18 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
                 replacement=(final.get('capture_review') or {}).get('full_message_id')
                 if replacement:context_ids.add(replacement)
             context_sources={raw.message_id:raw for raw in session.query(RawMessage).filter(RawMessage.message_id.in_(context_ids)).all()} if context_ids else {}
-        source_truth = audit_source_contract(sources,
-            [[row.updated,row.issue,row.category,row.follow_up,'','',row.summary] for row in live_rows],
+        recent_times = {row.updated for row in live_rows}
+        source_values = []
+        for index, row in enumerate(live_values):
+            if not row or str(row[0]) not in recent_times:
+                continue
+            checked_row = list(row) + [''] * max(0, 7-len(row))
+            formula_row = live.formula_values[index] if index < len(live.formula_values) else []
+            for column in (4, 5):
+                if column < len(formula_row) and str(formula_row[column]).startswith('='):
+                    checked_row[column] = formula_row[column]
+            source_values.append(checked_row)
+        source_truth = audit_source_contract(sources, source_values,
             overrides=load_public_semantic_overrides(), summary_transform=sheets_sync._public_safe_summary_text, context_sources=context_sources)
     ok = bool(
         not last_error

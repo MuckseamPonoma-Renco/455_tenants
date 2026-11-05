@@ -3193,10 +3193,14 @@ def _observation_update_rows(incidents, raw_map, case_map, allowed_chat_names,
             except (ValueError,TypeError):evidence_review={}
             evidence_allowed = bool(evidence_review.get('allow')
                 and evidence_review.get('source_sha256')==observations.source_hash(raw.text or '')
-                and evidence_review.get('attachments_sha256')==observations.source_hash(raw.attachments or ''))
-            if override is not None:
-                evidence_allowed = override.show_evidence
+                and evidence_review.get('attachments_sha256')==observations.source_hash(raw.attachments or '')
+                and evidence_review.get('allowed_urls'))
+            if override is not None and not override.show_evidence:
+                evidence_allowed = False
             preview, link = _public_raw_evidence_cells(raw) if evidence_allowed else ('','')
+            emitted_urls = set(re.findall(r'https?://[^"\s)]+', preview + ' ' + link))
+            if not emitted_urls.issubset(set(evidence_review.get('allowed_urls') or [])):
+                preview, link = '', ''
             row = [_public_ts(raw.ts_iso, fallback=raw.ts_epoch) or '', issue_label, category,
                    _public_case_badge(cases) if cases else '', preview, link, summary, '', '']
             rows.append((int(raw.ts_epoch or 0), message_id, row))

@@ -564,7 +564,7 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
               capture_id: captureId,
               dom_index: domIndex,
               pre_plain_text: prePlainText,
-              text: selectable.join('\\n').trim() || bodyText,
+              text: selectable.join('\\n').trim() || (node.querySelector(quotedSelector) ? '' : bodyText),
               caption,
               body_text: bodyText,
               links,

@@ -20,6 +20,21 @@ def _normal(value) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
+def _media_permission_errors(raw, decision, row) -> list[str]:
+    urls = set(re.findall(r'https?://[^"\s)]+', str(row[4]) + ' ' + str(row[5])))
+    if not urls:
+        return []
+    try:
+        review = json.loads(decision.final_json or '{}').get('public_evidence_review') or {}
+    except (AttributeError, ValueError, TypeError):
+        review = {}
+    valid = (review.get('allow')
+             and review.get('source_sha256') == observations.source_hash(raw.text or '')
+             and review.get('attachments_sha256') == observations.source_hash(raw.attachments or '')
+             and urls.issubset(set(review.get('allowed_urls') or [])))
+    return [] if valid else ['media_url_not_approved_for_source']
+
+
 def _reviewed_non_issue_capture(raw, capture: dict) -> bool:
     """A retained full UI copy can resolve a fragment only as a non-report.
 
@@ -298,9 +313,9 @@ def audit_source_contract(
         checked = [
             (
                 index,
-                claim_errors(observation, row[1], row[6])
-                if observation and not override
-                else [],
+                (claim_errors(observation, row[1], row[6])
+                 if observation and not override else [])
+                + _media_permission_errors(raw, decision, row),
             )
             for index, row in matches
         ]
