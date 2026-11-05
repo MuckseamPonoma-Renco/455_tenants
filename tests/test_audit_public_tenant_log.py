@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import pytest
 
 import scripts.audit_public_tenant_log as public_audit
 from scripts.audit_public_tenant_log import (
@@ -11,6 +12,17 @@ from scripts.audit_public_tenant_log import (
 
 
 AUDIT_NOW = datetime(2026, 6, 27, 17, 0, tzinfo=public_audit.NY)
+
+
+@pytest.mark.parametrize('strict,label,expected_ok', [
+    ('1', 'Updates', True), ('0', 'Incidents', True), ('1', 'Incidents', False),
+])
+def test_category_header_matches_the_configured_source_count(strict, label, expected_ok, monkeypatch):
+    monkeypatch.setenv('SOURCE_OBSERVATIONS_REQUIRED', strict)
+    rows = _tenant_log_values()
+    rows[11][1] = label
+    result = public_audit._required_rows_audit(rows, rows, limit=20)
+    assert result['ok'] is expected_ok
 
 
 def _pad(*values):

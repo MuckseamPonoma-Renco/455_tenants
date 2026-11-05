@@ -182,6 +182,50 @@ def test_canonical_projection_keeps_basement_defect_and_unknown_car(
     assert audit_source_contract([(raw, d)], rows)["ok"]
 
 
+@pytest.mark.parametrize('allow,approved,expect_visible', [
+    (True, ['https://example.test/approved.jpg'], True),
+    (True, [], False),
+    (True, ['https://example.test/different.jpg'], False),
+    (False, ['https://example.test/approved.jpg'], False),
+])
+def test_media_requires_exact_source_bound_url_even_with_text_override(client, monkeypatch, allow, approved, expect_visible):
+    from types import SimpleNamespace
+    monkeypatch.setenv('SOURCE_OBSERVATIONS_REQUIRED', '1')
+    text = 'South elevator is out.'
+    obs = observation(text, state='outage', asset='elevator_south', public_summary='South elevator is unavailable.')
+    raw, decision = source('media-source', text, obs)
+    final = json.loads(decision.final_json)
+    final['public_evidence_review'] = {'allow': allow, 'source_sha256': facts.source_hash(text),
+                                       'attachments_sha256': facts.source_hash(''), 'allowed_urls': approved}
+    decision.final_json = json.dumps(final)
+    override = SimpleNamespace(include=True, issue_label='South elevator', category_label='Elevator',
+                               summary=obs['public_summary'], show_evidence=True, raw_text_sha256=facts.source_hash(text))
+    monkeypatch.setattr(sync, '_public_semantic_override', lambda *_: override)
+    url = 'https://example.test/approved.jpg'
+    monkeypatch.setattr(sync, '_public_raw_evidence_cells', lambda *_: (f'=IMAGE("{url}")', url))
+    incident = Incident(incident_id='fixture', category='elevator', status='open', title='Outage')
+    rows = sync._public_update_rows([incident], {raw.message_id: raw}, {}, set(),
+                                   {'fixture': [raw.message_id]}, {raw.message_id: decision})
+    assert bool(rows[0][4] or rows[0][5]) is expect_visible
+
+
+def test_independent_audit_rejects_an_extra_media_url():
+    text = 'South elevator is out.'
+    obs = observation(text, state='outage', asset='elevator_south', public_summary='South elevator is unavailable.')
+    raw, decision = source('media-source', text, obs)
+    final = json.loads(decision.final_json)
+    final['public_evidence_review'] = {'allow': True, 'source_sha256': facts.source_hash(text),
+        'attachments_sha256': facts.source_hash(''), 'allowed_urls': ['https://example.test/approved.jpg']}
+    decision.final_json = json.dumps(final)
+    from zoneinfo import ZoneInfo
+    date = datetime.fromtimestamp(raw.ts_epoch, ZoneInfo('America/New_York')).strftime('%Y-%m-%d %I:%M %p')
+    row = [date, 'South elevator unavailable', 'Elevator', '', '=IMAGE("https://example.test/unapproved.jpg")',
+           'https://example.test/approved.jpg', obs['public_summary']]
+    result = audit_source_contract([(raw, decision)], [row])
+    assert not result['ok']
+    assert 'media_url_not_approved_for_source' in result['unsupported_claims'][0]['errors']
+
+
 def test_no_borrowed_receipt_from_collapsed_other_incident(client, monkeypatch):
     monkeypatch.setenv("SOURCE_OBSERVATIONS_REQUIRED", "1")
     t = "South elevator is out."

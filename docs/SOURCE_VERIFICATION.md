@@ -16,4 +16,6 @@ WhatsApp capture expands visible “Read more” controls before extracting text
 
 Rich-text paragraphs are captured together, without nested selectable-text duplicates or timestamp-less paragraph fragments. A manually reviewed full UI copy can resolve retained fragments as non-reports only when source hashes, full-text evidence and the explicit non-report review agree. That exception cannot authorize a public claim or a complaint.
 
+Quoted-parent text stays in reply context, outside the current message paragraphs and text fallback. Public attachment publication requires exact `allowed_urls` bound to the source and attachment hashes; a text override cannot grant that permission. The independent Sheet audit checks actual formula URLs against those permissions as well as checking claim wording and the source-mode `Updates` header.
+
 The regression suite and live model canaries cover known failure modes. They do not prove that every future model interpretation is correct. Keep the source receipts, independent readback, review holds and filing receipt checks enabled.
