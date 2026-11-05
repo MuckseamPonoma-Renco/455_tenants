@@ -516,6 +516,10 @@ def _required_rows_audit(
 ) -> dict[str, object]:
     details: list[dict[str, object]] = []
     for kind, name, signature in REQUIRED_PUBLIC_ROWS:
+        if name == "Category snapshot header":
+            from packages.incident.source_observation import required
+            if required():
+                signature = ("Category", "Updates", "311 filings", "Latest update", "Latest issue")
         expected_matches = [
             row_index
             for row_index, row in enumerate(expected_values)
