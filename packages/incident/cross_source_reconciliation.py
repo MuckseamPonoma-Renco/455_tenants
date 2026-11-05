@@ -296,7 +296,15 @@ def _recompute_incident_materialization(session, incident: Incident, *, rebuild_
         .where(MessageDecision.incident_id == incident.incident_id)
         .order_by(RawMessage.ts_epoch, RawMessage.message_id)
     ).all()
-    issue_rows = [(decision, raw) for decision, raw in rows if decision.is_issue]
+    import json
+    def counted(decision):
+        if not decision.is_issue:
+            return False
+        try:
+            return not json.loads(decision.final_json or '{}').get('alias_of')
+        except (ValueError,TypeError,AttributeError):
+            return True
+    issue_rows = [(decision, raw) for decision, raw in rows if counted(decision)]
     if rebuild_summary:
         import json
         from packages.incident.extractor import _fact_safe_summary
@@ -360,6 +368,7 @@ def completed_model_review(decision: MessageDecision | None) -> dict | None:
 
 
 def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRow | None:
+    from packages.incident import source_observation as observations
     index = _build_index(session, [pair])
     archive = index.raw_by_id.get(pair.archive_message_id)
     live = index.raw_by_id.get(pair.live_message_id)
@@ -367,6 +376,8 @@ def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRo
         return None
 
     canonical, duplicate = _pick_canonical_raw(index, archive, live)
+    if observations.required() and not observations.alias_matches(duplicate,canonical):
+        return None
     canonical_decision = _decision(index, canonical)
     duplicate_decision = _decision(index, duplicate)
     canonical_incident = _incident_for_decision(index, canonical_decision)
@@ -392,6 +403,7 @@ def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRo
         canonical_incident is not None
         and duplicate_incident is not None
         and canonical_incident.incident_id != duplicate_incident.incident_id
+        and not observations.required()
         # A duplicate message is not proof that two whole incident histories
         # are duplicates. Keep other reports and their filing receipts separate.
         and session.scalar(select(MessageDecision.message_id).where(
@@ -412,6 +424,36 @@ def _reconcile_pair(session, pair: CrossSourceDuplicatePair) -> ReconciliationRo
         if completed is not None:
             import json
             canonical_decision.llm_json = json.dumps({**completed, "review_source_message_id": duplicate.message_id})
+
+    if observations.required():
+        import json
+        # Keep immutable proof IDs, including those named by already submitted
+        # jobs. Identity reconciliation must not erase filing evidence.
+        merged = merge_attachment_manifests(canonical.attachments, duplicate.attachments)
+        if merged:
+            canonical.attachments = merged
+        if duplicate_decision is not None:
+            final = json.loads(duplicate_decision.final_json or '{}')
+            final['alias_of'] = canonical.message_id
+            if isinstance(final.get('observation'),dict):
+                final['observation']['source_identity'] = canonical.message_id
+            duplicate_decision.final_json = json.dumps(final)
+        if canonical_decision is not None:
+            final = json.loads(canonical_decision.final_json or '{}')
+            if isinstance(final.get('observation'),dict):
+                final['observation']['source_identity'] = canonical.message_id
+            canonical_decision.final_json = json.dumps(final)
+            if observations.from_decision(canonical_decision,canonical) is None:
+                final['source_review_pending']=True
+                canonical_decision.needs_review=True
+                canonical_decision.auto_file_candidate=False
+                canonical_decision.final_json=json.dumps(final)
+        session.flush()
+        for incident in (canonical_incident,duplicate_incident):
+            if incident is not None:
+                _recompute_incident_materialization(session,incident)
+        row.action = 'reconciled_evidence_retained'
+        return row
 
     if duplicate_decision is not None:
         session.delete(duplicate_decision)

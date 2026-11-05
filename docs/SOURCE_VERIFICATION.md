@@ -1,0 +1,15 @@
+# Source verification and filing
+
+Enable `SOURCE_OBSERVATIONS_REQUIRED=1` on every reader and writer, including the Mac and cloud recovery runner, after applying the reviewed historical observation manifest. Use the same private semantic-override manifest on both hosts. A mixed deployment can otherwise replace checked rows with legacy rendering. Set `AUTO_FILE_MAX_INCIDENT_AGE_HOURS=24` for this deployment; a delayed historical report must not become a current complaint.
+
+The classifier records an exact source quote, source hash, subject, condition, timing and uncertainty. Selected conversation parents have their own hashes; quoted replies take precedence over unrelated intervening discussion. The Sheet uses that checked observation. It does not derive a fresh claim from an incident title or the word “working.” Publication of new attachments requires a separate evidence review. Missing attachments, unclear audio and incomplete text remain visible in quality reporting.
+
+Run `scripts/audit_public_tenant_log.py --days 30` for an independent comparison with the actual public Sheet. Its source contract starts from all messages in the window, including excluded messages. The ordinary renderer/readback comparison checks delivery; it is not sufficient evidence of semantic correctness. The `/health` response exposes cached `source_quality` separately from process liveness. `review_required`, `mismatch`, `stale`, `unverified` and `legacy_unverified` must not be reported as a fully verified system.
+
+Automatic filing requires a current, explicit, reviewed condition. Its description comes from the source observation. A successful ride does not close a call-button fault. A newer contradictory operating report can stop an older outage filing even when the reports were assigned to different incidents. The final submission guard checks the immutable claimed payload and revalidates the selected source. Additional witnesses alone do not cancel an unchanged form.
+
+Exports and the historical audit retain `allow_filing_job=False` and `historical_audit=true`; retries preserve that boundary. Alias reconciliation retains original message IDs and filing history. Submitted payloads and receipts are never rewritten to conceal an earlier classification error. Historical claim annotations are separately checked against the original payload hash and receipt associations. An uncertain submission is not retried without reconciliation.
+
+WhatsApp capture expands visible “Read more” controls before extracting text. If expansion fails, the partial text is retained as incomplete and cannot produce a complaint. A later complete capture can supersede that partial record only when author, chat, timestamp and text prefix agree. Browser session expiry and human verification still require intervention; source verification does not bypass those controls.
+
+The regression suite and live model canaries cover known failure modes. They do not prove that every future model interpretation is correct. Keep the source receipts, independent readback, review holds and filing receipt checks enabled.

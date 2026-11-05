@@ -173,6 +173,12 @@ def _model_review_failed(decision: MessageDecision | None) -> bool:
         return False
     if not isinstance(primary, dict) or not isinstance(final, dict):
         return False
+    from packages.incident.source_observation import required
+    if required():
+        if final.get('source_review_pending'):
+            return True
+        if (final.get('observation') or {}).get('review_status')=='completed' and decision.chosen_source in {'source_observation','audited_source_observation'}:
+            return False
     if str(decision.chosen_source or '').startswith('review') and final.get('review_status') == 'completed':
         return False
     return primary.get('review_status') == 'error'
@@ -200,8 +206,8 @@ def retry_failed_model_reviews(*, limit: int = 25, lock_path: Path | None = None
             candidates = session.scalars(select(MessageDecision)
                 .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
                 .where(RawMessage.ts_epoch >= now - 14 * 86400,
-                       MessageDecision.llm_json.contains('"review_status"'),
-                       MessageDecision.llm_json.contains('"error"'))
+                       ((MessageDecision.llm_json.contains('"review_status"') & MessageDecision.llm_json.contains('"error"'))
+                        | MessageDecision.final_json.contains('"source_review_pending": true')))
                 .order_by(RawMessage.ts_epoch)).all()
             ids = [row.message_id for row in candidates if _model_review_failed(row)][:max(1, min(limit, 100))]
         result = {'ok': True, 'state': 'ready', 'selected': len(ids), 'recovered': 0, 'queued_jobs': 0}

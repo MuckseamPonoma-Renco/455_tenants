@@ -107,6 +107,10 @@ def _elevator_complaint_text(inc: Incident) -> str:
 
 def _classifier_says_actionable_elevator(inc: Incident) -> bool | None:
     session = object_session(inc)
+    from packages.incident import source_observation as observations
+    if observations.required():
+        return bool(session is not None and observations.filing_evidence(session, inc,
+            max_age_hours=_env_int("AUTO_FILE_MAX_INCIDENT_AGE_HOURS",168)))
     if session is None:
         return None
     refs = [ref.strip() for ref in (inc.proof_refs or "").split(",") if ref.strip()]
@@ -196,7 +200,11 @@ def incident_is_auto_eligible(inc: Incident) -> bool:
         return False
 
     if _env_bool("AUTO_FILE_SKIP_NEEDS_REVIEW", False) and bool(inc.needs_review):
-        return False
+        from packages.incident import source_observation as observations
+        # A current checked source can resolve an older ambiguous report.
+        # Strict-mode eligibility already checks that exact source's review.
+        if not observations.required():
+            return False
 
     min_witnesses = _env_int("AUTO_FILE_MIN_WITNESSES", 1)
     min_reports = _env_int("AUTO_FILE_MIN_REPORTS", 1)
@@ -359,6 +367,27 @@ def claimed_filing_job_is_current(session, job: FilingJob) -> bool:
         return False
     if session.scalar(select(ServiceRequestCase).where(ServiceRequestCase.incident_id == incident.incident_id)) is not None:
         return False
+    from packages.incident import source_observation as observations
+    if observations.required():
+        try:
+            claimed = json.loads(job.payload_json or '{}')
+            preferred = claimed['source_evidence']['message_id']
+        except (ValueError, KeyError, TypeError):
+            return False
+        draft = build_filing_draft(incident, preferred_message_id=preferred)
+        if draft is None:
+            return False
+        current = draft.payload
+        # Witness counts and extra proof references do not change the form.
+        # Every claim, source binding, address, date and routing field still must
+        # match. The persisted claimed payload itself remains hash-fenced.
+        def material(payload):
+            value = dict(payload)
+            value['incident'] = {k:v for k,v in (value.get('incident') or {}).items()
+                                 if k not in {'witness_count','report_count','proof_refs','severity'}}
+            return value
+        return (job.complaint_type==draft.complaint_type and job.form_target==draft.form_target
+                and material(claimed)==material(current))
     draft = build_filing_draft(incident)
     return bool(
         draft is not None

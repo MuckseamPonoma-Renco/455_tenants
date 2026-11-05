@@ -123,6 +123,8 @@ def _watchdog_next_delay(result: object, interval_seconds: int) -> int:
 def _public_tenant_log_qa() -> dict[str, object]:
     days = max(1, _env_int("AUTOMATION_PUBLIC_TENANT_LOG_AUDIT_DAYS", 30))
     result = run_public_tenant_log_audit(days=days, resync=False, retries=3, retry_sleep=5.0, limit=5)
+    from packages.source_quality_status import save as save_source_quality
+    save_source_quality(result)
     missing_count = len(result.get("missing_recent_rows") or [])
     unexpected_count = len(result.get("unexpected_recent_rows") or [])
     missing_source_count = len(result.get("missing_source_rows") or [])
@@ -150,8 +152,16 @@ def _public_tenant_log_qa() -> dict[str, object]:
         _record_audit_event("PUBLIC_TENANT_LOG_QA_DEFERRED", None, deferred)
         return deferred
 
+    source_truth = result.get('source_truth') or {}
+    if source_truth.get('unreviewed_sources'):
+        deferred = {**meta, 'repair_skipped':'source_review_required',
+                    'unreviewed_sources':len(source_truth['unreviewed_sources'])}
+        _record_audit_event('PUBLIC_TENANT_LOG_QA_REVIEW_REQUIRED',None,deferred)
+        return deferred
+
     _record_audit_event("PUBLIC_TENANT_LOG_QA_MISMATCH", None, meta)
     repaired = run_public_tenant_log_audit(days=days, resync=True, retries=5, retry_sleep=8.0, limit=5)
+    save_source_quality(repaired)
     repair_meta = {
         **meta,
         "repair_ok": bool(repaired.get("ok")),

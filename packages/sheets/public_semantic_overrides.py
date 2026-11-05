@@ -22,6 +22,7 @@ from typing import Mapping
 DEFAULT_OVERRIDE_PATH = Path(__file__).with_name("public_semantic_overrides.json")
 OVERRIDE_PATH_ENV = "TENANT_PUBLIC_SEMANTIC_OVERRIDES_PATH"
 _HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+_MESSAGE_ID = re.compile(r"^(?:[0-9a-f]{64}|[0-9a-f]{60,62}~[1-9][0-9]?)$")
 _ROOT_FIELDS = frozenset({"schema_version", "overrides"})
 _ENTRY_FIELDS = frozenset(
     {
@@ -106,8 +107,8 @@ def _parse_entry(payload: object, *, index: int) -> PublicSemanticOverride:
     show_evidence = payload["show_evidence"]
     reason = payload["reason"]
 
-    if not _HEX_64.fullmatch(message_id):
-        raise PublicSemanticOverrideError(f"{location}.message_id must be 64 lowercase hex characters")
+    if not _MESSAGE_ID.fullmatch(message_id):
+        raise PublicSemanticOverrideError(f"{location}.message_id must be a retained message hash or album-item ID")
     if not _HEX_64.fullmatch(digest):
         raise PublicSemanticOverrideError(
             f"{location}.raw_text_sha256 must be 64 lowercase hex characters"

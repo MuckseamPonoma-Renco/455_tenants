@@ -220,7 +220,7 @@ def _expected_values() -> list[list[object]]:
     try:
         sheets_sync._service = lambda: fake
         sheets_sync.get_session = _noncommitting_get_session
-        sheets_sync.sync_public_updates_to_sheets()
+        sheets_sync.sync_public_updates_to_sheets(record_lineage=False)
     finally:
         sheets_sync._service = original_service
         sheets_sync.get_session = original_get_session
@@ -1015,7 +1015,8 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
     expected_keys = {row.key for row in expected_rows}
     missing = [row for row in expected_rows if row.key not in live_keys]
     unexpected = [row for row in live_rows if row.key not in expected_keys]
-    source_rows = _source_public_rows(days=days)
+    from packages.incident import source_observation as observations
+    source_rows = [] if observations.required() else _source_public_rows(days=days)
     missing_source = [
         row
         for row in source_rows
@@ -1029,6 +1030,29 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
     expected_latest = all_expected_rows[0].issue if all_expected_rows else ""
     live_latest = _metric(live_values, "Latest update") if live_values else ""
     latest_ok = _normalize_text(expected_latest) == _normalize_text(live_latest)
+    from packages.incident import source_observation as observations
+    source_truth = None
+    if observations.required():
+        from packages.sheets.source_contract import audit_source_contract
+        from packages.sheets.public_semantic_overrides import load_public_semantic_overrides
+        cutoff_epoch = int((datetime.now(tz=NY)-timedelta(days=days)).timestamp())
+        with _noncommitting_get_session() as session:
+            # Start from every source, not only decisions the renderer includes.
+            sources = session.query(RawMessage, MessageDecision).outerjoin(MessageDecision,RawMessage.message_id==MessageDecision.message_id).filter(RawMessage.ts_epoch>=cutoff_epoch).all()
+            allowed=sheets_sync._allowed_public_chat_names()
+            sources=[(raw,decision) for raw,decision in sources if sheets_sync._raw_message_is_public(raw,allowed)]
+            context_ids=set()
+            for raw,decision in sources:
+                try:final=json.loads(decision.final_json or '{}') if decision else {}
+                except (ValueError,TypeError):final={}
+                context_ids.update((final.get('observation') or {}).get('context_message_ids') or [])
+                if final.get('alias_of'):context_ids.add(final['alias_of'])
+                replacement=(final.get('capture_review') or {}).get('full_message_id')
+                if replacement:context_ids.add(replacement)
+            context_sources={raw.message_id:raw for raw in session.query(RawMessage).filter(RawMessage.message_id.in_(context_ids)).all()} if context_ids else {}
+        source_truth = audit_source_contract(sources,
+            [[row.updated,row.issue,row.category,row.follow_up,'','',row.summary] for row in live_rows],
+            overrides=load_public_semantic_overrides(), summary_transform=sheets_sync._public_safe_summary_text, context_sources=context_sources)
     ok = bool(
         not last_error
         and logical_tenant_log["ok"]
@@ -1036,6 +1060,7 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
         and not unexpected
         and not missing_source
         and latest_ok
+        and (source_truth is None or source_truth["ok"])
     )
 
     return {
@@ -1044,13 +1069,15 @@ def run_audit(*, days: int, resync: bool, retries: int, retry_sleep: float, limi
         "days": days,
         "resynced": resync,
         "full_tenant_log_ok": logical_tenant_log["ok"],
+        "source_truth": source_truth,
         "logical_tenant_log": logical_tenant_log,
         "expected_recent_rows": len(expected_rows),
         "live_recent_rows": len(live_rows),
-        "source_recent_rows": len(source_rows),
+        "source_recent_rows": source_truth["included_sources"] if source_truth is not None else len(source_rows),
         "missing_recent_rows": _row_dicts(missing, limit=limit),
         "unexpected_recent_rows": _row_dicts(unexpected, limit=limit),
-        "missing_source_rows": _source_row_dicts(missing_source, limit=limit),
+        "missing_source_rows": source_truth["missing_reports"][:limit] if source_truth is not None else _source_row_dicts(missing_source, limit=limit),
+        "source_truth_ok": source_truth["ok"] if source_truth is not None else None,
         "expected_latest_update": expected_latest,
         "live_latest_update": live_latest,
         "latest_update_ok": latest_ok,

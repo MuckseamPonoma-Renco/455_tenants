@@ -92,7 +92,7 @@ def _short_description(inc: Incident) -> str:
     return f"{subject} not working."
 
 
-def build_filing_draft(inc: Incident) -> FilingDraft | None:
+def build_filing_draft(inc: Incident, *, preferred_message_id: str | None = None) -> FilingDraft | None:
     load_local_env_file()
     building_name = _env("BUILDING_NAME", "Building")
     address = canonicalize_building_address()
@@ -101,13 +101,27 @@ def build_filing_draft(inc: Incident) -> FilingDraft | None:
     if inc.category != "elevator":
         return None
 
-    subject = _asset_label(inc.asset)
-    description = _short_description(inc)
+    from packages.incident import source_observation as observations
+    evidence = None
+    if observations.required():
+        attached = object_session(inc)
+        if attached is not None:
+            evidence = observations.filing_evidence(attached, inc, preferred_message_id=preferred_message_id)
+        else:
+            with get_session() as session:
+                stored=session.get(Incident,inc.incident_id)
+                evidence=observations.filing_evidence(session,stored,preferred_message_id=preferred_message_id) if stored is not None else None
+        if evidence is None:
+            return None
+    subject = _asset_label(evidence[2]['asset'] if evidence else inc.asset)
+    description = evidence[2]['public_summary'] if evidence else _short_description(inc)
     issue_title = "defective operation" if any(
         token in description.casefold()
         for token in ("clunk", "bounced", "opened slowly", "operating roughly", "basement")
     ) else "outage"
 
+    if evidence:
+        issue_title = 'defective operation' if evidence[2]['state']=='malfunction' else 'reduced service' if evidence[2]['state']=='partial_service' else 'outage'
     payload = {
         "incident_id": inc.incident_id,
         "complaint_type": "Elevator or Escalator Complaint",
@@ -138,6 +152,12 @@ def build_filing_draft(inc: Incident) -> FilingDraft | None:
         ],
     }
 
+    if evidence:
+        raw, decision, observation = evidence
+        payload['source_evidence'] = {'message_id':raw.message_id,'source_sha256':observation['source_sha256'],
+            'state':observation['state'],'time_scope':observation['time_scope'],'certainty':observation['certainty'],
+            'condition_kind':observations.condition_kind(observation)}
+        payload['incident']['asset'] = observation['asset']
     return FilingDraft(
         complaint_type="Elevator or Escalator Complaint",
         form_target="elevator_not_working",

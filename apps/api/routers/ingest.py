@@ -101,6 +101,11 @@ def _promote_live_capture_over_export(
 ) -> None:
     """Keep the existing ID while replacing export aliases with live capture metadata."""
     _merge_duplicate_capture_attachments(existing, incoming_attachments)
+    from packages.incident.source_observation import required
+    if required():
+        # The existing immutable source remains the review/filing evidence.
+        # Arrival through a different transport does not make history fresh.
+        return
     existing.chat_name = str(prepared["chat_name"] or existing.chat_name or "")
     existing.sender = str(prepared["sender"] or existing.sender or "")
     existing.sender_hash = str(prepared["sender_hash"] or existing.sender_hash)

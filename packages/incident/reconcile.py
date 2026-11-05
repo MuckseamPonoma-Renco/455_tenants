@@ -149,6 +149,8 @@ def close_superseded_open_elevator_incidents(
     if not closed_rows:
         return ElevatorReconcileSummary()
 
+    from packages.incident import source_observation as observations
+    kinds={row.incident_id:observations.incident_kind(session,row) for row in [*open_rows,*closed_rows]} if observations.required() else {}
     summary = ElevatorReconcileSummary()
     for row in open_rows:
         open_last = int(row.last_ts_epoch or 0)
@@ -161,6 +163,7 @@ def close_superseded_open_elevator_incidents(
                 if int(candidate.end_ts_epoch or candidate.last_ts_epoch or 0) >= open_last
                 and int(candidate.end_ts_epoch or candidate.last_ts_epoch or 0) - open_last <= max_gap_seconds
                 and _assets_compatible(row.asset, candidate.asset)
+                and (not observations.required() or (kinds.get(row.incident_id) is not None and kinds.get(row.incident_id)==kinds.get(candidate.incident_id)))
             ),
             None,
         )
