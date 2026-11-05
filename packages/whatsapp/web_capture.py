@@ -488,7 +488,9 @@ def _extract_visible_rows(page: Page) -> list[dict[str, Any]]:
             node.setAttribute('data-tenant-capture-id', captureId);
             const prePlainText = (node.getAttribute('data-pre-plain-text') || '').trim();
             const selectableSelector = 'span.selectable-text, div.selectable-text';
+            const quotedSelector = '[aria-label*="Quoted"], [data-testid*="quoted"]';
             const selectable = Array.from(node.querySelectorAll(selectableSelector))
+              .filter(el => !el.closest(quotedSelector))
               .filter(el => !el.parentElement?.closest(selectableSelector)
                 || !node.contains(el.parentElement.closest(selectableSelector)))
               .map(el => (el.innerText || '').trim())
