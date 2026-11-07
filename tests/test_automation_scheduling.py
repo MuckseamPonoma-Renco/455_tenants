@@ -5,6 +5,11 @@ import pytest
 import scripts.run_automation_daemon as automation
 
 
+@pytest.mark.parametrize('result,expected', [({'ok':True,'deferred':5},60), ({'ok':False,'errors':1},300), ({'ok':True,'coverage_complete':True},3600)])
+def test_status_work_resumes_after_bounded_batch(result, expected):
+    assert automation._status_next_delay(result,3600) == expected
+
+
 def _run_loop(monkeypatch, *, filing_results, duration, status_sync_seconds=0, filing_idle_seconds=None):
     clock = [0.0]
     filing_calls = []

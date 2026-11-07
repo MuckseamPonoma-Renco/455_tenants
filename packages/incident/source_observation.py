@@ -66,6 +66,7 @@ SCHEMA = {
     "additionalProperties": False,
 }
 INSTRUCTIONS = """Also return an observation describing the ORIGINAL source, independent of rule/incident labels.
+A direct first-person ride report such as "I just rode in South" is an included working_observation of the South elevator, even without the word elevator. It is not discussion and does not prove every button works. For mixed direct and inferred service reports, preserve which car was actually ridden and which was only guessed to work. "Took North; no ashtray in front of South, so I guess it works" proves only the North ride. Words such as seemed, seems, guess, presume and apparently must not become a definite both-cars restoration. Never infer successful service from removal of a barrier.
 Treat public transit, other buildings, system/security-code notices, social comments, jokes and hypothetical scenarios as nonreports unless a separate explicit clause reports this building's condition. General amenity descriptions, personal billing/legal discussion, and speculative technical explanations do not establish a maintenance defect.
 Use include=true for an asserted condition, qualified operating observation or repair update; false for discussion, questions alone, advice, external reference or unavailable media.
 Choose state, time_scope and certainty conservatively. outage means an elevator/car is unavailable; a floor-call, basement-access, door, travel or floor-selection defect is malfunction even when the car can move. partial_service means some service remains available. For North working and South out, the affected asset is South, not null or Both. A current message can describe a past condition. "One working" is partial_service, not both restored. A ride or "working" observation is working_observation, not proof every floor-call button is repaired. Only an explicit successful repair or return to service is restoration. A mechanic visit, expected parts or failed repair is not restoration. "Couldn't get it operational" is repair_unsuccessful. Workers running a cable are not a running elevator.
@@ -88,6 +89,12 @@ def required() -> bool:
 
 def source_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _direct_ride(text: str):
+    # Whole-message match keeps questions, negations, other transport, and
+    # additional fault clauses out of this narrow deterministic recovery.
+    return re.fullmatch(r"\s*I\s+(?:just\s+)?rode\s+(?:in\s+|on\s+)?(?:the\s+)?(North|South)(?:\s+(?:elevator|lift))?[.!\s]*", text, re.I)
 
 
 def errors(observation: object, text: str) -> list[str]:
@@ -131,6 +138,8 @@ def errors(observation: object, text: str) -> list[str]:
         problems.append("missing_evidence_or_summary")
     if not observation["include"] and summary:
         problems.append("excluded_summary")
+    if not observation["include"] and _direct_ride(text):
+        problems.append("explicit_ride_excluded")
     if observation["include"] and observation["state"] in {
         "discussion",
         "unavailable_media",
@@ -358,7 +367,7 @@ def errors(observation: object, text: str) -> list[str]:
             asset == "elevator_both"
             and observation["certainty"] == "stated"
             and re.search(
-                r"\b(?:think|maybe|may|might|potentially|possibly|seems?|ostensibly)\b[^.!?]{0,50}\bboth\b|\bboth\b[^.!?]{0,30}\b(?:potentially|possibly|maybe|might|may)\b",
+                r"\b(?:think|maybe|may|might|potentially|possibly|seems?|seemed|guess|presume|ostensibly)\b[^.!?]{0,50}\bboth\b|\bboth\b[^.!?]{0,30}\b(?:potentially|possibly|maybe|might|may|seems?|seemed|guess|presume)\b",
                 text,
                 re.I,
             )
@@ -513,6 +522,13 @@ def bind(
         if isinstance(observation, dict)
         else {}
     )
+    ride = _direct_ride(text)
+    if ride and result.get("include") is False:
+        side = ride.group(1).lower()
+        result.update(include=True, category="elevator", asset="elevator_" + side,
+                      state="working_observation", time_scope="current", certainty="stated",
+                      source_quote=text.strip(), public_summary=f"Tenant reported riding the {side.title()} elevator.",
+                      needs_review=False, context_message_ids=[])
     if result.get("include") is False:
         # Excluded messages have no public text. Removing a model's redundant
         # explanation changes no classification and avoids endless retries.

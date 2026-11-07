@@ -13,7 +13,7 @@ def status_path():
 def record_status_sync(summary):
     # Counts and outcome only: never raw portal text, complaint text or tokens.
     fields = {'ok', 'updated', 'total', 'attempted', 'checked', 'not_found',
-              'unverified', 'deferred', 'errors', 'coverage_complete'}
+              'unverified', 'deferred', 'errors', 'coverage_complete', 'cached_fresh', 'fresh', 'elapsed_seconds'}
     return write_automation_status(status_path(), **{k: v for k, v in summary.items() if k in fields})
 
 
@@ -27,10 +27,11 @@ def public_status():
         age = float('inf')
     stale = age > 7200 or age < -300
     failed = receipt.get('ok') is not True
+    catching_up = receipt.get('coverage_complete') is not True
     return {
-        'state': 'stale' if stale else 'degraded' if failed else 'ready',
-        'has_error': stale or failed,
+        'state': 'stale' if stale else 'degraded' if failed else 'catching_up' if catching_up else 'ready',
+        'has_error': stale or failed or catching_up,
         'last_completed_at': receipt.get('updated_at'),
-        **{key: receipt.get(key, 0) for key in ('updated', 'total', 'not_found', 'unverified', 'deferred', 'errors')},
+        **{key: receipt.get(key, 0) for key in ('updated', 'total', 'not_found', 'unverified', 'deferred', 'errors', 'fresh', 'cached_fresh', 'elapsed_seconds')},
         'coverage_complete': receipt.get('coverage_complete') is True,
     }

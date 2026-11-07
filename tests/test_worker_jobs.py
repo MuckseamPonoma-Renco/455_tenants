@@ -15,6 +15,13 @@ def _session_context(session):
     yield session
 
 
+def test_concurrent_status_refresh_does_not_overwrite_health_or_call_sources(monkeypatch):
+    monkeypatch.setattr(worker_jobs, "status_sync_lock", lambda: _session_context(False))
+    monkeypatch.setattr(worker_jobs, "sync_all_case_statuses", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("duplicate refresh")))
+    result = worker_jobs.sync_311_statuses()
+    assert result == {"ok": True, "action": "status_refresh_already_running", "deferred": 1}
+
+
 def test_status_sync_does_not_republish_sheets_without_changes(monkeypatch):
     session = _Session()
     sheet_syncs = []

@@ -64,7 +64,7 @@ def test_apply_portal_lookup_status_persists_real_lookup(client):
 
 
 def test_sync_all_case_statuses_uses_portal_fallback_when_open_data_has_no_row(client, monkeypatch):
-    monkeypatch.setattr(tracker, "fetch_live_status", lambda sr_number: None)
+    monkeypatch.setattr(tracker, "fetch_live_statuses", lambda numbers, **kw: {})
     monkeypatch.setattr(
         "packages.nyc311.portal.lookup_service_request_status",
         lambda sr_number, **kwargs: {
@@ -94,7 +94,7 @@ def test_sync_all_case_statuses_uses_portal_fallback_when_open_data_has_no_row(c
 def test_sync_all_case_statuses_continues_after_one_lookup_error(client, monkeypatch):
     def fake_fetch(sr_number):
         if sr_number == "311-11111111":
-            raise RuntimeError("temporary 503")
+            return {"unique_key": "11111111", "status": "Unverified navigation text"}
         return {
             "unique_key": sr_number.split("-", 1)[1],
             "status": "Closed",
@@ -103,7 +103,7 @@ def test_sync_all_case_statuses_continues_after_one_lookup_error(client, monkeyp
             "closed_date": "2026-05-01T12:00:00.000",
         }
 
-    monkeypatch.setattr(tracker, "fetch_live_status", fake_fetch)
+    monkeypatch.setattr(tracker, "fetch_live_statuses", lambda numbers, **kw: {n: fake_fetch(n) for n in numbers})
 
     with get_session() as session:
         session.add(ServiceRequestCase(service_request_number="311-11111111", status="submitted"))
@@ -119,7 +119,7 @@ def test_sync_all_case_statuses_continues_after_one_lookup_error(client, monkeyp
         assert first.status == "submitted"
         assert second.status == "Closed"
         assert results.summary["ok"] is False
-        assert results.summary["errors"] == 1
+        assert results.summary["unverified"] == 1
 
 
 def test_portal_lookup_status_does_not_persist_navigation_text_as_status(client):
@@ -229,7 +229,7 @@ def test_reingested_chat_receipt_does_not_downgrade_verified_case(client):
 
 def test_limited_portal_refresh_rotates_older_cases_and_not_found_attempts(client, monkeypatch):
     monkeypatch.setenv("NYC311_STATUS_SYNC_PORTAL_MAX_CASES", "1")
-    monkeypatch.setattr(tracker, "fetch_live_status", lambda _sr: None)
+    monkeypatch.setattr(tracker, "fetch_live_statuses", lambda numbers, **kw: {})
     attempted = []
 
     def portal(sr_number, **kwargs):
@@ -258,7 +258,7 @@ def test_successful_portal_fallback_recovers_open_data_error(client, monkeypatch
     def fail(_sr):
         raise RuntimeError("temporary 503")
 
-    monkeypatch.setattr(tracker, "fetch_live_status", fail)
+    monkeypatch.setattr(tracker, "fetch_live_statuses", lambda numbers, **kw: fail(numbers))
     monkeypatch.setattr("packages.nyc311.portal.lookup_service_request_status", lambda sr, **kw: _lookup(sr))
     with get_session() as session:
         session.add(ServiceRequestCase(service_request_number="311-27200350", status="submitted"))
@@ -273,10 +273,77 @@ def test_deferred_fallback_does_not_hide_open_data_error(client, monkeypatch):
         raise RuntimeError("temporary 503")
 
     monkeypatch.setenv("NYC311_STATUS_SYNC_PORTAL_MAX_CASES", "0")
-    monkeypatch.setattr(tracker, "fetch_live_status", fail)
+    monkeypatch.setattr(tracker, "fetch_live_statuses", lambda numbers, **kw: fail(numbers))
     with get_session() as session:
         session.add(ServiceRequestCase(service_request_number="311-27200350", status="submitted"))
         session.commit()
         result = tracker.sync_all_case_statuses(session, portal_fallback=True)
         assert result.summary["ok"] is False
         assert result.summary["errors"] == 1
+
+
+def test_batch_fetch_uses_one_request_and_rejects_foreign_identity(monkeypatch):
+    import httpx
+    real_client = httpx.Client
+    calls = []
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200, json=[{"unique_key": "11111111", "status": "Open"}])
+    monkeypatch.setattr(tracker.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(respond), **kw))
+    numbers = [f"311-{11111111+i}" for i in range(80)]
+    assert tracker.fetch_live_statuses(numbers)[numbers[0]]["status"] == "Open"
+    assert len(calls) == 1
+    assert "unique_key in" in calls[0].url.params["$where"]
+    with pytest.raises(ValueError, match="unexpected"):
+        tracker.fetch_live_statuses(["311-22222222"])
+
+
+def test_rate_limit_retry_after_does_not_cause_eighty_retries(monkeypatch):
+    import httpx
+    real_client = httpx.Client
+    calls = []
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"Retry-After": "120"})
+    monkeypatch.setattr(tracker.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(respond), **kw))
+    monkeypatch.setattr(tracker.time, "sleep", lambda _: pytest.fail("must not retry before Retry-After"))
+    with pytest.raises(httpx.HTTPStatusError):
+        tracker.fetch_live_statuses([f"311-{11111111+i}" for i in range(80)], timeout_seconds=10)
+    assert len(calls) == 1
+
+
+def test_recent_verified_cases_are_not_requeried_and_coverage_remains_complete(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(tracker, "fetch_live_statuses", lambda numbers, **kw: calls.extend(numbers) or {})
+    with get_session() as session:
+        session.add(ServiceRequestCase(service_request_number="311-11111111", status="In Progress", last_checked_at=tracker.now_iso()))
+        session.commit()
+        result = tracker.sync_all_case_statuses(session)
+        assert not calls
+        assert result.summary["fresh"] == 1
+        assert result.summary["cached_fresh"] == 1
+        assert result.summary["updated"] == 0
+        assert result.summary["coverage_complete"] is True
+
+
+def test_slow_status_work_yields_and_next_cycle_resumes_without_rechecking_success(client, monkeypatch):
+    clock = [0.0]
+    calls = []
+    monkeypatch.setenv("NYC311_STATUS_SYNC_BUDGET_SECONDS", "10")
+    monkeypatch.setattr(tracker.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(tracker, "fetch_live_statuses", lambda numbers, **kw: {})
+    def portal(number, **kw):
+        calls.append(number)
+        assert kw["timeout_seconds"] <= 10
+        clock[0] += 10
+        return _lookup(number)
+    monkeypatch.setattr("packages.nyc311.portal.lookup_service_request_status", portal)
+    with get_session() as session:
+        session.add_all([ServiceRequestCase(service_request_number=n, status="submitted") for n in ("311-11111111", "311-22222222")])
+        session.commit()
+        first = tracker.sync_all_case_statuses(session, commit_each=True)
+        assert first.summary["updated"] == 1 and first.summary["deferred"] == 1
+        assert first.summary["coverage_complete"] is False
+        second = tracker.sync_all_case_statuses(session, commit_each=True)
+        assert second.summary["coverage_complete"] is True
+        assert calls == ["311-11111111", "311-22222222"]

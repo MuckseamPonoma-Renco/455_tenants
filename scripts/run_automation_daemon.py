@@ -120,6 +120,15 @@ def _watchdog_next_delay(result: object, interval_seconds: int) -> int:
     return interval_seconds if watchdog_result_ok(result) else public_record_retry_seconds(interval_seconds)
 
 
+def _status_next_delay(result: object, interval_seconds: int) -> int:
+    if isinstance(result, dict):
+        if result.get("ok") is False:
+            return min(interval_seconds, 300)
+        if result.get("deferred", 0):
+            return min(interval_seconds, 60)
+    return interval_seconds
+
+
 def _public_tenant_log_qa() -> dict[str, object]:
     days = max(1, _env_int("AUTOMATION_PUBLIC_TENANT_LOG_AUDIT_DAYS", 30))
     result = run_public_tenant_log_audit(days=days, resync=False, retries=3, retry_sleep=5.0, limit=5)
@@ -330,7 +339,7 @@ def main() -> None:
                 if result is not None:
                     _log(f"status sync result: {result}")
                     did_work = True
-                next_status_sync_at = time.monotonic() + status_sync_seconds
+                next_status_sync_at = time.monotonic() + _status_next_delay(result, status_sync_seconds)
 
         except KeyboardInterrupt:
             _record_audit_event("AUTOMATION_LOOP_STOPPED", None, {"reason": "keyboard_interrupt"})
