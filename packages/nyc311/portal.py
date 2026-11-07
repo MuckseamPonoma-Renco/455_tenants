@@ -648,29 +648,38 @@ def submit_elevator_complaint(
         )
 
 
-def lookup_service_request_status(sr_number: str, *, headless: bool = True) -> PortalStatusLookup:
+def lookup_service_request_status(sr_number: str, *, headless: bool = True, timeout_seconds: float = 120) -> PortalStatusLookup:
     load_local_env_file()
     normalized = normalize_sr_number(sr_number)
     if not normalized:
         raise RuntimeError(f"Invalid service request number: {sr_number}")
 
+    deadline = time.monotonic() + timeout_seconds
+    def remaining_ms():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("NYC311 lookup deadline exceeded")
+        return max(1, int(remaining * 1000))
+
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={"width": 1440, "height": 1600}, timezone_id="America/New_York")
-        page = context.new_page()
-        page.goto(CHECK_STATUS_URL, wait_until="domcontentloaded", timeout=120_000)
-        page.locator("#ReferenceNumberInput").fill(normalized, force=True)
-        page.locator("#SubmitBtn").click(force=True, no_wait_after=True)
-        page.wait_for_function(r"""sr => {
+        browser = playwright.chromium.launch(headless=headless, timeout=remaining_ms())
+        try:
+            context = browser.new_context(viewport={"width": 1440, "height": 1600}, timezone_id="America/New_York")
+            page = context.new_page()
+            page.goto(CHECK_STATUS_URL, wait_until="domcontentloaded", timeout=remaining_ms())
+            page.locator("#ReferenceNumberInput").fill(normalized, force=True, timeout=remaining_ms())
+            page.locator("#SubmitBtn").click(force=True, no_wait_after=True, timeout=remaining_ms())
+            page.wait_for_function(r"""sr => {
             const text = document.body?.innerText || '';
             return /invalid service request|service request (?:was )?not found/i.test(text)
                 || (text.includes(sr) && /SR Number/.test(text)
                     && (/SR Status/.test(text) || /Date Closed\s+\d/.test(text)
                         || /reviewed this complaint and closed it/i.test(text)));
-        }""", arg=normalized, timeout=45000)
-        text = page.locator("body").inner_text()
-        final_url = page.url
-        browser.close()
+            }""", arg=normalized, timeout=remaining_ms())
+            text = page.locator("body").inner_text(timeout=remaining_ms())
+            final_url = page.url
+        finally:
+            browser.close()
 
     status = _extract_lookup_status(text)
     found = _lookup_matches(text, normalized) and status is not None

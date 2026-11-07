@@ -1,12 +1,13 @@
 from __future__ import annotations
 from typing import Any
+from contextlib import contextmanager
 import json
 import os
 import re
 import time
 from datetime import datetime, timezone
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
 from packages.audit import append_audit_event
 from packages.db import FilingJob, Incident, MessageDecision, RawMessage, ServiceRequestCase
 from packages.timeutil import normalize_timestamp
@@ -219,6 +220,54 @@ def fetch_live_status(sr_number: str) -> dict | None:
     return None
 
 
+def fetch_live_statuses(sr_numbers: list[str], *, timeout_seconds: float = 30) -> dict[str, dict]:
+    """One bounded Open Data query per batch, instead of retrying every case."""
+    numbers = sorted({n for value in sr_numbers if (n := normalize_sr_number(value))})
+    if not numbers:
+        return {}
+    if len(numbers) > 100:
+        raise ValueError("Status batches are limited to 100 cases")
+    keys = ",".join("'" + n.split("-", 1)[1] + "'" for n in numbers)
+    query = {
+        "$limit": len(numbers),
+        "$select": "unique_key,status,agency,complaint_type,descriptor,created_date,closed_date,resolution_description,resolution_action_updated_date",
+        "$where": f"unique_key in ({keys})",
+    }
+    deadline = time.monotonic() + timeout_seconds
+    with httpx.Client(timeout=8.0) as client:
+        for attempt in range(min(3, _tracker_retries())):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Open Data status batch deadline exceeded")
+            try:
+                response = client.get(_tracker_endpoint(), params=query, timeout=min(8.0, remaining))
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list) or not all(isinstance(row, dict) for row in payload):
+                    raise ValueError("Open Data returned an invalid status batch")
+                found = {}
+                for row in payload:
+                    number = normalize_sr_number(str(row.get("unique_key") or ""))
+                    if number not in numbers or number in found:
+                        raise ValueError("Open Data returned an unexpected or duplicate case identity")
+                    found[number] = row
+                return found
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
+                if attempt + 1 >= min(3, _tracker_retries()) or (status is not None and status != 429 and status < 500):
+                    raise
+                try:
+                    delay = max(0.5 * (2 ** attempt), float(response.headers.get("Retry-After", 0)) if response is not None else 0)
+                except ValueError:
+                    # An HTTP-date Retry-After is also a request to back off.
+                    raise
+                if delay >= deadline - time.monotonic():
+                    raise
+                time.sleep(delay)
+    return {}
+
+
 PORTAL_FIELD_LABELS = {
     "updated_on": "Updated On",
     "date_reported": "Date Reported",
@@ -421,6 +470,21 @@ class StatusSyncResults(list):
         }
 
 
+@contextmanager
+def status_sync_lock():
+    """Coordinate Mac/cloud status refreshes independently of filing locks."""
+    from packages.db import engine
+    if engine.dialect.name != "postgresql":
+        yield True
+        return
+    # A separate, bounded transaction survives the work session's commit_each
+    # and is compatible with transaction poolers. The lock releases on exit
+    # or disconnect; no durable session lock can leak into the pool.
+    with engine.begin() as connection:
+        acquired = connection.scalar(sql_text("SELECT pg_try_advisory_xact_lock(455311, 2)"))
+        yield bool(acquired)
+
+
 def _last_status_attempt(case: ServiceRequestCase) -> str:
     try:
         raw = json.loads(case.raw_status_json or "{}")
@@ -441,22 +505,49 @@ def _record_unsuccessful_attempt(case: ServiceRequestCase, outcome: str) -> None
     case.raw_status_json = _json_dumps(raw)
 
 
+def _status_is_fresh(case: ServiceRequestCase) -> bool:
+    try:
+        checked = datetime.fromisoformat(case.last_checked_at.replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - checked).total_seconds()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    closed = str(case.status).casefold() in CLOSED_STATUS_LABELS
+    interval = max(300, _env_int("NYC311_STATUS_CLOSED_REFRESH_SECONDS" if closed else "NYC311_STATUS_REFRESH_SECONDS", 86400 if closed else 3600))
+    return 0 <= age < interval
+
+
 def sync_all_case_statuses(session, *, portal_fallback: bool | None = None, headless: bool = True, commit_each: bool = False) -> StatusSyncResults:
     use_portal_fallback = _env_bool("NYC311_STATUS_SYNC_PORTAL_FALLBACK", True) if portal_fallback is None else portal_fallback
     portal_max_cases = max(0, _env_int("NYC311_STATUS_SYNC_PORTAL_MAX_CASES", 25))
     results = StatusSyncResults()
     rows = list(session.scalars(select(ServiceRequestCase)).all())
-    # Failed/not-found attempts rotate too, without falsely refreshing last_checked_at.
-    rows.sort(key=lambda case: (_last_status_attempt(case), case.id or 0))
     results.summary["total"] = len(rows)
+    due = [case for case in rows if not _status_is_fresh(case)]
+    results.summary["cached_fresh"] = len(rows) - len(due)
+    # Failed/not-found attempts rotate too, without falsely refreshing last_checked_at.
+    due.sort(key=lambda case: (_last_status_attempt(case), case.id or 0))
+    started = time.monotonic()
+    deadline = started + max(10, min(300, _env_int("NYC311_STATUS_SYNC_BUDGET_SECONDS", 90)))
+    selected = due[:100]
+    batch_error = None
+    try:
+        live_rows = fetch_live_statuses([c.service_request_number for c in selected], timeout_seconds=min(30, deadline - time.monotonic()))
+    except Exception as exc:
+        live_rows = {}
+        batch_error = str(exc)[:500]
+        append_audit_event("NYC311_STATUS_OPEN_DATA_ERROR", None, {"scope": "batch", "cases": len(selected), "error": batch_error})
     portal_checked = 0
-    for case in rows:
+    for case in selected:
+        if time.monotonic() >= deadline:
+            break
         results.summary["attempted"] += 1
         source = "nyc_open_data"
         problems = []
         outcome = "not_found"
         try:
-            live = fetch_live_status(case.service_request_number)
+            if batch_error:
+                raise RuntimeError(batch_error)
+            live = live_rows.get(normalize_sr_number(case.service_request_number))
             updated = apply_open_data_status(case, live) if live else False
             if live and not updated:
                 outcome = "unverified"
@@ -465,17 +556,12 @@ def sync_all_case_statuses(session, *, portal_fallback: bool | None = None, head
             updated = False
             outcome = "error"
             problems.append({"source": source, "error": str(exc)[:500]})
-            append_audit_event(
-                "NYC311_STATUS_OPEN_DATA_ERROR",
-                None,
-                {"service_request_number": case.service_request_number, "error": str(exc)[:500]},
-            )
         if not updated and use_portal_fallback and portal_checked < portal_max_cases:
             portal_checked += 1
             try:
                 from packages.nyc311.portal import lookup_service_request_status
 
-                lookup = lookup_service_request_status(case.service_request_number, headless=headless)
+                lookup = lookup_service_request_status(case.service_request_number, headless=headless, timeout_seconds=max(0.1, min(30, deadline - time.monotonic())))
                 updated = apply_portal_lookup_status(case, lookup)
                 source = "nyc311_portal"
                 if not updated:
@@ -507,6 +593,9 @@ def sync_all_case_statuses(session, *, portal_fallback: bool | None = None, head
             # Browser/network work can take minutes. Preserve completed checks
             # and release database locks between cases, not after the whole queue.
             session.commit()
+    results.summary["deferred"] += len(due) - results.summary["attempted"]
     results.summary["ok"] = not any(results.summary[key] for key in ("errors", "not_found", "unverified"))
-    results.summary["coverage_complete"] = results.summary["updated"] == results.summary["total"]
+    results.summary["fresh"] = sum(_status_is_fresh(case) for case in rows)
+    results.summary["coverage_complete"] = results.summary["fresh"] == results.summary["total"]
+    results.summary["elapsed_seconds"] = round(time.monotonic() - started, 2)
     return results

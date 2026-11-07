@@ -377,6 +377,29 @@ service_status_row() {
   local needs_repair="false"
   local reason=""
 
+  if [[ "$name" == "nyc311_status" ]]; then
+    local parsed
+    parsed="$("$(mac_service_runtime_python)" - "$LOCAL_BODY_FILE" <<'PY'
+import json, sys
+try:
+    payload = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    payload = {}
+status = payload.get('nyc311_status') or {}
+if status.get('state') == 'ready' and status.get('has_error') is False:
+    print('healthy\tNYC311 case monitoring is current; fresh=' + str(status.get('fresh', status.get('updated'))))
+else:
+    print('attention\tNYC311 case monitoring state=' + str(status.get('state', 'missing')) + '; errors=' + str(status.get('errors', 0)) + '; deferred=' + str(status.get('deferred', 0)))
+PY
+)"
+    IFS=$'\t' read -r state reason <<<"$parsed"
+    reason="$(sanitize_field "$reason")"
+    # A dependency or coverage gap needs retries, not process restart churn.
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
+
   if [[ "$name" == "nyc311_session" ]]; then
     local parsed
     parsed="$("$(mac_service_runtime_python)" - "$LOCAL_BODY_FILE" <<'PY'
@@ -716,6 +739,7 @@ collect_statuses() {
   service_status_row storage >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
   service_status_row nyc311_session >>"$STATUS_FILE"
+  service_status_row nyc311_status >>"$STATUS_FILE"
   service_status_row public_records >>"$STATUS_FILE"
   service_status_row chat_export_sync >>"$STATUS_FILE"
   service_status_row cloud_export_receiver >>"$STATUS_FILE"

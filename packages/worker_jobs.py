@@ -12,7 +12,7 @@ from packages.nyc311.replacement_export import export_elevator_replacement_bundl
 from packages.nyc311.planner import ensure_filing_jobs
 from packages.nyc311.planner import ensure_filing_job_for_incident
 from packages.run_lock import try_file_lock
-from packages.nyc311.tracker import sync_all_case_statuses
+from packages.nyc311.tracker import sync_all_case_statuses, status_sync_lock
 from packages.public_records.sync import sync_public_records as sync_public_records_impl
 from packages.public_records.sync import sync_replacement_watchdog as sync_replacement_watchdog_impl
 from packages.sheets.sync import (
@@ -278,6 +278,13 @@ def queue_311_jobs():
 
 
 def sync_311_statuses():
+    with status_sync_lock() as acquired:
+        if not acquired:
+            return {"ok": True, "action": "status_refresh_already_running", "deferred": 1}
+        return _sync_311_statuses_locked()
+
+
+def _sync_311_statuses_locked():
     from packages.nyc311.health import record_status_sync
     with get_session() as session:
         results = sync_all_case_statuses(session, commit_each=True)

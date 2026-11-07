@@ -38,6 +38,27 @@ def observation(text, **changes):
     return facts.bind(value, text)
 
 
+def test_direct_named_ride_is_preserved_when_model_excludes_it():
+    obs = observation("I just rode in South", include=False, category="other", state="discussion", public_summary="", source_quote="")
+    assert obs["review_status"] == "completed"
+    assert obs["include"] is True and obs["asset"] == "elevator_south"
+    assert obs["state"] == "working_observation"
+    assert not facts.filing_condition(obs)
+
+
+@pytest.mark.parametrize('text', ["I could not ride in South", "Have you ridden in South?", "I just rode in South train", "I just rode in South but it skipped my floor"])
+def test_direct_ride_recovery_does_not_invent_service_from_other_claims(text):
+    obs=observation(text,include=False,category="other",state="discussion",public_summary="",source_quote="")
+    assert obs["include"] is False
+
+
+def test_both_seemed_working_is_not_a_definite_restoration():
+    text="Both seemed to be working. Took the North elevator; I guess South is working."
+    obs=observation(text,asset="elevator_both",state="working_observation",public_summary="Both elevators are working.")
+    assert "uncertain_both_as_fact" in obs["validation_errors"]
+    assert obs["review_status"] == "error"
+
+
 def source(mid, text, observation, *, epoch=None, iid="fixture"):
     epoch = epoch or int(datetime.now(timezone.utc).timestamp()) - 60
     raw = RawMessage(
