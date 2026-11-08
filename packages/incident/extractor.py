@@ -1374,6 +1374,8 @@ def _non_issue_guardrail(text: str, rule_choice: dict | None, llm_choice: dict |
 def _should_request_review(rule_choice: dict | None, llm_choice: dict | None, llm_called: bool) -> bool:
     if not llm_called or not llm_choice:
         return False
+    if llm_choice.get('review_status')=='error' and llm_choice.get('review_error') in {'insufficient_quota','authentication'}:
+        return False  # A second model cannot repair an account billing failure.
     if llm_choice.get("needs_review"):
         return True
     if rule_choice and llm_choice and llm_choice.get("is_issue") and rule_choice.get("category") != llm_choice.get("category"):
@@ -1409,6 +1411,14 @@ def _forced_nonreport_choice(rules: dict, llm_choice: dict | None) -> tuple[dict
 
 def _pick_decision(session, rm: RawMessage) -> tuple[dict | None, dict, dict | None, str]:
     rules = classify_rules(rm.text)
+    from packages.tasker_capture import LIVE_CAPTURE_SOURCES
+    if observations.required() and rm.source in LIVE_CAPTURE_SOURCES:
+        exact = observations.deterministic_live_observation(rm.text or '')
+        if exact:
+            choice={**observations.decision_fields(exact),'observation':exact,
+                    'severity':4 if exact['state']=='outage' else 1,'confidence':100,
+                    'review_status':'completed','review_method':'exact_statement_rule_v1'}
+            return choice,rules,None,'source_exact_statement'
     forced_nonreport, forced_source = _forced_nonreport_choice(rules, None)
     if forced_nonreport is not None and not _llm_reviews_every_meaningful_message():
         # Deterministic reference/advisory guards are authoritative.  Return
@@ -1547,6 +1557,7 @@ def _record_decision(session, rm: RawMessage, rules: dict, llm_choice: dict | No
         # A retry of archived evidence is still history, even when the primary
         # provider has recovered. Only a genuinely new source can be current.
         if prior.get('historical_audit'):chosen['historical_audit']=True
+        if prior.get('recovery_prior_filing'):chosen['recovery_prior_filing']=True
         if prior.get('alias_of'):chosen['alias_of']=prior['alias_of']
     previous_incident_id = row.incident_id
     row.incident_id = incident_id

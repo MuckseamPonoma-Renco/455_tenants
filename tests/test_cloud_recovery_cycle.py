@@ -201,6 +201,13 @@ def test_primary_automation_health_requires_a_fresh_working_heartbeat(monkeypatc
 
     assert recovery.primary_automation_healthy(now=now) is True
 
+    payload['source_quality']={'source_observations_required':True,'source_truth_ok':False,'sheet_readback_ok':True,'unreviewed_sources':9}
+    assert recovery.primary_automation_healthy(now=now) is False
+    payload.pop('source_quality')
+    payload['model_provider']={'has_error':True,'cause':'credit_exhausted'}
+    assert recovery.primary_automation_healthy(now=now) is False
+    payload.pop('model_provider')
+
     payload["chat_export_sync"]["state"] = "sheet_readback_pending"
     assert recovery.primary_automation_healthy(now=now) is True
     payload["chat_export_sync"]["state"] = "ready"

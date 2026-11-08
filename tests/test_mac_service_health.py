@@ -7,6 +7,14 @@ import sys
 import pytest
 
 
+@pytest.mark.parametrize('payload',[
+    {'source_quality':{'source_observations_required':True,'source_truth_ok':False,'sheet_readback_ok':True,'unreviewed_sources':9}},
+    {'model_provider':{'has_error':True,'cause':'credit_exhausted'}}])
+def test_message_failures_require_attention_without_restarting_services(tmp_path,payload):
+    row=_service_row(tmp_path,database=payload,running='true',service='message_pipeline')
+    assert row[6]=='attention' and row[7]=='false'
+
+
 @pytest.mark.parametrize('state,expected', [('ready','healthy'),('degraded','attention'),('catching_up','attention'),('stale','attention')])
 def test_status_monitor_attention_does_not_restart_other_services(tmp_path,state,expected):
     row=_service_row(tmp_path,database={'nyc311_status':{'state':state,'has_error':state!='ready','fresh':80}},running='true',service='nyc311_status')

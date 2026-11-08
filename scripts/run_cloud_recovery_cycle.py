@@ -195,6 +195,13 @@ def primary_automation_healthy(
 
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         return False
+    quality=payload.get('source_quality') or {}
+    if quality.get('source_observations_required') is True and (
+        quality.get('has_error') is True or quality.get('source_truth_ok') is not True
+        or quality.get('sheet_readback_ok') is not True or quality.get('unreviewed_sources',0)):
+        return False
+    if (payload.get('model_provider') or {}).get('has_error') is True:
+        return False
     database_ok = payload.get("database_ready") is True
     database_not_probed = (
         payload.get("database_check") == "not_requested"

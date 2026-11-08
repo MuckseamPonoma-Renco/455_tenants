@@ -22,6 +22,7 @@ os.environ['AUTO_FILE_MIN_REPORTS'] = '1'
 os.environ['LLM_MODE'] = 'off'
 os.environ['AUDIT_DIR'] = str(ROOT / '.test_audit')
 os.environ['NYC311_STATUS_STATE_PATH'] = str(ROOT / '.test_audit/nyc311-status.json')
+os.environ['LLM_PROVIDER_HEALTH_PATH'] = str(ROOT / '.test_audit/llm-provider-health.json')
 os.environ['NYC311_SESSION_STATE_PATH'] = str(ROOT / '.test_audit/nonexistent-nyc311-test-session.json')
 os.environ['NYC311_SESSION_HEALTH_PATH'] = str(ROOT / '.test_audit/nyc311-session-health.json')
 os.environ['BUILDING_NAME'] = '455 Ocean Parkway'
@@ -48,4 +49,9 @@ def client():
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def isolated_model_provider_receipts(monkeypatch,tmp_path):
+    monkeypatch.setenv('LLM_PROVIDER_HEALTH_PATH',str(tmp_path/'provider-health.json'))
 os.environ['AUTO_FILE_MAX_INCIDENT_AGE_HOURS'] = '0'

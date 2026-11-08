@@ -163,6 +163,11 @@ def _public_tenant_log_qa() -> dict[str, object]:
 
     source_truth = result.get('source_truth') or {}
     if source_truth.get('unreviewed_sources'):
+        if result.get('full_tenant_log_ok') is False:
+            # Publish reviewed rows and the backlog notice, without promoting
+            # any unreviewed source or calling the incomplete audit successful.
+            delayed = run_public_tenant_log_audit(days=days,resync=True,retries=3,retry_sleep=5.0,limit=5)
+            save_source_quality(delayed)
         deferred = {**meta, 'repair_skipped':'source_review_required',
                     'unreviewed_sources':len(source_truth['unreviewed_sources'])}
         _record_audit_event('PUBLIC_TENANT_LOG_QA_REVIEW_REQUIRED',None,deferred)
@@ -319,7 +324,7 @@ def main() -> None:
                     _log(f"failed model review recovery: {review}")
                 if review and review.get('queued_jobs'):
                     next_filing_poll_at = time.monotonic()
-                next_review_retry_at = time.monotonic() + (review_retry_seconds if review and review.get('ok') else max(review_retry_seconds, 3600))
+                next_review_retry_at = time.monotonic() + (review_retry_seconds if review and review.get('ok') else min(review_retry_seconds, 300))
             if next_public_tenant_log_audit_at is not None and now >= next_public_tenant_log_audit_at:
                 result = _run_work_step("public Tenant Log QA", _public_tenant_log_qa, poll_seconds=poll_seconds)
                 if result is not None:

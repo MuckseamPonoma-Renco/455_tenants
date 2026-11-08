@@ -69,6 +69,13 @@ def validate_health(
 
     if payload.get('ok') is not True:
         failures.append('health endpoint did not report ok=true')
+    quality=payload.get('source_quality') or {}
+    if quality.get('source_observations_required') is True:
+        if quality.get('has_error') is True or quality.get('source_truth_ok') is not True or quality.get('sheet_readback_ok') is not True or quality.get('unreviewed_sources',0):
+            failures.append('Tenant message publication is incomplete or unverified')
+    provider=payload.get('model_provider') or {}
+    if provider.get('has_error') is True:
+        failures.append('Message interpretation provider is blocked: '+str(provider.get('cause','unknown')))
     if payload.get('database_configured') is not True:
         failures.append('database is not configured')
     database_not_checked = (

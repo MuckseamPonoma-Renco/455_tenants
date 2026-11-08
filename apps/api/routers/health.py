@@ -529,6 +529,7 @@ def _public_cloud_export_receiver_status() -> dict[str, Any]:
 @router.get('/health')
 def health(check_database: bool = False):
     from packages.source_quality_status import public_status as source_quality_status
+    from packages.llm.provider_health import public_status as provider_status
     whatsapp_capture = _public_capture_status(read_capture_status())
     automation = read_automation_status()
     watchdog = _public_watchdog_status(automation)
@@ -539,6 +540,7 @@ def health(check_database: bool = False):
     return {
         'ok': True,
         'source_quality': source_quality_status(),
+        'model_provider': provider_status(),
         'watchdog_operational_state': 'degraded' if watchdog['has_error'] else 'ready',
         'process_inline': _truthy('PROCESS_INLINE'),
         'llm_enabled': llm_enabled(),

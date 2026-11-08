@@ -97,6 +97,35 @@ def _direct_ride(text: str):
     return re.fullmatch(r"\s*I\s+(?:just\s+)?rode\s+(?:in\s+|on\s+)?(?:the\s+)?(North|South)(?:\s+(?:elevator|lift))?[.!\s]*", text, re.I)
 
 
+def deterministic_live_observation(text: str) -> dict | None:
+    """Validate whole, explicit statements without depending on paid inference.
+
+    No fragments, questions, forecasts, other transport, mixed clauses or
+    inferred car identities are admitted. Archive paths keep model provenance.
+    """
+    match = re.fullmatch(
+        r"\s*(?:the\s+|our\s+)?(?:(north|south)\s+(?:elevator|lift)|"
+        r"(both)\s+(?:elevators|lifts)|(?:elevator|lift))\s+"
+        r"(?:(?:is|are|currently|now|still)\s+)*"
+        r"(out|down|not\s+working|not\s+in\s+service|working|working\s+again|back\s+in\s+service)[.!\s]*",
+        text,re.I)
+    ride=_direct_ride(text)
+    if not match and not ride:
+        return None
+    side=(ride.group(1) if ride else match.group(1) or match.group(2) or '').lower()
+    asset={'north':'elevator_north','south':'elevator_south','both':'elevator_both'}.get(side)
+    subject={'north':'North elevator','south':'South elevator','both':'Both elevators'}.get(side,'Elevator')
+    positive=bool(ride or match.group(3).lower() in {'working','working again','back in service'})
+    summary=(f'Tenant reported riding the {side.title()} elevator.' if ride else
+             subject + (' reported working.' if positive else ' reported unavailable.'))
+    value=bind(dict(include=True,category='elevator',asset=asset,
+        state='working_observation' if positive else 'outage',time_scope='current',certainty='stated',
+        source_quote=text.strip(),public_summary=summary,needs_review=False,context_message_ids=[]),text)
+    if value['review_status']!='completed':return None
+    value['verification_method']='exact_statement_rule_v1'
+    return value
+
+
 def errors(observation: object, text: str) -> list[str]:
     if not isinstance(observation, dict):
         return ["missing_observation"]
@@ -806,6 +835,7 @@ def filing_evidence(
         try:
             historical = (
                 json.loads(decision.final_json or "{}").get("historical_audit") is True
+                or json.loads(decision.final_json or "{}").get("recovery_prior_filing") is True
             )
         except (ValueError, TypeError):
             historical = True

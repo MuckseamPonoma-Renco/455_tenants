@@ -5,6 +5,8 @@ on:
     branches:
       - main
   workflow_dispatch:
+  schedule:
+    - cron: '23,53 * * * *'
 
 permissions:
   contents: read
@@ -26,7 +28,6 @@ jobs:
             --max-capture-age-seconds 600
             --max-automation-age-seconds 1200
             --max-import-age-seconds 3600
-            --allow-blocked-model-review
           )
           if [[ "${REQUIRE_CLOUD_EXPORT_RECEIVER,,}" == "true" ]]; then
             args+=(--require-cloud-export-receiver)
