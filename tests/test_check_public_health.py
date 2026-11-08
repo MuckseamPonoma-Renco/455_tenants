@@ -5,6 +5,15 @@ from scripts.check_public_health import validate_health
 from packages.public_records.config import source_configs
 
 
+@pytest.mark.parametrize('field,value,reason',[
+    ('source_quality',{'source_observations_required':True,'source_truth_ok':False,'sheet_readback_ok':True,'unreviewed_sources':9},'Tenant message publication is incomplete or unverified'),
+    ('model_provider',{'has_error':True,'cause':'credit_exhausted'},'Message interpretation provider is blocked: credit_exhausted')])
+def test_running_processes_cannot_mask_quota_or_publication_failure(field,value,reason):
+    payload=_payload();payload[field]=value
+    failures,_=validate_health(payload,now=dt.datetime(2026,7,20,2,0,tzinfo=dt.UTC),max_capture_age_seconds=600,max_automation_age_seconds=1200,max_import_age_seconds=3600)
+    assert reason in failures
+
+
 @pytest.mark.parametrize('state', ['degraded','catching_up','stale'])
 def test_healthy_processes_do_not_hide_incomplete_311_status_monitoring(state):
     payload=_payload()

@@ -377,6 +377,28 @@ service_status_row() {
   local needs_repair="false"
   local reason=""
 
+  if [[ "$name" == "message_pipeline" ]]; then
+    local parsed
+    parsed="$("$(mac_service_runtime_python)" - "$LOCAL_BODY_FILE" <<'PY'
+import json,sys
+try: p=json.load(open(sys.argv[1]))
+except (OSError,ValueError): p={}
+q=p.get('source_quality') or {}; m=p.get('model_provider') or {}
+if m.get('has_error'):
+    print('attention\tMessage interpretation blocked: '+str(m.get('cause','unknown')))
+elif q.get('source_observations_required') and (q.get('has_error') or q.get('source_truth_ok') is not True or q.get('sheet_readback_ok') is not True or q.get('unreviewed_sources',0)):
+    print('attention\tMessage publication incomplete; unreviewed sources='+str(q.get('unreviewed_sources',0)))
+else:
+    print('healthy\tNo known message interpretation or publication backlog')
+PY
+)"
+    IFS=$'\t' read -r state reason <<<"$parsed"
+    reason="$(sanitize_field "$reason")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" "$configured" "$launchd_loaded" "$pid" "$pid_source" "$running" "$state" "$needs_repair" "$reason"
+    return 0
+  fi
+
   if [[ "$name" == "nyc311_status" ]]; then
     local parsed
     parsed="$("$(mac_service_runtime_python)" - "$LOCAL_BODY_FILE" <<'PY'
@@ -738,6 +760,7 @@ collect_statuses() {
   service_status_row api >>"$STATUS_FILE"
   service_status_row storage >>"$STATUS_FILE"
   service_status_row automation >>"$STATUS_FILE"
+  service_status_row message_pipeline >>"$STATUS_FILE"
   service_status_row nyc311_session >>"$STATUS_FILE"
   service_status_row nyc311_status >>"$STATUS_FILE"
   service_status_row public_records >>"$STATUS_FILE"

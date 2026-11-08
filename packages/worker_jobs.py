@@ -177,6 +177,8 @@ def _model_review_failed(decision: MessageDecision | None) -> bool:
     if required():
         if final.get('source_review_pending'):
             return True
+        if (final.get('observation') or {}).get('review_status')=='error':
+            return True
         if (final.get('observation') or {}).get('review_status')=='completed' and decision.chosen_source in {'source_observation','audited_source_observation'}:
             return False
     if str(decision.chosen_source or '').startswith('review') and final.get('review_status') == 'completed':
@@ -207,12 +209,26 @@ def retry_failed_model_reviews(*, limit: int = 25, lock_path: Path | None = None
                 .join(RawMessage, RawMessage.message_id == MessageDecision.message_id)
                 .where(RawMessage.ts_epoch >= now - 14 * 86400,
                        ((MessageDecision.llm_json.contains('"review_status"') & MessageDecision.llm_json.contains('"error"'))
+                        | (MessageDecision.final_json.contains('"review_status"') & MessageDecision.final_json.contains('"error"'))
                         | MessageDecision.final_json.contains('"source_review_pending": true')))
                 .order_by(RawMessage.ts_epoch)).all()
             ids = [row.message_id for row in candidates if _model_review_failed(row)][:max(1, min(limit, 100))]
         result = {'ok': True, 'state': 'ready', 'selected': len(ids), 'recovered': 0, 'queued_jobs': 0}
+        if not ids:
+            from packages.llm import provider_health
+            if provider_health.public_status().get('has_error'):
+                # Detect restored credit even when all backlog entries were
+                # independently reviewed. Never send tenant content in a probe.
+                try:
+                    import os
+                    from packages.llm.openai_client import call_openai_json
+                    checked=call_openai_json('Return only JSON {"ok":true}',model=os.environ.get('OPENAI_MODEL','gpt-4.1-mini'),max_output_tokens=32)
+                    if checked.get('ok') is not True:raise RuntimeError('invalid probe')
+                except Exception:
+                    result.update(ok=False,state='provider_blocked')
         previous_mode = extractor.LLM_MODE
         extractor.LLM_MODE = 'all'
+        provider_failed=False
         try:
             for message_id in ids:
                 with get_session() as session:
@@ -222,34 +238,60 @@ def retry_failed_model_reviews(*, limit: int = 25, lock_path: Path | None = None
                     raw = session.get(RawMessage, message_id)
                     if raw is None:
                         continue
+                    if provider_failed:
+                        from packages.incident.source_observation import deterministic_live_observation, required
+                        if not required() or raw.source not in LIVE_CAPTURE_SOURCES or not deterministic_live_observation(raw.text or ''):
+                            continue
                     touched = {decision.incident_id} if decision.incident_id else set()
                     prior_has_filing = bool(decision.incident_id and (
-                        session.scalar(select(FilingJob.job_id).where(FilingJob.incident_id == decision.incident_id).limit(1)) is not None
-                        or session.scalar(select(ServiceRequestCase.id).where(ServiceRequestCase.incident_id == decision.incident_id).limit(1)) is not None))
+                        session.scalar(select(FilingJob.job_id).where(FilingJob.incident_id==decision.incident_id).limit(1)) is not None
+                        or session.scalar(select(ServiceRequestCase.id).where(ServiceRequestCase.incident_id==decision.incident_id).limit(1)) is not None))
                     incident_id = classify_and_upsert_incident(session, raw, allow_filing_job=False)
                     refreshed = session.get(MessageDecision, message_id)
+                    if prior_has_filing:
+                        final=json.loads(refreshed.final_json or '{}');final['recovery_prior_filing']=True
+                        refreshed.final_json=json.dumps(final)
                     if _model_review_failed(refreshed):
                         refreshed.needs_review = True
                         session.commit()
                         result.update(ok=False, state='review_failed')
-                        break  # No storm of requests while quota/provider access is unavailable.
+                        provider_failed=True
+                        continue  # Still recover later exact statements without another API call.
                     if incident_id:
                         touched.add(incident_id)
                     for identifier in touched:
                         incident = session.get(Incident, identifier)
                         if incident is not None:
                             _recompute_incident_materialization(session, incident, rebuild_summary=True)
-                    incident = session.get(Incident, incident_id) if incident_id else None
-                    if (incident is not None and not prior_has_filing and raw.source in LIVE_CAPTURE_SOURCES
-                            and raw.ts_epoch is not None and 0 <= now - raw.ts_epoch <= 86400
-                            and session.scalar(select(FilingJob.job_id).where(FilingJob.incident_id == incident_id).limit(1)) is None):
-                        job = ensure_filing_job_for_incident(session, incident)
-                        if job is not None and job.state == 'pending':
-                            result['queued_jobs'] += 1
                     session.commit()
                     result['recovered'] += 1
         finally:
             extractor.LLM_MODE = previous_mode
+        # All recovered messages, including later restorations, must be durable
+        # before evaluating any filing. Never queue halfway through a replay.
+        with get_session() as session:
+            candidates=session.scalars(select(MessageDecision).join(RawMessage).where(
+                RawMessage.ts_epoch>=now-14*86400,
+                ((MessageDecision.llm_json.contains('"review_status"') & MessageDecision.llm_json.contains('"error"'))
+                 | (MessageDecision.final_json.contains('"review_status"') & MessageDecision.final_json.contains('"error"'))
+                 | MessageDecision.final_json.contains('"source_review_pending": true')))).all()
+            remaining=sum(_model_review_failed(row) for row in candidates)
+            result['remaining_reviews']=remaining
+            if remaining:
+                result.update(ok=False,state='review_failed' if provider_failed else 'review_backlog')
+            elif result['recovered']:
+                # Includes eligible work recovered in an earlier bounded batch;
+                # the normal planner retains history, receipts and attempt fences.
+                recent_live=session.scalars(select(Incident).join(MessageDecision,MessageDecision.incident_id==Incident.incident_id).join(RawMessage).where(
+                    RawMessage.source.in_(LIVE_CAPTURE_SOURCES),RawMessage.ts_epoch>=now-86400,
+                    ~MessageDecision.final_json.contains('"recovery_prior_filing": true'),
+                    Incident.status!='closed')).unique().all()
+                before={row.job_id for row in session.scalars(select(FilingJob))}
+                for incident in recent_live:
+                    ensure_filing_job_for_incident(session,incident)
+                session.flush()
+                result['queued_jobs']=len([row for row in session.scalars(select(FilingJob).where(FilingJob.state=='pending')) if row.job_id not in before])
+            session.commit()
         if result['recovered']:
             _safe_sync_sheets()
         append_audit_event('RETRY_FAILED_MODEL_REVIEWS', None, result)

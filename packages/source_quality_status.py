@@ -86,4 +86,10 @@ def public_status():
         result = {"state": "unverified"}
     if not required():
         result["state"] = "legacy_unverified"
-    return {**result, "source_observations_required": required()}
+    blocked = required() and (
+        result.get('state') in {'unverified','stale'}
+        or result.get('source_truth_ok') is not True
+        or result.get('sheet_readback_ok') is not True
+        or any(result.get(k,0) for k in ('missing_reports','unsupported_claims','unreviewed_sources','unmapped_public_rows'))
+    )
+    return {**result, "source_observations_required": required(), 'has_error':bool(blocked)}

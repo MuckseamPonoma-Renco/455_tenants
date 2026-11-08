@@ -54,6 +54,8 @@ def _api_error(response) -> OpenAIError:
         code = "api_error"
     # Never echo a remote body containing chat text, credentials or HTML.
     code = code if re.fullmatch(r"[a-zA-Z0-9_]{1,80}", code) else "api_error"
+    from packages.llm.provider_health import record
+    record(code)
     return OpenAIError(f"OpenAI API error: {response.status_code} {code}")
 
 @retry(
@@ -67,6 +69,9 @@ def call_openai_json(prompt: str, model: str, max_output_tokens: int = 220, *, r
 
     Tries Responses API first; falls back to Chat Completions.
     """
+    from packages.llm.provider_health import deferred_error
+    if code := deferred_error():
+        raise OpenAIError('OpenAI API temporarily blocked: '+code)
     url = _base_url().rstrip("/")
     headers = _headers()
 
@@ -85,6 +90,8 @@ def call_openai_json(prompt: str, model: str, max_output_tokens: int = 220, *, r
             request["text"] = {"format": {"type": "json_schema", "name": "tenant_triage", "strict": True, "schema": response_schema}}
         r = client.post(f"{url}/responses", headers=headers, json=request)
         if r.status_code < 300:
+            from packages.llm.provider_health import record
+            record()
             try:
                 data = r.json()
             except ValueError:
@@ -140,6 +147,8 @@ def call_openai_json(prompt: str, model: str, max_output_tokens: int = 220, *, r
         r2 = client.post(f"{url}/chat/completions", headers=headers, json=request)
         if r2.status_code >= 300:
             raise _api_error(r2)
+        from packages.llm.provider_health import record
+        record()
         try:
             data2 = r2.json()
             choice = data2["choices"][0]

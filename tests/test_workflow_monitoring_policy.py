@@ -9,12 +9,15 @@ def _trigger_block(workflow_name: str) -> str:
     return workflow.split("permissions:", maxsplit=1)[0]
 
 
-def test_mac_dependent_public_health_is_not_scheduled() -> None:
+def test_pipeline_health_is_checked_between_deployments_without_ignoring_billing_blocks() -> None:
     triggers = _trigger_block("public-service-health.yml")
 
     assert "push:" in triggers
     assert "workflow_dispatch:" in triggers
-    assert "schedule:" not in triggers
+    assert "schedule:" in triggers
+    assert "23,53 * * * *" in triggers
+    workflow=(REPO_ROOT/'.github/workflows/public-service-health.yml').read_text()
+    assert '--allow-blocked-model-review' not in workflow
 
 
 def test_cloud_capable_recovery_remains_scheduled() -> None:

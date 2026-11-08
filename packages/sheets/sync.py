@@ -3702,6 +3702,15 @@ def sync_public_updates_to_sheets(*, record_lineage: bool = True):
     refresh_label = _fmt_ts(now_epoch)
     top_category = category_rows[0][0] if category_rows else ""
     latest_issue = str(update_rows[0][1]) if update_rows else (_public_focus_label(public_incidents[0]) if public_incidents else "")
+    pending_reviews=0
+    if observations.required():
+        for mid,decision in decision_map.items():
+            raw=raw_map.get(mid)
+            if raw is None or not _raw_message_is_public(raw,allowed_chat_names) or not raw.ts_epoch or raw.ts_epoch < now_epoch-14*86400:
+                continue
+            final=json.loads(decision.final_json or '{}')
+            if (final.get('observation') or {}).get('review_status')=='error' or final.get('source_review_pending'):
+                pending_reviews += 1
 
     values: list[list[object]] = [
         [PUBLIC_WORKBOOK_TITLE, "", "", "", "", "", "", "", "", ""],
@@ -3718,6 +3727,8 @@ def sync_public_updates_to_sheets(*, record_lineage: bool = True):
         ["Category", "Updates" if observations.required() else "Incidents", "311 filings", "Latest update", "Latest issue", "", "", "", "", ""],
     ]
 
+    if observations.required():
+        values.insert(9,["Messages awaiting review", pending_reviews, "Updates delayed: recent messages are awaiting interpretation. The log may be incomplete." if pending_reviews else "No pending message interpretations.", "", "", "", "", "", "", ""])
     if category_rows:
         values.extend(category_rows)
     else:

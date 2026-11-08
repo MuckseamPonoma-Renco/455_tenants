@@ -64,6 +64,28 @@ class _FakeService:
         return _FakeSpreadsheets(self.calls)
 
 
+def test_public_sheet_shows_pending_interpretations_without_publishing_raw_private_text(client,monkeypatch):
+    import json
+    from datetime import datetime,timezone
+    service=_FakeService()
+    monkeypatch.setattr(sheets_sync,'_service',lambda:service)
+    monkeypatch.setattr(sheets_sync,'load_public_semantic_overrides',lambda:{})
+    monkeypatch.setenv('SOURCE_OBSERVATIONS_REQUIRED','1')
+    monkeypatch.setenv('PUBLIC_UPDATES_CHAT_NAMES','Fixture Tenants')
+    monkeypatch.setenv('GOOGLE_SHEETS_SPREADSHEET_ID','private-test-sheet')
+    monkeypatch.setenv('GOOGLE_PUBLIC_SHEETS_SPREADSHEET_ID','public-test-sheet')
+    epoch=int(datetime.now(timezone.utc).timestamp())-60
+    with get_session() as s:
+        s.add(RawMessage(message_id='pending',sender_hash='fixture',chat_name='Fixture Tenants',text='Private unclassified tenant text',ts_epoch=epoch,source='whatsapp_web'))
+        s.add(MessageDecision(message_id='pending',is_issue=False,needs_review=True,chosen_source='source_observation_pending',final_json=json.dumps({'observation':{'review_status':'error'}})))
+        s.commit()
+    sheets_sync.sync_public_updates_to_sheets(record_lineage=False)
+    values=next(kwargs['body']['values'] for kind,kwargs in service.calls if kind=='update')
+    row=next(row for row in values if row[0]=='Messages awaiting review')
+    assert row[1]==1 and 'Updates delayed' in row[2]
+    assert 'Private unclassified tenant text' not in json.dumps(values)
+
+
 class _GridAwareService(_FakeService):
     def __init__(self, tabs: list[tuple[str, int]], *, row_count: int = 1000, column_count: int = 26):
         super().__init__()
