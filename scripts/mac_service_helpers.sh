@@ -60,8 +60,27 @@ mac_service_service_label() {
   esac
 }
 
+mac_service_launchd_domain() {
+  local kind="gui" config="$MAC_SERVICE_STATE_DIR/launchd-domain"
+  if [[ -f "$config" ]]; then
+    kind="$(cat "$config")"
+  fi
+  case "$kind" in
+    gui|user) printf '%s\n' "$kind" ;;
+    *) echo "Invalid tenant service launchd domain; refusing service changes" >&2; return 1 ;;
+  esac
+}
+
+mac_service_domain_target() {
+  local kind
+  kind="$(mac_service_launchd_domain)" || return 1
+  printf '%s/%s\n' "$kind" "$MAC_SERVICE_UID"
+}
+
 mac_service_service_target() {
-  printf 'gui/%s/%s\n' "$MAC_SERVICE_UID" "$(mac_service_service_label "$1")"
+  local domain
+  domain="$(mac_service_domain_target)" || return 1
+  printf '%s/%s\n' "$domain" "$(mac_service_service_label "$1")"
 }
 
 mac_service_service_script() {
