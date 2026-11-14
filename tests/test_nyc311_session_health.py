@@ -40,6 +40,7 @@ def fake_browser(monkeypatch, state, *, authenticated=True, status=200, error=No
         yield SimpleNamespace(chromium=SimpleNamespace(launch=lambda **_: browser))
     monkeypatch.setattr(portal, 'sync_playwright', manager)
     monkeypatch.setattr(portal, '_is_portal_authenticated', lambda _: authenticated)
+    monkeypatch.setattr(portal, '_wait_for_sign_in_redirect', lambda _: authenticated)
     return visits, closed
 
 
@@ -54,6 +55,32 @@ def test_probe_retains_real_renewal_and_only_visits_home(monkeypatch, saved):
     assert health.session_state_path().stat().st_mode & 0o777 == 0o600
     assert health.status_path().stat().st_mode & 0o777 == 0o600
     assert not any(word in json.dumps(status) for word in ('cookie', 'fixture', 'fingerprint', '/private/'))
+
+
+def test_logged_out_portal_recovers_through_saved_identity_without_credentials(monkeypatch, saved):
+    renewal = {'cookies': [{'name': 'session', 'value': 'sso-renewal-fixture'}], 'origins': []}
+    visits, closed = fake_browser(monkeypatch, renewal, authenticated=False)
+    restored = False
+    def redirect(_page):
+        nonlocal restored
+        restored = True
+        return True
+    monkeypatch.setattr(portal, '_wait_for_sign_in_redirect', redirect)
+    monkeypatch.setattr(portal, '_is_portal_authenticated', lambda _: restored)
+    assert health.check_saved_session()['state'] == 'ready'
+    assert visits == [portal.PORTAL_HOME_URL, portal.PORTAL_SIGN_IN_URL]
+    assert closed == [True]
+    assert json.loads(health.session_state_path().read_text()) == renewal
+
+
+@pytest.mark.parametrize('error,expected', [(TimeoutError(), 'unavailable'), (portal.PortalHumanVerificationRequired(reason='sign_in'), 'login_required')])
+def test_redirect_failure_preserves_session_and_never_claims_ready(monkeypatch, saved, error, expected):
+    fake_browser(monkeypatch, saved, authenticated=False)
+    def failed(_page):
+        raise error
+    monkeypatch.setattr(portal, '_wait_for_sign_in_redirect', failed)
+    assert health.check_saved_session()['state'] == expected
+    assert json.loads(health.session_state_path().read_text()) == saved
 
 
 @pytest.mark.parametrize('authenticated,status,error,expected', [

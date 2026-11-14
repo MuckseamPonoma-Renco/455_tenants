@@ -44,13 +44,36 @@ def test_authentication_requires_portal_signout_control(url, logout_count, expec
     assert portal._is_portal_authenticated(page) is expected
 
 
+def test_sso_wait_allows_delayed_redirect_without_touching_login_controls(monkeypatch):
+    checks = iter([False, False, True])
+    waits = []
+    page = SimpleNamespace(locator=lambda _: SimpleNamespace(count=lambda: 0), wait_for_timeout=waits.append)
+    monkeypatch.setattr(portal, '_is_portal_authenticated', lambda _: next(checks))
+    monkeypatch.setattr(portal, '_human_verification_required', lambda _: False)
+    assert portal._wait_for_sign_in_redirect(page, timeout_seconds=3)
+    assert waits == [1000, 1000]
+
+
+@pytest.mark.parametrize('form,challenge,expected', [(True, False, 'form'), (False, True, 'challenge'), (False, False, 'timeout')])
+def test_sso_wait_stops_at_authentication_boundary(monkeypatch, form, challenge, expected):
+    page = SimpleNamespace(locator=lambda _: SimpleNamespace(count=lambda: int(form)), wait_for_timeout=lambda _: None)
+    monkeypatch.setattr(portal, '_is_portal_authenticated', lambda _: False)
+    monkeypatch.setattr(portal, '_human_verification_required', lambda _: challenge)
+    if expected == 'form':
+        assert portal._wait_for_sign_in_redirect(page, timeout_seconds=0) is False
+    else:
+        with pytest.raises(portal.PortalHumanVerificationRequired if challenge else TimeoutError):
+            portal._wait_for_sign_in_redirect(page, timeout_seconds=0)
+
+
 def test_changed_passwordless_login_does_not_silently_fall_back_to_anonymous(monkeypatch, tmp_path):
     monkeypatch.setenv("NYC311_EMAIL", "fixture@example.test")
     monkeypatch.setenv("NYC311_PASSWORD", "fixture-password")
     monkeypatch.setenv("NYC311_SESSION_STATE_PATH", str(tmp_path / "session.json"))
     page = SimpleNamespace(url="https://www1.nyc.gov/account/oplogin.htm",
         goto=lambda *a, **k: None, wait_for_timeout=lambda _ms: None,
-        locator=lambda selector: SimpleNamespace(count=lambda: int(selector == "#gigya-passwordless-login-form")))
+        locator=lambda selector: SimpleNamespace(count=lambda: int(selector == "#gigya-passwordless-login-form:visible")))
+    monkeypatch.setattr(portal, '_wait_for_sign_in_redirect', lambda _: False)
     with pytest.raises(portal.PortalHumanVerificationRequired) as exc:
         portal._maybe_sign_in(page)
     assert exc.value.reason == "sign_in"

@@ -75,6 +75,23 @@ def _is_portal_authenticated(page: Page) -> bool:
     return page.locator('a[href*="LogOff"], a[href*="SignOut"], a[href*="signout"], a[href*="logout"]').count() > 0
 
 
+def _wait_for_sign_in_redirect(page: Page, *, timeout_seconds: int = 45) -> bool:
+    """Allow NYC.ID SSO to restore the portal session without entering secrets.
+
+    A visible login form or challenge requires interaction; an unfinished
+    redirect is unavailable, not evidence that the saved identity expired.
+    """
+    for _ in range(timeout_seconds + 1):
+        if _is_portal_authenticated(page):
+            return True
+        if _human_verification_required(page):
+            raise PortalHumanVerificationRequired(reason="sign_in")
+        if page.locator('input[type="password"]:visible, #gigya-passwordless-login-form:visible').count():
+            return False
+        page.wait_for_timeout(1000)
+    raise TimeoutError("NYC.ID sign-in redirect did not finish")
+
+
 def _save_verified_session(context, page: Page, *, expected_fingerprint: str | None = None) -> str | None:
     if not _is_portal_authenticated(page):
         raise PortalHumanVerificationRequired(reason="sign_in")
@@ -275,11 +292,10 @@ def _maybe_sign_in(page: Page) -> bool:
 
     try:
         page.goto(PORTAL_SIGN_IN_URL, wait_until="domcontentloaded", timeout=120_000)
-        page.wait_for_timeout(5000)
-        if _is_portal_authenticated(page):
+        if _wait_for_sign_in_redirect(page):
             return True
 
-        if page.locator('#gigya-passwordless-login-form').count():
+        if page.locator('#gigya-passwordless-login-form:visible').count():
             raise PortalHumanVerificationRequired(reason="sign_in")
         if urlparse(page.url).hostname not in {"www1.nyc.gov", "nyc.gov", "prd-login.nyc.gov"} or not email or not password:
             raise PortalHumanVerificationRequired(reason="sign_in")
