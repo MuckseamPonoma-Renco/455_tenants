@@ -46,6 +46,28 @@ def test_direct_named_ride_is_preserved_when_model_excludes_it():
     assert not facts.filing_condition(obs)
 
 
+@pytest.mark.parametrize('side,floor', [('North', '17'), ('South', '8')])
+def test_observed_floor_difficulty_is_retained_but_not_filed(side, floor):
+    text = f"I haven’t caught the {side} elevator on {floor} in days. Does anyone know if it’s just not stopping there?"
+    obs = observation(text, include=False, category='other', state='discussion', public_summary='', source_quote='')
+    assert obs['review_status'] == 'completed'
+    assert obs['include'] and obs['asset'] == 'elevator_' + side.lower()
+    assert obs['certainty'] == 'uncertain' and obs['needs_review']
+    assert obs['time_scope'] == 'uncertain' and obs['source_quote'] == text
+    assert not facts.filing_condition(obs)
+
+
+@pytest.mark.parametrize('text', [
+    'Does anyone know if the North elevator stops on 17?',
+    'I haven’t caught the North train on 17 in days.',
+    'I haven’t caught the North elevator on 17 in days because I was away.',
+    'I haven’t caught the North elevator on 17 in days. It is working now.',
+])
+def test_floor_access_safeguard_does_not_convert_questions_or_explanations(text):
+    obs = observation(text, include=False, category='other', state='discussion', public_summary='', source_quote='')
+    assert obs['include'] is False
+
+
 @pytest.mark.parametrize('text', ["I could not ride in South", "Have you ridden in South?", "I just rode in South train", "I just rode in South but it skipped my floor"])
 def test_direct_ride_recovery_does_not_invent_service_from_other_claims(text):
     obs=observation(text,include=False,category="other",state="discussion",public_summary="",source_quote="")
