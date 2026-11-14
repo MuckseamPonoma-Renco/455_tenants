@@ -54,6 +54,21 @@ def test_sso_wait_allows_delayed_redirect_without_touching_login_controls(monkey
     assert waits == [1000, 1000]
 
 
+@pytest.mark.parametrize('message,recovers', [('Execution context was destroyed, most likely because of a navigation', True), ('Target page, context or browser has been closed', False)])
+def test_sso_wait_retries_navigation_race_only(monkeypatch, message, recovers):
+    checks = iter([False, True])
+    page = SimpleNamespace(wait_for_timeout=lambda _: None)
+    monkeypatch.setattr(portal, '_is_portal_authenticated', lambda _: next(checks))
+    def navigating(_page):
+        raise portal.PlaywrightError(message)
+    monkeypatch.setattr(portal, '_human_verification_required', navigating)
+    if recovers:
+        assert portal._wait_for_sign_in_redirect(page, timeout_seconds=1)
+    else:
+        with pytest.raises(portal.PlaywrightError):
+            portal._wait_for_sign_in_redirect(page, timeout_seconds=1)
+
+
 @pytest.mark.parametrize('form,challenge,expected', [(True, False, 'form'), (False, True, 'challenge'), (False, False, 'timeout')])
 def test_sso_wait_stops_at_authentication_boundary(monkeypatch, form, challenge, expected):
     page = SimpleNamespace(locator=lambda _: SimpleNamespace(count=lambda: int(form)), wait_for_timeout=lambda _: None)

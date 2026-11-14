@@ -82,12 +82,19 @@ def _wait_for_sign_in_redirect(page: Page, *, timeout_seconds: int = 45) -> bool
     redirect is unavailable, not evidence that the saved identity expired.
     """
     for _ in range(timeout_seconds + 1):
-        if _is_portal_authenticated(page):
-            return True
-        if _human_verification_required(page):
-            raise PortalHumanVerificationRequired(reason="sign_in")
-        if page.locator('input[type="password"]:visible, #gigya-passwordless-login-form:visible').count():
-            return False
+        try:
+            if _is_portal_authenticated(page):
+                return True
+            if _human_verification_required(page):
+                raise PortalHumanVerificationRequired(reason="sign_in")
+            if page.locator('input[type="password"]:visible, #gigya-passwordless-login-form:visible').count():
+                return False
+        except PlaywrightError as exc:
+            # NYC.ID can replace the document between the two DOM checks.
+            # Retry only this navigation race, never a closed browser or an
+            # arbitrary browser error.
+            if "Execution context was destroyed" not in str(exc):
+                raise
         page.wait_for_timeout(1000)
     raise TimeoutError("NYC.ID sign-in redirect did not finish")
 
