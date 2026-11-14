@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -25,6 +26,51 @@ from scripts import init_sheet
 
 def auth_headers():
     return {'Authorization': 'Bearer test-token'}
+
+
+@pytest.mark.parametrize('tampered,public_chat', [(False, True), (True, True), (False, False)])
+def test_watchdog_service_summary_uses_dated_valid_source_not_open_incident(client, monkeypatch, tampered, public_chat):
+    from packages.incident import source_observation as facts
+    monkeypatch.setenv('SOURCE_OBSERVATIONS_REQUIRED', 'true')
+    monkeypatch.setenv('PUBLIC_UPDATES_CHAT_NAMES', 'Fixture Tenants')
+    text = 'Both elevators were working earlier.'
+    observation = facts.bind(dict(include=True, category='elevator', asset='elevator_both',
+        state='working_observation', time_scope='past', certainty='stated', source_quote=text,
+        public_summary='Both elevators were reported working earlier.', needs_review=False,
+        context_message_ids=[]), text)
+    assert observation['review_status'] == 'completed'
+    with get_session() as session:
+        session.add(Incident(incident_id='stale-open', category='elevator', asset='elevator_both',
+            status='open', title='Both elevators out', summary='Old outage', last_ts_epoch=100))
+        session.add(RawMessage(message_id='working-observation', sender_hash='fixture',
+            chat_name='Fixture Tenants' if public_chat else 'Unrelated Private Chat',
+            text=text + (' Changed.' if tampered else ''), ts_epoch=200,
+            ts_iso='2026-11-10T20:09:00Z', source='whatsapp_web'))
+        session.add(MessageDecision(message_id='working-observation', category='elevator',
+            chosen_source='source_observation', final_json=json.dumps({'observation':observation})))
+        session.commit()
+        item = next(x for x in public_record_sync.public_elevator_watch_items(session)
+                    if x['topic'] == 'Actual elevator service reported by tenants')
+    assert 'unresolved' not in item['answer'] and 'Both elevators out' not in item['answer']
+    if not tampered and public_chat:
+        assert 'reported working earlier' in item['answer']
+        assert item['last_checked_at'] == '2026-11-10T20:09:00Z'
+        assert 'does not confirm repair' in item['why_it_matters']
+    else:
+        assert item['answer'] == 'No validated tenant service observation is available.'
+
+
+def test_current_source_checks_with_absent_record_are_followup_not_fetch_failure(client, monkeypatch):
+    monkeypatch.setattr(public_record_sync, 'watchdog_source_health', lambda _: {'ok':True,'sources':[],'last_attempt_at':'2026-11-14T10:00:00Z'})
+    monkeypatch.setattr(public_record_sync, 'public_record_is_tenant_trusted', lambda _: True)
+    with get_session() as session:
+        session.add(PublicRecordWatch(source_system='fixture', record_type='fixture', record_key='old-record',
+            source_presence_status='not_seen', needs_human_verification=False))
+        session.commit()
+        item = next(x for x in public_record_sync.public_elevator_watch_items(session) if x['topic']=='Monitoring coverage')
+    assert item['answer'] == 'Source checks are current; some tracked records need follow-up.'
+    assert 'Absence does not prove correction' in item['why_it_matters']
+    assert 'restore source checks' not in item['human_needed']
 
 
 class _FakeRequest:

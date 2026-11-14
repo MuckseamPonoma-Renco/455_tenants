@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, func, or_
 from sqlalchemy.orm import object_session
 
 from packages.db import (
     CapitalProject,
     ComplianceCheck,
     Incident,
+    RawMessage,
+    MessageDecision,
     ProjectMilestone,
     PublicRecordWatch,
     ServiceRequestCase,
@@ -791,6 +794,40 @@ def _enforcement_details(record: PublicRecordWatch, related_records: list[Public
     return "; ".join(facts)
 
 
+def _source_tenant_service_item(session) -> dict[str, Any] | None:
+    from packages.incident import source_observation as observations
+    if not observations.required():
+        return None
+    configured = (os.environ.get('PUBLIC_UPDATES_CHAT_NAMES')
+                  or os.environ.get('TENANT_PUBLIC_CHAT_NAMES')
+                  or os.environ.get('WHATSAPP_CAPTURE_CHAT_NAMES') or '')
+    allowed = {v.strip().casefold() for v in re.split(r'[,|;\n]', configured) if v.strip()}
+    query = (select(RawMessage, MessageDecision)
+             .join(MessageDecision, MessageDecision.message_id == RawMessage.message_id)
+             .where(MessageDecision.category == 'elevator')
+             .order_by(RawMessage.ts_epoch.desc().nullslast()))
+    if allowed:
+        query = query.where(or_(func.lower(RawMessage.chat_name).in_(allowed), RawMessage.source == 'report_form'))
+    item = {'topic': 'Actual elevator service reported by tenants',
+            'answer': 'No validated tenant service observation is available.',
+            'why_it_matters': 'An open incident record alone does not establish a current outage or repair.',
+            'checked_by': 'Source-bound tenant observation', 'last_checked_at': '',
+            'human_needed': 'Report personally observed service changes; confirm whether specific floor or call-button problems remain.',
+            'source_url': ''}
+    for raw, decision in session.execute(query.limit(100)):
+        observation = observations.from_decision(decision, raw)
+        if not observation or not observation.get('include') or observation.get('publication') != 'allowed':
+            continue
+        if observation.get('state') in {'reference', 'discussion', 'unavailable_media'}:
+            continue
+        item['answer'] = 'Latest recorded tenant observation: ' + observation['public_summary']
+        item['last_checked_at'] = normalize_timestamp(raw.ts_iso, fallback=raw.ts_epoch) or ''
+        item['why_it_matters'] = ('This is dated source evidence, not confirmation of today\'s service. '
+                                  'A working ride or general working observation does not confirm repair of separate floor or call-button faults.')
+        return item
+    return item
+
+
 def public_elevator_watch_items(session) -> list[dict[str, Any]]:
     records = session.scalars(select(PublicRecordWatch)).all()
     elevator_records = _current_trusted_records(records)
@@ -976,7 +1013,10 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
             "source_url": active_devices[0].source_url,
         })
 
-    if open_incidents:
+    source_item = _source_tenant_service_item(session)
+    if source_item is not None:
+        items.append(source_item)
+    elif open_incidents:
         latest = open_incidents[0]
         asset_label = {
             "elevator_north": "the north elevator",
@@ -1050,13 +1090,15 @@ def public_elevator_watch_items(session) -> list[dict[str, Any]]:
                     for row in health.get("sources", []) if row.get("state") not in {"ready", "empty"}]
         items.append({
             "topic": "Monitoring coverage",
-            "answer": "Some official-source checks need attention; displayed records are the last verified observations.",
+            "answer": ("Source checks are current; some tracked records need follow-up."
+                       if health.get("ok") else "Some official-source checks need attention; displayed records are the last verified observations."),
             "why_it_matters": ("; ".join(problems) or ("Source checks completed." if health.get("ok") else "Completed source-check receipts are unavailable."))
                 + (f" {len(absent)} previously tracked records were absent from their latest source; their last observations remain labeled in PublicRecords. Absence does not prove correction or resolution." if absent else "")
                 + (f" {verification['needs_human_verification']} elevator-related records need identity review; {verification['official_conflicts']} have conflicting identifiers. Their details are excluded from current verified facts." if pending_review else ""),
             "checked_by": "Per-source fetch receipts",
             "last_checked_at": normalize_timestamp(health.get("last_attempt_at")) or "",
-            "human_needed": "The operator should restore source checks; tenants should continue reporting observed conditions and request management-only answers.",
+            "human_needed": ("Review the labeled record gaps or identity questions; absence from a feed does not establish correction."
+                             if health.get("ok") else "The operator should restore source checks; tenants should continue reporting observed conditions and request management-only answers."),
             "source_url": "",
         })
 
