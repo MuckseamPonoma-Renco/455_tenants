@@ -69,6 +69,7 @@ INSTRUCTIONS = """Also return an observation describing the ORIGINAL source, ind
 A direct first-person ride report such as "I just rode in South" is an included working_observation of the South elevator, even without the word elevator. It is not discussion and does not prove every button works. For mixed direct and inferred service reports, preserve which car was actually ridden and which was only guessed to work. "Took North; no ashtray in front of South, so I guess it works" proves only the North ride. Words such as seemed, seems, guess, presume and apparently must not become a definite both-cars restoration. Never infer successful service from removal of a barrier.
 Treat public transit, other buildings, system/security-code notices, social comments, jokes and hypothetical scenarios as nonreports unless a separate explicit clause reports this building's condition. General amenity descriptions, personal billing/legal discussion, and speculative technical explanations do not establish a maintenance defect.
 Use include=true for an asserted condition, qualified operating observation or repair update; false for discussion, questions alone, advice, external reference or unavailable media.
+A first-person difficulty followed by a question is not a question alone. "I haven't caught the North elevator on 17 in days. Does anyone know if it's not stopping there?" is an included, uncertain floor-access observation, needs_review=true. Preserve the difficulty without claiming a proven call-button defect, complete outage, or current filing eligibility.
 Choose state, time_scope and certainty conservatively. outage means an elevator/car is unavailable; a floor-call, basement-access, door, travel or floor-selection defect is malfunction even when the car can move. partial_service means some service remains available. For North working and South out, the affected asset is South, not null or Both. A current message can describe a past condition. "One working" is partial_service, not both restored. A ride or "working" observation is working_observation, not proof every floor-call button is repaired. Only an explicit successful repair or return to service is restoration. A mechanic visit, expected parts or failed repair is not restoration. "Couldn't get it operational" is repair_unsuccessful. Workers running a cable are not a running elevator.
 Leave asset null for one/other/left/right or unclear context. Never inherit an incident's asset. For mixed car states, identify the explicitly affected car and retain the other car's different state in the summary.
 Scope uncertainty to the claim actually being made. "I'm not sure the lift is working; I couldn't get it to stop on fourteen or twelve" states a concrete floor-service failure even though overall operation is uncertain. Preserve that qualification without holding the definite failure solely for an unknown car, unknown mechanical cause or uncertainty about overall availability. Likewise "running, but not stopping" in a clearly linked elevator thread states a malfunction; a reset attempt is not a confirmed repair. Use needs_review=true when the asserted condition or its referent remains ambiguous, not merely because a car name or diagnosis was omitted.
@@ -95,6 +96,16 @@ def _direct_ride(text: str):
     # Whole-message match keeps questions, negations, other transport, and
     # additional fault clauses out of this narrow deterministic recovery.
     return re.fullmatch(r"\s*I\s+(?:just\s+)?rode\s+(?:in\s+|on\s+)?(?:the\s+)?(North|South)(?:\s+(?:elevator|lift))?[.!\s]*", text, re.I)
+
+
+def _qualified_floor_access(text: str):
+    # A narrow whole-message safeguard for an observed inability plus an
+    # optional question about its cause. Mixed assertions still need review.
+    return re.fullmatch(
+        r"\s*I\s+haven['’]t\s+(?:caught|been\s+able\s+to\s+catch)\s+"
+        r"the\s+(north|south)\s+(?:elevator|lift)\s+(?:on|at)\s+"
+        r"(?:floor\s+)?(\d{1,2})\s+in\s+days[.!]?\s*"
+        r"(?:Does\s+anyone\s+know\s+if\s+[^.!?]+\?)?\s*", text, re.I)
 
 
 def deterministic_live_observation(text: str) -> dict | None:
@@ -552,6 +563,14 @@ def bind(
         else {}
     )
     ride = _direct_ride(text)
+    floor_access = _qualified_floor_access(text)
+    if floor_access:
+        side, floor = floor_access.groups()
+        result.update(include=True, category="elevator", asset="elevator_" + side.lower(),
+                      state="malfunction", time_scope="uncertain", certainty="uncertain",
+                      source_quote=text.strip(),
+                      public_summary=f"Tenant reported being unable to catch the {side.title()} elevator on floor {floor} for days; whether it stops there is unconfirmed.",
+                      needs_review=True, context_message_ids=[])
     if ride and result.get("include") is False:
         side = ride.group(1).lower()
         result.update(include=True, category="elevator", asset="elevator_" + side,
