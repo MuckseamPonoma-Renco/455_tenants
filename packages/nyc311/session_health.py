@@ -105,7 +105,7 @@ def public_status() -> dict:
 
 
 def check_saved_session() -> dict:
-    """Visit the portal home, retain valid renewals, and never open a complaint."""
+    """Renew the portal session via normal NYC.ID SSO; never open a complaint."""
     if not configured():
         return record("not_configured")
     from packages.nyc311 import portal
@@ -123,6 +123,13 @@ def check_saved_session() -> dict:
                 response = page.goto(portal.PORTAL_HOME_URL, wait_until="domcontentloaded", timeout=45000)
                 if response is None or response.status >= 400:
                     raise RuntimeError("Portal unavailable")
+                if not portal._is_portal_authenticated(page):
+                    # The portal cookie can expire while NYC.ID is still
+                    # authenticated. Home alone cannot establish login expiry.
+                    response = page.goto(portal.PORTAL_SIGN_IN_URL, wait_until="domcontentloaded", timeout=45000)
+                    if response is None or response.status >= 400:
+                        raise RuntimeError("Sign-in service unavailable")
+                    portal._wait_for_sign_in_redirect(page)
                 if portal._is_portal_authenticated(page):
                     portal._save_verified_session(context, page, expected_fingerprint=initial)
                     return public_status()
