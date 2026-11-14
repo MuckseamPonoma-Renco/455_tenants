@@ -110,9 +110,10 @@ render_template() {
   local template_name="$1"
   local destination="$2"
 
-  "$PYTHON_BIN" - "$TEMPLATE_DIR/$template_name" "$destination" "$RUNTIME_ROOT" "$MAC_SERVICE_LOG_DIR" <<'PY'
+  "$PYTHON_BIN" - "$TEMPLATE_DIR/$template_name" "$destination" "$RUNTIME_ROOT" "$MAC_SERVICE_LOG_DIR" "$(mac_service_launchd_domain)" <<'PY'
 import html
 import pathlib
+import plistlib
 import sys
 
 template_path = pathlib.Path(sys.argv[1])
@@ -123,7 +124,10 @@ log_dir = html.escape(sys.argv[4], quote=False)
 text = template_path.read_text(encoding="utf-8")
 text = text.replace("__REPO_ROOT__", runtime_root)
 text = text.replace("__LOG_DIR__", log_dir)
-destination.write_text(text, encoding="utf-8")
+body = plistlib.loads(text.encode())
+if sys.argv[5] == 'user':
+    body['LimitLoadToSessionType'] = 'Background'
+destination.write_bytes(plistlib.dumps(body))
 PY
 
   chmod 644 "$destination"
@@ -136,7 +140,7 @@ bootstrap_with_retry() {
   local attempt output status
 
   for attempt in 1 2 3 4 5; do
-    output="$(launchctl bootstrap "gui/$MAC_SERVICE_UID" "$plist_path" 2>&1)" && return 0
+    output="$(launchctl bootstrap "$(mac_service_domain_target)" "$plist_path" 2>&1)" && return 0
     status=$?
     mac_service_bootout_launch_agent "$name"
     sleep 1

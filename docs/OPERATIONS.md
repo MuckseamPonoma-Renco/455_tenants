@@ -136,6 +136,26 @@ If capture requires login, run `./scripts/run_whatsapp_capture.sh --headful` and
 
 For an intended processing/sync change, check the complete path: stored source and decision, incident, public row, and linked case/status. Confirm a genuine filing by its stored receipt and matching lookup. Compare spreadsheet readback with the database output and inspect evidence previews. A chronology export should come from the intended dataset and be reviewed before sharing. See [verification](VERIFY.md) for exact checks; live complaints are operational actions, not test fixtures.
 
+## macOS background service ownership
+
+The default installer uses the GUI launchd domain for compatibility. A verified
+headless installation can move its existing services to the same user's
+Background domain with `scripts/migrate_mac_background_services.py`. Preview
+first; `--apply --backup-dir /absolute/new/private/directory` transfers the
+existing service owners and saves the exact old definitions for rollback.
+It requires headless WhatsApp capture and refuses migration during a claimed
+or submitting filing. A failed bootstrap or live heartbeat check restores the
+old ownership. No second filing worker is intentionally started alongside the
+old one.
+
+The selected `gui` or `user` domain is stored in
+`~/.local/state/tenant-issue-os/launchd-domain`. The watchdog, restart helpers,
+and installers use that choice; installers retain the Background session type.
+This removes GUI-session ownership, not FileVault's startup-unlock requirement.
+Do not claim unattended recovery from an encrypted cold boot based on a
+successful background-process check. Browser authentication can still require
+human intervention when the identity provider genuinely expires a session.
+
 ## LLM modes
 
 Transport and persistence do not require an LLM.

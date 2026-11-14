@@ -64,7 +64,7 @@ rsync -a --delete \
 
 chmod +x "$PROGRAM"
 
-"$(mac_service_runtime_python)" - "$PLIST_PATH" "$LABEL" "$PROGRAM" "$RUNTIME_ROOT" "$STDOUT_LOG" "$STDERR_LOG" "$START_INTERVAL_SECONDS" "$THROTTLE_INTERVAL_SECONDS" <<'PY'
+"$(mac_service_runtime_python)" - "$PLIST_PATH" "$LABEL" "$PROGRAM" "$RUNTIME_ROOT" "$STDOUT_LOG" "$STDERR_LOG" "$START_INTERVAL_SECONDS" "$THROTTLE_INTERVAL_SECONDS" "$(mac_service_launchd_domain)" <<'PY'
 import pathlib
 import plistlib
 import sys
@@ -86,6 +86,8 @@ body = {
     "StandardOutPath": stdout_log,
     "StandardErrorPath": stderr_log,
 }
+if sys.argv[9] == 'user':
+    body['LimitLoadToSessionType'] = 'Background'
 path = pathlib.Path(plist_path)
 path.parent.mkdir(parents=True, exist_ok=True)
 with path.open("wb") as handle:
@@ -95,9 +97,9 @@ PY
 chmod 644 "$PLIST_PATH"
 plutil -lint "$PLIST_PATH" >/dev/null
 
-launchctl bootout "gui/$MAC_SERVICE_UID/$LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$MAC_SERVICE_UID" "$PLIST_PATH"
-launchctl enable "gui/$MAC_SERVICE_UID/$LABEL"
+launchctl bootout "$(mac_service_service_target chat_export_sync)" >/dev/null 2>&1 || true
+launchctl bootstrap "$(mac_service_domain_target)" "$PLIST_PATH"
+launchctl enable "$(mac_service_service_target chat_export_sync)"
 
 echo "Loaded $LABEL"
 echo "  plist: $PLIST_PATH"
