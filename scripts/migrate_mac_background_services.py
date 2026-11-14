@@ -21,8 +21,22 @@ NAMES = ('keep-awake', 'api', 'tunnel', 'automation', 'whatsapp_capture',
          'chat-export-sync', 'reliability-72h', 'watchdog')
 
 
+class RollbackIncomplete(RuntimeError):
+    pass
+
+
 def launchctl(*args):
     return subprocess.run(['/bin/launchctl', *args], capture_output=True, text=True, timeout=30)
+
+
+def wait_removed(target, run, *, timeout=30):
+    # bootout acknowledges termination before the last process has exited.
+    # Labels are shared across GUI and Background namespaces until teardown.
+    deadline = time.monotonic() + timeout
+    while run('print', target).returncode == 0:
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Service teardown did not finish: ' + target)
+        time.sleep(0.1)
 
 
 def preview(home: Path, uid: int, run=launchctl):
@@ -81,6 +95,7 @@ def migrate(plan, backup: Path, run=launchctl, verify=None):
             if row['loaded']:
                 checked('bootout', plan['source_domain'] + '/' + row['label'])
                 stopped.append(row)
+                wait_removed(plan['source_domain'] + '/' + row['label'], run)
         for row in plan['services']:
             body = plistlib.loads(row['before'].encode())
             body['LimitLoadToSessionType'] = 'Background'
@@ -100,8 +115,12 @@ def migrate(plan, backup: Path, run=launchctl, verify=None):
         rollback_errors = []
         for row in reversed(plan['services']):
             target = plan['destination_domain'] + '/' + row['label']
-            if run('print', target).returncode == 0 and run('bootout', target).returncode:
-                rollback_errors.append(row['label'])
+            if run('print', target).returncode == 0:
+                try:
+                    checked('bootout', target)
+                    wait_removed(target, run)
+                except Exception:
+                    rollback_errors.append(row['label'])
         for row in plan['services']:
             path = Path(row['path']); path.write_text(row['before']); path.chmod(row['mode'])
         if plan['old_domain_config'] is None:
@@ -111,10 +130,14 @@ def migrate(plan, backup: Path, run=launchctl, verify=None):
         for row in reversed(stopped):
             if row['label'] in rollback_errors:
                 continue  # Never create a second owner if new owner could not stop.
-            if run('bootstrap', plan['source_domain'], row['path']).returncode:
+            target = plan['source_domain'] + '/' + row['label']
+            try:
+                wait_removed(target, run)
+                checked('bootstrap', plan['source_domain'], row['path'])
+            except Exception:
                 rollback_errors.append(row['label'])
         if rollback_errors:
-            raise RuntimeError('Migration failed; rollback needs attention: ' + ', '.join(rollback_errors))
+            raise RollbackIncomplete('Migration failed; maintenance fence retained; rollback needs attention: ' + ', '.join(rollback_errors))
         raise
     return {'ok': True, 'migrated': [r['label'] for r in started], 'rollback': str(record)}
 
@@ -167,11 +190,16 @@ def main():
             parser.error('An active or unresolved submitting job must be reconciled before service migration')
     lock = state / 'install.lock'
     lock.mkdir()  # Existing installer/watchdog maintenance fence.
+    rollback_incomplete = False
     try:
         started = time.time()
         print(json.dumps(migrate(plan, args.backup_dir, verify=lambda: verify_runtime(root, started)), indent=2))
+    except RollbackIncomplete:
+        rollback_incomplete = True
+        raise
     finally:
-        lock.rmdir()
+        if not rollback_incomplete:
+            lock.rmdir()
 
 
 if __name__ == '__main__':

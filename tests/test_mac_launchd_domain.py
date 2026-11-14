@@ -106,3 +106,22 @@ def test_failed_live_verification_rolls_back_even_after_successful_bootstrap(tmp
         migrate(plan, tmp_path / 'backup', run, verify=unhealthy)
     assert loaded == original
     assert all(Path(r['path']).read_text() == r['before'] for r in plan['services'])
+
+
+def test_bootout_waits_for_async_teardown_before_importing_same_label(tmp_path, monkeypatch):
+    from scripts import migrate_mac_background_services as migration
+    loaded, calls, original = fixture_services(tmp_path)
+    pending = {}
+    def run(*args):
+        if args[0] == 'bootout':
+            calls.append(args)
+            pending[args[1]] = 2
+            return SimpleNamespace(returncode=0)
+        if args[0] == 'print' and args[1] in pending:
+            pending[args[1]] -= 1
+            if pending[args[1]] == 0:
+                loaded.remove(args[1]); del pending[args[1]]
+        return original(*args)
+    monkeypatch.setattr(migration.time, 'sleep', lambda _: None)
+    result = migration.migrate(migration.preview(tmp_path, 501, run), tmp_path / 'backup', run)
+    assert result['ok'] and all(x.startswith('user/') for x in loaded)
