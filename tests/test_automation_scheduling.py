@@ -5,7 +5,9 @@ import pytest
 import scripts.run_automation_daemon as automation
 
 
-@pytest.mark.parametrize('result,expected', [({'ok':True,'deferred':5},60), ({'ok':False,'errors':1},300), ({'ok':True,'coverage_complete':True},3600)])
+@pytest.mark.parametrize('result,expected', [({'ok':True,'deferred':5},60), ({'ok':False,'errors':1},300), ({'ok':True,'coverage_complete':True},3600),
+    ({'ok':True,'deferred':0,'coverage_complete':False,'fresh':75,'total':80},60),
+    ({'ok':True},60), ({},300), (None,300)])
 def test_status_work_resumes_after_bounded_batch(result, expected):
     assert automation._status_next_delay(result,3600) == expected
 
