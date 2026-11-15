@@ -326,6 +326,40 @@ def test_recent_verified_cases_are_not_requeried_and_coverage_remains_complete(c
         assert result.summary["coverage_complete"] is True
 
 
+def test_checks_expiring_during_batch_get_prompt_catchup_not_hourly_delay(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from scripts.run_automation_daemon import _status_next_delay
+    base = datetime(2026, 11, 14, 20, 0, tzinfo=timezone.utc)
+    clock = [base]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+    monkeypatch.setattr(tracker, 'datetime', Clock)
+    monkeypatch.setenv('NYC311_STATUS_REFRESH_SECONDS', '3600')
+    monkeypatch.setattr(tracker, 'fetch_live_statuses', lambda numbers, **kw: {})
+    calls = []
+    def portal(number, **kw):
+        calls.append(number)
+        clock[0] += timedelta(seconds=10)
+        return _lookup(number, status='In Progress', closed='-')
+    monkeypatch.setattr('packages.nyc311.portal.lookup_service_request_status', portal)
+    with get_session() as session:
+        session.add_all([
+            ServiceRequestCase(service_request_number='311-11111111', status='In Progress', last_checked_at=(base-timedelta(seconds=3595)).isoformat()),
+            ServiceRequestCase(service_request_number='311-22222222', status='In Progress'),
+        ])
+        session.commit()
+        first = tracker.sync_all_case_statuses(session, commit_each=True)
+        assert first.summary['ok'] and first.summary['deferred'] == 0
+        assert first.summary['fresh'] == 1 and not first.summary['coverage_complete']
+        assert _status_next_delay(first.summary, 3600) == 60
+        second = tracker.sync_all_case_statuses(session, commit_each=True)
+        assert second.summary['coverage_complete']
+        assert _status_next_delay(second.summary, 3600) == 3600
+        assert calls == ['311-22222222', '311-11111111']
+
+
 def test_slow_status_work_yields_and_next_cycle_resumes_without_rechecking_success(client, monkeypatch):
     clock = [0.0]
     calls = []

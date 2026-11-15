@@ -121,11 +121,13 @@ def _watchdog_next_delay(result: object, interval_seconds: int) -> int:
 
 
 def _status_next_delay(result: object, interval_seconds: int) -> int:
-    if isinstance(result, dict):
-        if result.get("ok") is False:
-            return min(interval_seconds, 300)
-        if result.get("deferred", 0):
-            return min(interval_seconds, 60)
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return min(interval_seconds, 300)
+    # Cached checks can age out while the selected batch is being refreshed.
+    # That leaves no deferred rows, but coverage is still incomplete. Only a
+    # complete receipt may return to the normal hourly schedule.
+    if result.get("deferred", 0) or result.get("coverage_complete") is not True:
+        return min(interval_seconds, 60)
     return interval_seconds
 
 
