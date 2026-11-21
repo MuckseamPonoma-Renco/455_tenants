@@ -79,12 +79,19 @@ mac_service_domain_target() {
 
 mac_service_service_target() {
   local domain
+  if [[ "$1" == "bootstrap" ]]; then
+    printf 'gui/%s/%s\n' "$MAC_SERVICE_UID" "$(mac_service_service_label "$1")"
+    return
+  fi
   domain="$(mac_service_domain_target)" || return 1
   printf '%s/%s\n' "$domain" "$(mac_service_service_label "$1")"
 }
 
 mac_service_service_script() {
   case "$1" in
+    bootstrap)
+      printf '%s/scripts/run_background_bootstrap.sh\n' "$MAC_SERVICE_REPO_ROOT"
+      ;;
     api)
       printf '%s/scripts/run_api.sh\n' "$MAC_SERVICE_REPO_ROOT"
       ;;

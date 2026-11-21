@@ -17,6 +17,12 @@ def test_service_control_uses_selected_own_user_domain(tmp_path, value, expected
     assert result.stdout.strip() == expected + '/501/tenant-issue-os.automation'
 
 
+def test_login_loader_stays_in_gui_even_when_workers_use_background(tmp_path):
+    (tmp_path / 'launchd-domain').write_text('user\n')
+    result = subprocess.run(['bash', '-c', 'source "$1"; MAC_SERVICE_STATE_DIR="$2"; MAC_SERVICE_UID=501; mac_service_service_target bootstrap', 'test', str(ROOT / 'scripts/mac_service_helpers.sh'), str(tmp_path)], capture_output=True, text=True)
+    assert result.returncode == 0 and result.stdout.strip() == 'gui/501/tenant-issue-os.bootstrap'
+
+
 @pytest.mark.parametrize('value', ['system', 'user/0', 'user; echo unsafe', ''])
 def test_invalid_domain_never_targets_system_or_another_user(tmp_path, value):
     (tmp_path / 'launchd-domain').write_text(value)

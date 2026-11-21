@@ -14,7 +14,7 @@ RUNTIME_COPY_STARTED=0
 RUNTIME_QUIESCED=0
 # Every service definition this installer may replace or remove must take part
 # in backup, quiescing and rollback, including the runtime-backed tunnel wrapper.
-RUNTIME_CONSUMERS=(api automation whatsapp_capture chat_export_sync tunnel watchdog)
+RUNTIME_CONSUMERS=(bootstrap api automation whatsapp_capture chat_export_sync tunnel watchdog)
 PREVIOUS_LOADED_SERVICES=()
 PREVIOUS_MANUAL_SERVICES=()
 
@@ -125,7 +125,7 @@ text = template_path.read_text(encoding="utf-8")
 text = text.replace("__REPO_ROOT__", runtime_root)
 text = text.replace("__LOG_DIR__", log_dir)
 body = plistlib.loads(text.encode())
-if sys.argv[5] == 'user':
+if sys.argv[5] == 'user' and body.get('Label') != 'tenant-issue-os.bootstrap':
     body['LimitLoadToSessionType'] = 'Background'
 destination.write_bytes(plistlib.dumps(body))
 PY
@@ -137,10 +137,12 @@ PY
 bootstrap_with_retry() {
   local name="$1"
   local plist_path="$2"
-  local attempt output status
+  local attempt output status domain
+  domain="$(mac_service_service_target "$name")"
+  domain="${domain%/*}"
 
   for attempt in 1 2 3 4 5; do
-    output="$(launchctl bootstrap "$(mac_service_domain_target)" "$plist_path" 2>&1)" && return 0
+    output="$(launchctl bootstrap "$domain" "$plist_path" 2>&1)" && return 0
     status=$?
     mac_service_bootout_launch_agent "$name"
     sleep 1
@@ -310,6 +312,10 @@ else
 fi
 
 bootstrap_agent watchdog
+if [[ "$(mac_service_launchd_domain)" == "user" ]]; then
+  render_template "tenant-issue-os.bootstrap.plist.template" "$(mac_service_service_plist_path bootstrap)"
+  bootstrap_agent bootstrap
+fi
 
 print_agent_summary api
 print_agent_summary automation
