@@ -152,6 +152,14 @@ The selected `gui` or `user` domain is stored in
 `~/.local/state/tenant-issue-os/launchd-domain`. The watchdog, restart helpers,
 and installers use that choice; installers retain the Background session type.
 This removes GUI-session ownership, not FileVault's startup-unlock requirement.
+The migration and installer also register `tenant-issue-os.bootstrap` as an
+Aqua login agent with `RunAtLoad` and a one-minute recovery interval. This is
+required: Background-only plists in `~/Library/LaunchAgents` do not by themselves
+recreate the background jobs at a later login. The loader only loads missing
+configured services, refuses duplicate GUI owners, and pauses during an install.
+Its private `bootstrap-status.json` and daily metadata-only history under
+`~/.local/state/tenant-issue-os/` record startup recovery and boot identity.
+It does not unlock FileVault or restart an already loaded filing worker.
 Do not claim unattended recovery from an encrypted cold boot based on a
 successful background-process check. Browser authentication can still require
 human intervention when the identity provider genuinely expires a session.

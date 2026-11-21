@@ -193,7 +193,10 @@ def main():
     rollback_incomplete = False
     try:
         started = time.time()
-        print(json.dumps(migrate(plan, args.backup_dir, verify=lambda: verify_runtime(root, started)), indent=2))
+        result = migrate(plan, args.backup_dir, verify=lambda: verify_runtime(root, started))
+        from scripts.bootstrap_mac_background_services import install_loader
+        result['login_loader'] = install_loader(root, home, os.getuid())
+        print(json.dumps(result, indent=2))
     except RollbackIncomplete:
         rollback_incomplete = True
         raise
